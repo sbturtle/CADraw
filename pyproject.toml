@@ -1,0 +1,88 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cadraw"
+version = "0.1.0"
+description = "A human-verified hand-drawing to DXF conversion workbench."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ezdxf>=1.3.0",
+    "numpy>=2.0.0",
+    "opencv-python>=4.10.0",
+    "pillow>=10.4.0",
+    "pyside6>=6.7.0",
+]
+
+[project.scripts]
+cadraw = "cadraw.app:main"
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.31.0",
+    "pytest>=8.3.0",
+    "ruff>=0.12.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cadraw"]
+
+[tool.basedpyright]
+typeCheckingMode = "all"
+pythonVersion = "3.12"
+pythonPlatform = "All"
+include = ["src", "tests", "scripts"]
+exclude = ["**/__pycache__", "**/.venv", "**/build", "**/dist", "artifacts"]
+reportMissingTypeStubs = "none"
+reportUnknownMemberType = "none"
+reportUnknownVariableType = "none"
+reportUnknownArgumentType = "none"
+reportUnusedCallResult = "warning"
+reportPrivateUsage = "error"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812",
+    "ISC001",
+    "D203",
+    "D213",
+    "CPY001",
+    "FBT001",
+    "FBT002",
+    "TD002",
+    "TD003",
+    "FIX002",
+]
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",
+    "ARG",
+    "PLR2004",
+    "SLF001",
+    "D",
+]
+"scripts/**/*.py" = [
+    "T201",
+    "INP001",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+filterwarnings = ["error"]

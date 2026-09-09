@@ -3,9 +3,6 @@
 /.ruff_cache
 /.venv
 /artifacts
-/docs
-/pyproject.toml
-/README.md
-/src
-/tests
-/uv.lock
+/drawing.dxf
+__pycache__/
+*.py[cod]
