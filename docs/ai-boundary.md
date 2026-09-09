@@ -1,29 +1,29 @@
-# AI Boundary
+# AI 경계
 
-## Current adapter contract
+## 현재 어댑터 계약
 
 ```python
 class VisionAnalyzer(Protocol):
     def analyze(self, image_path: Path) -> DrawingAnalysis: ...
 ```
 
-`MockVisionAnalyzer` runs the local deterministic pipeline and returns no OCR dimensions. It exists so the application can be developed and tested without an API key.
+`MockVisionAnalyzer`는 로컬 결정적 파이프라인을 실행하며 OCR 치수를 반환하지 않습니다. API 키 없이도 애플리케이션을 개발하고 테스트할 수 있도록 존재합니다.
 
-## Future OpenAI-compatible adapter
+## 향후 OpenAI 호환 어댑터
 
-A future adapter may call OpenRouter or another OpenAI-compatible endpoint. It must:
+향후 어댑터는 OpenRouter 또는 다른 OpenAI 호환 엔드포인트를 호출할 수 있습니다. 이때 반드시 다음을 지켜야 합니다.
 
-1. Load credentials from user settings or environment variables, never source code.
-2. Parse the response at the boundary into a typed schema.
-3. Preserve raw text, confidence, and source regions.
-4. Return `target_entity_ids = ()` when association is unclear.
-5. Mark recognized values as `NEEDS_REVIEW` until a person confirms them.
-6. Never write a DXF or emit final CAD coordinates.
+1. 자격 증명을 소스 코드가 아니라 사용자 설정이나 환경 변수에서 로드한다.
+2. 응답을 경계에서 타입이 있는 스키마로 파싱한다.
+3. 원본 텍스트, 신뢰도, 소스 영역을 보존한다.
+4. 연결이 불확실하면 `target_entity_ids = ()`를 반환한다.
+5. 사람이 확인하기 전까지 인식된 값을 `NEEDS_REVIEW`로 표시한다.
+6. 절대 DXF를 작성하거나 최종 CAD 좌표를 내보내지 않는다.
 
-The deterministic normalizer, calculator, and exporter remain provider-agnostic.
+결정적 정규화기, 계산기, 내보내기는 공급자와 무관하게 유지됩니다.
 
-## Explicit non-goals
+## 명시적 비목표
 
-- No prompt asks a model to "complete" a missing measurement.
-- No model-generated coordinate list is trusted as CAD geometry.
-- No image ratio becomes a physical dimension without a confirmed value.
+- 누락된 측정값을 모델에게 "완성"하라고 요청하는 프롬프트는 없습니다.
+- 모델이 생성한 좌표 목록을 CAD 기하로 신뢰하지 않습니다.
+- 확정 값 없이 이미지 비율이 물리 치수가 되는 일은 없습니다.

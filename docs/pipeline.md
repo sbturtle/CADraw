@@ -1,45 +1,40 @@
-# Pipeline
+# 파이프라인
 
-## Phase 1 vertical slice
+## Phase 1 수직 슬라이스
 
-1. User opens a JPG/PNG.
-2. OpenCV reads grayscale pixels, excludes configurable page-edge candidates, and
-   creates blurred Canny edges.
-3. Probabilistic Hough detection produces raw line candidates.
-4. Candidates are sorted deterministically and merged when they are near-collinear.
-5. Orientation is classified as horizontal, vertical, or diagonal.
-6. Nearby endpoints are snapped and connection records are created.
-7. `DrawingAnalysis` is shown beside a clean preview.
-8. No OCR value is assumed. Verification rows start as unknown/manual.
-9. User enters a physical length and marks it confirmed.
-10. The first confirmed length determines one global mm-per-pixel scale. No dimension is inferred from image proportions.
-11. Preview is recalculated.
-12. `ezdxf` writes geometry to `GEOMETRY`, known dimension labels to `DIMENSION`, and supporting text to `TEXT`.
-13. The exporter reloads the file and counts entities before reporting success.
+1. 사용자가 JPG/PNG를 엽니다.
+2. OpenCV가 회색조 픽셀을 읽고, 설정 가능한 페이지 가장자리 후보를 제외한 뒤 블러 처리한 Canny 엣지를 만듭니다.
+3. 확률적 허프(Hough) 검출이 원본 선 후보를 생성합니다.
+4. 후보를 결정적으로 정렬하고, 거의 동일선상에 있으면 병합합니다.
+5. 방향을 수평, 수직, 대각선으로 분류합니다.
+6. 가까운 끝점을 스냅하고 연결 기록을 생성합니다.
+7. `DrawingAnalysis`를 깔끔한 미리보기와 나란히 보여줍니다.
+8. OCR 값을 가정하지 않습니다. 확인 행은 미확인/수동 상태로 시작합니다.
+9. 사용자가 실제 길이를 입력하고 확정으로 표시합니다.
+10. 첫 번째 확정 길이가 하나의 전역 mm-per-pixel 스케일을 결정합니다. 어떤 치수도 이미지 비율에서 추론하지 않습니다.
+11. 미리보기를 다시 계산합니다.
+12. `ezdxf`가 기하를 `GEOMETRY`에, 확인된 치수 라벨을 `DIMENSION`에, 보조 텍스트를 `TEXT`에 기록합니다.
+13. 내보내기 후 파일을 다시 읽어 엔티티 수를 센 다음 성공을 보고합니다.
 
-For the supplied photograph, the runner uses
-`source_region=(500, 680, 550, 1150)` and keeps the largest connected line
-component. This removes page/background and handwritten-label strokes while
-preserving source-photo coordinates. The region is intentionally explicit
-because general perspective/ROI detection is not yet implemented.
+제공된 사진의 경우, 러너는 `source_region=(500, 680, 550, 1150)`을 사용하고 가장 큰 연결 선 성분(largest connected component)만 유지합니다. 이렇게 하면 페이지/배경과 손글씨 라벨 획을 제거하면서 원본 사진 좌표를 보존합니다. 일반적인 원근/ROI 자동 검출은 아직 구현되지 않았기 때문에 이 영역은 의도적으로 명시합니다.
 
-## Failure as domain state
+## 도메인 상태로서의 실패
 
-The pipeline does not throw for normal uncertainty:
+파이프라인은 일반적인 불확실성에 대해 예외를 던지지 않습니다.
 
-- no candidate lines -> `LOW_CONFIDENCE_GEOMETRY`
-- missing calibration -> `UNKNOWN_DIMENSION`
-- dimension without target -> `UNCONNECTED_DIMENSION`
-- parser cannot read a value -> `UNCERTAIN_TEXT`
-- confirmed dimensions disagree with scaled geometry -> `CONSTRAINT_MISMATCH`
+- 후보 선 없음 -> `LOW_CONFIDENCE_GEOMETRY`
+- 보정 정보 없음 -> `UNKNOWN_DIMENSION`
+- 대상 없는 치수 -> `UNCONNECTED_DIMENSION`
+- 파서가 값을 읽지 못함 -> `UNCERTAIN_TEXT`
+- 확정 치수가 스케일된 기하와 불일치 -> `CONSTRAINT_MISMATCH`
 
-I/O failures and malformed DXF files are exceptions at their boundaries. Unknown fabrication information is not an exception.
+입출력 실패와 잘못된 DXF 파일은 각 경계에서 예외로 처리합니다. 알 수 없는 제작 정보는 예외가 아닙니다.
 
-## Future phases
+## 향후 단계
 
-- Phase 2: stronger manual dimension editor and rectangle/circle tools.
-- Phase 3: Vision/OCR adapter with structured Pydantic boundary payloads.
-- Phase 4: perspective correction, circle/hole/arc specialization.
-- Phase 5: review confidence thresholds and source-region highlighting.
-- Phase 6: real shop images and threshold tuning.
-- Phase 7: Windows installer and settings/API key storage.
+- Phase 2: 더 강력한 수동 치수 편집기와 사각형/원 도구.
+- Phase 3: 구조화된 Pydantic 경계 페이로드를 사용하는 비전/OCR 어댑터.
+- Phase 4: 원근 보정, 원/홀/호(arc) 특화.
+- Phase 5: 확인 신뢰도 임계값과 소스 영역 강조.
+- Phase 6: 실제 현장 이미지와 임계값 튜닝.
+- Phase 7: Windows 설치 파일과 설정/API 키 저장.

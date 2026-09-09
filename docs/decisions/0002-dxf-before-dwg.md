@@ -1,13 +1,13 @@
-# Decision 0002: DXF Before DWG
+# 결정 0002: DWG보다 DXF 먼저
 
-## Context
+## 배경
 
-The first useful deliverable is a stable file that fabrication software can inspect. DWG support introduces proprietary format and deployment concerns.
+가장 먼저 쓸모 있는 산출물은 제작 소프트웨어가 검사할 수 있는 안정적인 파일입니다. DWG 지원은 독점 포맷과 배포 문제를 함께 가져옵니다.
 
-## Decision
+## 결정
 
-Support DXF with `ezdxf` first. Add DWG conversion only after DXF round-trip tests and real shop-image validation are reliable.
+먼저 `ezdxf`로 DXF를 지원합니다. DWG 변환은 DXF 왕복 테스트와 실제 현장 이미지 검증이 신뢰할 수 있게 된 뒤에만 추가합니다.
 
-## Consequence
+## 결과
 
-The exporter stays inspectable and testable in the open Python environment. A later DWG bridge can consume the same `CadDocument` without changing recognition or normalization.
+내보내기는 열린 Python 환경에서 검사와 테스트가 가능한 상태로 유지됩니다. 이후 DWG 브릿지는 인식이나 정규화를 바꾸지 않고 동일한 `CadDocument`를 소비할 수 있습니다.

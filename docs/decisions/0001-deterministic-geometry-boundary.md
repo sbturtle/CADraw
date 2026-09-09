@@ -1,13 +1,13 @@
-# Decision 0001: Keep Geometry Deterministic
+# 결정 0001: 기하를 결정적으로 유지
 
-## Context
+## 배경
 
-Hand drawings contain gaps, skew, uncertain text, and missing dimensions. A generative model can produce plausible but unsafe coordinates.
+손도면에는 간격, 기울어짐, 불확실한 텍스트, 누락된 치수가 있습니다. 생성 모델은 그럴듯하지만 안전하지 않은 좌표를 만들 수 있습니다.
 
-## Decision
+## 결정
 
-Vision is limited to recognition and semantic suggestions. Geometry normalization, scaling, validation, preview, and DXF serialization are deterministic Python code operating on typed models.
+비전은 인식과 의미 제안으로 제한합니다. 기하 정규화, 스케일링, 검증, 미리보기, DXF 직렬화는 타입이 있는 모델 위에서 동작하는 결정적 Python 코드입니다.
 
-## Consequence
+## 결과
 
-The application can be tested without a network or API key. Uncertainty is visible in the intermediate representation and can be corrected by a person. The trade-off is that Phase 1 does not automatically solve ambiguous geometry.
+애플리케이션을 네트워크나 API 키 없이 테스트할 수 있습니다. 불확실성은 중간 표현에 드러나며 사람이 수정할 수 있습니다. 그 대가로 Phase 1은 모호한 기하를 자동으로 해결하지 못합니다.

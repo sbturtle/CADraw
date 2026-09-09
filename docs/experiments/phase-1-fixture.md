@@ -1,22 +1,13 @@
-# Phase 1 Fixture and Supplied Sample
+# Phase 1 픽스처와 제공 샘플
 
-`scripts/run_poc.py` supports both a reproducible synthetic sketch and the
-supplied camera photograph.
+`scripts/run_poc.py`는 재현 가능한 합성 스케치와 제공된 카메라 사진을 모두 지원합니다.
 
-The synthetic fixture contains:
+합성 픽스처는 다음을 담고 있습니다.
 
-- four structural strokes: top horizontal, long vertical, diagonal, and lower vertical;
-- slight endpoint gaps and angle errors;
-- nearby handwritten-style numeric labels that are deliberately not treated as OCR truth.
+- 네 개의 구조 획: 위쪽 수평, 긴 수직, 대각선, 아래쪽 수직;
+- 약간의 끝점 간격과 각도 오차;
+- OCR 정답으로 취급하지 않는, 근처의 손글씨 스타일 숫자 라벨.
 
-The supplied photograph is `sample/KakaoTalk_20260909_141552817.jpg`. Its
-documented experiment configuration uses ROI `(500, 680, 550, 1150)`, 7-degree
-axis tolerances, endpoint snap distance `45`, and largest-connected-component
-selection. The user supplied four manual values in top-to-bottom order:
-`100 mm`, `1050 mm`, `20°`, and `150 mm`. The observed result is four
-structural lines, three connections, and a valid four-`LINE` plus four-`TEXT`
-DXF. `CONSTRAINT_MISMATCH` is expected for lengths that cannot share the first
-global image scale; it is surfaced rather than hidden.
+제공된 사진은 `sample/KakaoTalk_20260909_141552817.jpg`입니다. 문서화된 실험 설정은 ROI `(500, 680, 550, 1150)`, 7도 축 허용 오차, 끝점 스냅 거리 `45`, 가장 큰 연결 성분 선택을 사용합니다. 사용자는 위에서부터 순서대로 네 개의 수동 값 `100 mm`, `1050 mm`, `20°`, `150 mm`를 제공했습니다. 관찰된 결과는 네 개의 구조선, 세 개의 연결, 그리고 유효한 `LINE` 4개와 `TEXT` 4개로 구성된 DXF입니다. 첫 번째 전역 이미지 스케일을 공유할 수 없는 길이에 대해서는 `CONSTRAINT_MISMATCH`가 예상되며, 숨기지 않고 드러냅니다.
 
-This validates the deterministic path and the real-image boundary, not
-handwriting recognition or perspective correction.
+이는 손글씨 인식이나 원근 보정이 아니라 결정적 경로와 실제 이미지 경계를 검증합니다.
