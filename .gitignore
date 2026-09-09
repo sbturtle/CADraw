@@ -1,0 +1,11 @@
+/.omo
+/.pytest_cache
+/.ruff_cache
+/.venv
+/artifacts
+/docs
+/pyproject.toml
+/README.md
+/src
+/tests
+/uv.lock
