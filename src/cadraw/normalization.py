@@ -176,6 +176,14 @@ def _merge_collinear(
     return merged
 
 
+def merge_collinear_lines(
+    lines: tuple[LineEntity, ...],
+    tolerance: float,
+) -> tuple[LineEntity, ...]:
+    """Merge only the supplied near-collinear line pieces."""
+    return tuple(_merge_collinear(list(lines), tolerance))
+
+
 def _join_point(first: LineEntity, second: LineEntity, first_point: Point) -> Point:
     """Choose a shared endpoint while preserving axis alignment."""
     second_points = (second.start, second.end)

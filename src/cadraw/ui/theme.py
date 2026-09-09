@@ -31,7 +31,7 @@ QGroupBox::title {
     color: #4D4C48;
 }
 QPushButton {
-    min-height: 32px;
+    min-height: 40px;
     padding: 4px 12px;
     border: 1px solid #D1CFC5;
     border-radius: 8px;
@@ -61,6 +61,14 @@ QLineEdit, QTableWidget {
     border: 1px solid #E8E6DC;
     border-radius: 8px;
     padding: 4px 8px;
+}
+QTableWidget {
+    selection-background-color: #F0EEE6;
+    selection-color: #141413;
+}
+QTableWidget::item:selected {
+    background: #F0EEE6;
+    color: #141413;
 }
 QHeaderView::section {
     background: #E8E6DC;
