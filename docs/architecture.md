@@ -10,6 +10,8 @@ CADraw는 네 개의 경계로 나뉜 작은 데스크톱 애플리케이션입�
   -> normalization.py
   -> models.DrawingAnalysis
   -> dimensions.py / calculator.py
+  -> line_editing.py
+  -> topology.py
   -> preview.py 와 export.py
 ```
 
@@ -24,14 +26,33 @@ CADraw는 네 개의 경계로 나뉜 작은 데스크톱 애플리케이션입�
 | `normalization.py` | 방향 분류, 스냅, 동일선 병합, 연결 정보 생성 |
 | `dimensions.py` | 길이/지름/반지름/각도 텍스트의 안전한 파싱 |
 | `calculator.py` | 확정 치수 기반 보정과 결정적 좌표 변환 |
+| `line_editing.py` | 병합·삭제·수동 다시 그리기의 immutable 분석 변환 |
+| `topology.py` | 정확히 연결된 열린 선 체인을 순서 있는 polyline으로 조립 |
 | `preview.py` | CAD 엔티티의 순수 Pillow 렌더링 |
 | `export.py` | ezdxf 직렬화와 재읽기 검증 |
 | `vision.py` | `VisionAnalyzer` 프로토콜과 OCR 없는 목(mock) 어댑터 |
-| `ui/` | 원본 이미지, 미리보기, 수동 확인 입력, 액션 |
+| `ui/` | 원본 이미지, 미리보기, 수동 확인 입력, 선 편집 액션 |
+| `ui/workbench_view.py` | native toolbar, viewport, verification panel 조합 |
+| `ui/verification_panel.py` | 다중 행 선택, 치수 행, 선 편집 버튼 |
+| `ui/source_image_widget.py` | 원본 이미지 fit, 선택 overlay, source-space 드래그 입력 |
+| `ui/line_edit_controller.py` | UI callback과 immutable 선 편집 명령 연결 |
 
 ## 데이터 흐름
 
 `DrawingAnalysis`가 중간 표현입니다. 검출된 선 엔티티에는 원본 좌표를 그대로 보존하고, 미리보기와 내보내기에는 정규화된 좌표를 사용합니다. 치수 값은 없을 수 있으며(nullable), 각 치수는 확인 상태(review status)를 함께 가집니다.
+
+사용자 선 편집은 `line_editing.py`가 `DrawingAnalysis`를 새 immutable 값으로
+교체하는 별도 경계입니다. 병합은 선택한 near-collinear `LineEntity`를 하나의
+canonical ID로 합치고 미확인 치수 행을 하나로 정리합니다. 삭제는 해당 geometry와
+그 geometry에만 연결된 미확인 행을 제거합니다. 다시 그리기는 원본 좌표 두 점을
+기존 선 교체 또는 새 선 추가로 정규화하며, 모든 경우 connections를 재생성한 뒤
+기존 calculator/preview/export 흐름으로 돌아갑니다.
+
+`topology.py`는 `DrawingAnalysis.entities` 또는 `CadDocument.entities`를
+교체하지 않습니다. 정확히 같은 endpoint로 연결되고 degree-one terminal이
+정확히 두 개인 열린 경로만 `PolylineEntity`로 만든 표시/내보내기용 스트림에
+넣습니다. 따라서 원본 `LineEntity` ID를 대상으로 하는 치수 편집과 calibration은
+그대로 유지되고, branch·loop·gap은 추측 없이 선으로 남습니다.
 
 제공된 카메라 샘플의 경우, `PipelineConfig.source_region`이 분석 범위를 알려진 종이 도면 영역으로 제한하고 검출된 좌표를 원본 사진 좌표계로 복원합니다. 이는 조정 가능한 실험 설정이며 자동 원근 보정이 아닙니다.
 

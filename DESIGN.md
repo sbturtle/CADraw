@@ -98,6 +98,9 @@ At narrow widths the two panes stack in source order: source image, preview, ver
 - **Spacing:** `space-3` frame padding.
 - **States:** empty, rendered, selected entity.
 - **Accessibility:** caption identifies the surface; selected entity is also named in the verification list.
+- **Selection:** selecting a verification row highlights the linked source line and preview geometry with `accent-coral`.
+- **Manual redraw:** the `선 다시 그리기` action switches the source surface to a
+  crosshair cursor; dragging two points replaces the selected line or adds a new one.
 - **Motion:** no automatic movement; future zoom/pan is user-driven.
 - **Layout:** `frame` with an intrinsic aspect ratio and no hidden overflow of the drawing.
 
@@ -110,6 +113,14 @@ At narrow widths the two panes stack in source order: source image, preview, ver
 - **Accessibility:** label is associated with the editable field; status is textual, not color-only.
 - **Motion:** native focus/press feedback only.
 - **Layout:** `stack` inside the verification list.
+
+### Line edit action cluster
+
+- **Structure:** `선 병합` → `선 삭제` → `선 다시 그리기` above the verification table.
+- **States:** disabled without a valid selection, active for the matching selection,
+  source-drawing mode while redraw is checked, error text in the caption.
+- **Accessibility:** all actions use text labels and tooltips; destructive edits never
+  discard confirmed values silently.
 
 ### Action button
 
@@ -124,6 +135,8 @@ At narrow widths the two panes stack in source order: source image, preview, ver
 ## 6. Motion & Interaction
 
 This is a precision utility, so motion intensity is 1. No automatic entrance animation or decorative looping motion is used. Button and focus feedback are delegated to native Qt styling. Recalculation and export update the status bar immediately after the deterministic operation completes.
+Source redraw uses no animation; the cursor change and caption are the only mode
+feedback, preserving the precision-tool intensity of 1.
 
 ## 7. Depth & Surface
 
@@ -144,5 +157,6 @@ Strategy: `mixed`, with warm borders for containment and a whisper shadow only o
 | Item | Location | Why accepted | Owner / Exit |
 |---|---|---|---|
 | Native Qt widgets are not a full screen-reader audit yet | `src/cadraw/ui/` | Phase 1 prioritizes the working conversion path; labels and tab order are explicit | Validate with Windows Narrator before installer release |
-| Zoom/pan is not in the first viewport | `src/cadraw/ui/preview.py` | A clean fit-to-frame view is enough for the first PoC | Add user-driven zoom/pan in Phase 2 |
+| Zoom/pan is not in the first viewport | `src/cadraw/ui/preview_widget.py` | A clean fit-to-frame view is enough for the first PoC | Add user-driven zoom/pan in Phase 2 |
 | No real handwriting OCR in Phase 1 | `src/cadraw/vision.py` | Manual dimensions are safer than guessed fabrication values | Add an adapter and review states in Phase 3 |
+| No edit undo/redo history yet | `src/cadraw/line_editing.py` | The first correction slice prioritizes deterministic immutable edits | Add a command history before sustained editing sessions |
