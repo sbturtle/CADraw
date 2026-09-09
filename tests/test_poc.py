@@ -16,9 +16,9 @@ def test_reproducible_poc_runner_writes_expected_artifacts(tmp_path: Path) -> No
         ),
     )
 
-    # Then the deterministic four-line slice and DXF are reproduced
+    # Then the deterministic four-segment slice becomes one open polyline
     assert summary.geometry_entities == 4
-    assert summary.dxf_entities == 5
+    assert summary.dxf_entities == 2
     assert set(summary.orientations) == {"horizontal", "vertical", "diagonal"}
     assert (tmp_path / "sample_hand_drawing.png").exists()
     assert (tmp_path / "sample_preview.png").exists()

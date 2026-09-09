@@ -66,7 +66,7 @@ def test_supplied_sample_runner_exports_all_confirmed_values(
 
     # Then each confirmed label is exported without fabricating geometry
     assert summary.dimension_texts == ("100", "1050", "20°", "150")
-    assert summary.dxf_entities == 8
+    assert summary.dxf_entities == 5
     dxf_path = tmp_path / "sample_drawing.dxf"
     assert dxf_path.exists()
     assert validate_dxf(dxf_path).text_values == (
