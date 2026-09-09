@@ -1,0 +1,61 @@
+import pytest
+
+from cadraw.dimensions import (
+    associate_dimension,
+    confirm_dimension_text,
+    parse_dimension_text,
+)
+from cadraw.models import (
+    DimensionId,
+    DimensionKind,
+    DimensionStatus,
+    EntityId,
+)
+
+
+@pytest.mark.parametrize(
+    ("raw_text", "expected_kind", "expected_value"),
+    [
+        ("100", DimensionKind.LENGTH, 100.0),
+        ("Ø25", DimensionKind.DIAMETER, 25.0),
+        ("R12.5", DimensionKind.RADIUS, 12.5),
+        ("45°", DimensionKind.ANGLE, 45.0),
+    ],
+)
+def test_dimension_parser_reads_supported_notation(
+    raw_text: str,
+    expected_kind: DimensionKind,
+    expected_value: float,
+) -> None:
+    # Given a supported handwritten-style text candidate
+    # When it is parsed at the trust boundary
+    dimension = parse_dimension_text(raw_text, DimensionId("dim_1"))
+
+    # Then the value is typed but still awaits human confirmation
+    assert dimension.kind is expected_kind
+    assert dimension.parsed_value == expected_value
+    assert dimension.status is DimensionStatus.NEEDS_REVIEW
+
+
+def test_unreadable_text_becomes_unknown_instead_of_zero() -> None:
+    # Given text that cannot be safely interpreted
+    # When the parser processes it
+    dimension = parse_dimension_text("1O0?", DimensionId("dim_2"))
+
+    # Then no fabricated numeric value crosses the model boundary
+    assert dimension.parsed_value is None
+    assert dimension.status is DimensionStatus.UNKNOWN
+
+
+def test_confirmation_requires_explicit_target_and_user_value() -> None:
+    # Given a parsed dimension candidate
+    parsed = parse_dimension_text("100", DimensionId("dim_3"))
+    associated = associate_dimension(parsed, EntityId("line_1"))
+
+    # When a user confirms the value
+    confirmed = confirm_dimension_text(associated, "105")
+
+    # Then both the target and explicit value are retained
+    assert confirmed.target_entity_ids == (EntityId("line_1"),)
+    assert confirmed.parsed_value == 105.0
+    assert confirmed.status is DimensionStatus.CONFIRMED
