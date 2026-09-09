@@ -10,16 +10,19 @@ from cadraw.models import (
     CadDocument,
     CircleEntity,
     DimensionKind,
+    EntityId,
     GeometryEntity,
     LineEntity,
     Point,
     PolylineEntity,
 )
+from cadraw.topology import assemble_open_line_chains
 
 _BACKGROUND = (255, 255, 255)
 _GEOMETRY = (20, 20, 19)
 _DIMENSION = (201, 100, 66)
 _BORDER = (232, 230, 220)
+_SELECTED = (217, 119, 87)
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,11 +33,13 @@ class PreviewConfig:
     height: int = 520
     padding: int = 32
     line_width: int = 3
+    selection_line_width: int = 5
+    highlight_entity_ids: tuple[EntityId, ...] = ()
 
 
 def _entity_points(entity: GeometryEntity) -> tuple[Point, ...]:
     """Return points sufficient to compute a visible entity bound."""
-    match entity:
+    match entity:  # noqa: MATCH_OK
         case LineEntity(start=start, end=end):
             return (start, end)
         case PolylineEntity(points=points):
@@ -71,7 +76,7 @@ def _bounds(entities: tuple[GeometryEntity, ...]) -> tuple[float, float, float, 
 
 def _anchor(entity: GeometryEntity) -> Point:
     """Choose a stable label anchor for a geometry entity."""
-    match entity:
+    match entity:  # noqa: MATCH_OK
         case LineEntity(start=start, end=end):
             return Point((start.x + end.x) / 2.0, (start.y + end.y) / 2.0)
         case PolylineEntity(points=points):
@@ -113,19 +118,25 @@ def _draw_entity(
     config: PreviewConfig,
 ) -> None:
     """Render one tagged geometry variant."""
-    match entity:
+    stroke = _SELECTED if entity.entity_id in config.highlight_entity_ids else _GEOMETRY
+    line_width = (
+        config.selection_line_width
+        if entity.entity_id in config.highlight_entity_ids
+        else config.line_width
+    )
+    match entity:  # noqa: MATCH_OK
         case LineEntity(start=start, end=end):
             draw.line(
                 (map_point(start), map_point(end)),
-                fill=_GEOMETRY,
-                width=config.line_width,
+                fill=stroke,
+                width=line_width,
             )
         case PolylineEntity(points=points, closed=closed):
             mapped = tuple(map_point(point) for point in points)
             draw.line(
                 (*mapped, mapped[0]) if closed else mapped,
-                fill=_GEOMETRY,
-                width=config.line_width,
+                fill=stroke,
+                width=line_width,
                 joint="curve",
             )
         case CircleEntity(center=center, radius=radius):
@@ -138,8 +149,8 @@ def _draw_entity(
                     mapped_center[0] + radius_px,
                     mapped_center[1] + radius_px,
                 ),
-                outline=_GEOMETRY,
-                width=config.line_width,
+                outline=stroke,
+                width=line_width,
             )
         case ArcEntity(
             center=center,
@@ -158,8 +169,8 @@ def _draw_entity(
                 ),
                 start=start_angle,
                 end=end_angle,
-                fill=_GEOMETRY,
-                width=config.line_width,
+                fill=stroke,
+                width=line_width,
             )
 
 
@@ -172,9 +183,14 @@ def render_preview(document: CadDocument, config: PreviewConfig) -> Image.Image:
         outline=_BORDER,
         width=1,
     )
-    bounds = _bounds(document.entities)
+    display_entities = (
+        document.entities
+        if config.highlight_entity_ids
+        else assemble_open_line_chains(document.entities)
+    )
+    bounds = _bounds(display_entities)
     map_point, scale = _mapper(config, bounds)
-    for entity in document.entities:
+    for entity in display_entities:
         _draw_entity(draw, entity, map_point, scale, config)
 
     entities_by_id = {entity.entity_id: entity for entity in document.entities}
