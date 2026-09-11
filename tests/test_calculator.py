@@ -1,5 +1,6 @@
 from cadraw.calculator import calculate_document
 from cadraw.models import (
+    CircleEntity,
     Dimension,
     DimensionId,
     DimensionKind,
@@ -127,3 +128,43 @@ def test_conflicting_confirmed_dimension_is_reported() -> None:
     assert any(
         warning.code.value == "CONSTRAINT_MISMATCH" for warning in document.warnings
     )
+
+
+def test_confirmed_line_scale_preserves_non_line_cad_scaling() -> None:
+    # Given a line calibration and a detected circle in source coordinates
+    analysis = DrawingAnalysis(
+        unit="mm",
+        image_size=(160, 80),
+        entities=(
+            _line(),
+            CircleEntity(
+                entity_id=EntityId("circle_1"),
+                center=Point(20.0, 40.0),
+                radius=10.0,
+                confidence=1.0,
+            ),
+        ),
+        dimensions=(
+            Dimension(
+                dimension_id=DimensionId("dim_1"),
+                raw_text="50",
+                kind=DimensionKind.LENGTH,
+                parsed_value=50.0,
+                unit="mm",
+                target_entity_ids=(EntityId("line_1"),),
+                confidence=1.0,
+                status=DimensionStatus.CONFIRMED,
+            ),
+        ),
+        connections=(),
+        warnings=(),
+    )
+
+    # When the CAD document is recalculated
+    document = calculate_document(analysis)
+
+    # Then legacy non-line geometry still follows the established scale
+    circle = document.entities[1]
+    assert isinstance(circle, CircleEntity)
+    assert circle.center == Point(10.0, 20.0)
+    assert circle.radius == 5.0

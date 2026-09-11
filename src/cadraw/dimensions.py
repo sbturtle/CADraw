@@ -3,6 +3,7 @@
 import re
 import unicodedata
 from dataclasses import replace
+from typing import Final
 
 from cadraw.models import (
     Dimension,
@@ -13,6 +14,8 @@ from cadraw.models import (
 )
 
 _NUMBER = r"(?P<value>(?:\d+(?:[.,]\d*)?|[.,]\d+))"
+_MAX_DIMENSION_VALUE: Final = 1_000_000_000.0
+_MAX_ANGLE_DEGREES: Final = 180.0
 _VALUE_PATTERN = re.compile(
     rf"^\s*{_NUMBER}\s*(?P<unit>mm|㎜)?\s*$",
     re.IGNORECASE,
@@ -30,7 +33,7 @@ def _numeric_value(raw_value: str) -> float | None:
         value = float(raw_value.replace(",", "."))
     except ValueError:
         return None
-    return value if value > 0.0 else None
+    return value if 0.0 < value <= _MAX_DIMENSION_VALUE else None
 
 
 def parse_dimension_text(raw_text: str, dimension_id: DimensionId) -> Dimension:
@@ -39,17 +42,27 @@ def parse_dimension_text(raw_text: str, dimension_id: DimensionId) -> Dimension:
     angle_match = _ANGLE_PATTERN.fullmatch(normalized)
     if angle_match is not None:
         value = _numeric_value(angle_match.group("value"))
-        if value is not None:
+        if value is None or value <= 0.0 or value > _MAX_ANGLE_DEGREES:
             return Dimension(
                 dimension_id=dimension_id,
                 raw_text=raw_text,
                 kind=DimensionKind.ANGLE,
-                parsed_value=value,
+                parsed_value=None,
                 unit="deg",
                 target_entity_ids=(),
-                confidence=0.98,
-                status=DimensionStatus.NEEDS_REVIEW,
+                confidence=0.0,
+                status=DimensionStatus.INVALID,
             )
+        return Dimension(
+            dimension_id=dimension_id,
+            raw_text=raw_text,
+            kind=DimensionKind.ANGLE,
+            parsed_value=value,
+            unit="deg",
+            target_entity_ids=(),
+            confidence=0.98,
+            status=DimensionStatus.NEEDS_REVIEW,
+        )
 
     prefix_match = _PREFIX_PATTERN.fullmatch(normalized)
     kind = DimensionKind.LENGTH
@@ -61,6 +74,17 @@ def parse_dimension_text(raw_text: str, dimension_id: DimensionId) -> Dimension:
 
     value_match = _VALUE_PATTERN.fullmatch(body)
     value = None if value_match is None else _numeric_value(value_match.group("value"))
+    if value_match is not None and value is None:
+        return Dimension(
+            dimension_id=dimension_id,
+            raw_text=raw_text,
+            kind=kind,
+            parsed_value=None,
+            unit="mm",
+            target_entity_ids=(),
+            confidence=0.0,
+            status=DimensionStatus.INVALID,
+        )
     if value is None:
         return Dimension(
             dimension_id=dimension_id,
@@ -99,6 +123,6 @@ def confirm_dimension_text(dimension: Dimension, raw_text: str) -> Dimension:
         status=(
             DimensionStatus.CONFIRMED
             if parsed.parsed_value is not None
-            else DimensionStatus.UNKNOWN
+            else parsed.status
         ),
     )

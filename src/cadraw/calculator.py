@@ -6,6 +6,8 @@ from cadraw.models import (
     AnalysisWarning,
     ArcEntity,
     CadDocument,
+    CadEntity,
+    CadResolutionStatus,
     CircleEntity,
     DimensionKind,
     DimensionStatus,
@@ -15,6 +17,7 @@ from cadraw.models import (
     PolylineEntity,
     WarningCode,
 )
+from cadraw.solver import reconstruct_geometry
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,47 +28,36 @@ class CalculatorConfig:
     minimum_validation_tolerance_mm: float = 0.5
 
 
-def _find_scale(
-    analysis: DrawingAnalysis,
-) -> float | None:
-    """Find the first valid confirmed line-length calibration."""
-    entities = {entity.entity_id: entity for entity in analysis.entities}
-    for dimension in analysis.dimensions:
-        if dimension.status is not DimensionStatus.CONFIRMED:
-            continue
-        if dimension.kind is not DimensionKind.LENGTH:
-            continue
-        if dimension.parsed_value is None or len(dimension.target_entity_ids) != 1:
-            continue
-        target = entities.get(dimension.target_entity_ids[0])
-        if not isinstance(target, LineEntity) or target.length == 0.0:
-            continue
-        return dimension.parsed_value / target.length
-    return None
+def _scale_geometry(geometry: GeometryEntity, scale: float) -> GeometryEntity:
+    """Keep legacy non-line geometry in the calibrated CAD coordinate space."""
+    if isinstance(geometry, PolylineEntity):
+        return replace(
+            geometry,
+            points=tuple(point.scaled(scale) for point in geometry.points),
+        )
+    if isinstance(geometry, (CircleEntity, ArcEntity)):
+        return replace(
+            geometry,
+            center=geometry.center.scaled(scale),
+            radius=geometry.radius * scale,
+        )
+    return geometry
 
 
-def _scale_entity(entity: GeometryEntity, scale: float) -> GeometryEntity:
-    """Scale one known entity while preserving its identity and provenance."""
-    match entity:
-        case LineEntity(start=start, end=end):
-            return replace(entity, start=start.scaled(scale), end=end.scaled(scale))
-        case PolylineEntity(points=points):
-            return replace(
-                entity,
-                points=tuple(point.scaled(scale) for point in points),
-            )
-        case CircleEntity(center=center, radius=radius):
-            return replace(
-                entity,
-                center=center.scaled(scale),
-                radius=radius * scale,
-            )
-        case ArcEntity(center=center, radius=radius):
-            return replace(
-                entity,
-                center=center.scaled(scale),
-                radius=radius * scale,
-            )
+def _scale_cad_entities(
+    entities: tuple[CadEntity, ...],
+    scale: float | None,
+) -> tuple[CadEntity, ...]:
+    """Apply the existing global fallback only to non-line geometry."""
+    if scale is None:
+        return entities
+    return tuple(
+        replace(
+            entity,
+            geometry=_scale_geometry(entity.geometry, scale),
+        )
+        for entity in entities
+    )
 
 
 def _has_warning(
@@ -111,6 +103,14 @@ def _append_constraint_warnings(
 ) -> None:
     """Compare every confirmed line length to the first scale."""
     entities = {entity.entity_id: entity for entity in analysis.entities}
+    connected_ids = {
+        entity_id
+        for connection in analysis.connections
+        for entity_id in (
+            connection.first_entity_id,
+            connection.second_entity_id,
+        )
+    }
     for dimension in analysis.dimensions:
         if dimension.status is not DimensionStatus.CONFIRMED:
             continue
@@ -120,6 +120,8 @@ def _append_constraint_warnings(
             continue
         target = entities.get(dimension.target_entity_ids[0])
         if not isinstance(target, LineEntity):
+            continue
+        if target.entity_id in connected_ids:
             continue
         expected = target.length * scale
         tolerance = max(
@@ -144,8 +146,20 @@ def calculate_document(
     """Create exportable geometry from only explicit user-confirmed values."""
     warnings = list(analysis.warnings)
     effective_config = config if config is not None else CalculatorConfig()
-    calibration = _find_scale(analysis)
+    reconstruction = reconstruct_geometry(analysis)
+    calibration = reconstruction.scale_mm_per_source_unit
+    cad_entities = _scale_cad_entities(reconstruction.entities, calibration)
     _append_dimension_warnings(analysis, warnings)
+    if any(
+        entity.status is CadResolutionStatus.UNKNOWN_ANGLE
+        for entity in reconstruction.entities
+    ):
+        warnings.append(
+            AnalysisWarning(
+                code=WarningCode.UNKNOWN_ANGLE,
+                message="대각선 각도가 없어 원본 방향을 preview에만 사용합니다.",
+            ),
+        )
     if calibration is None:
         if not _has_warning(warnings, WarningCode.UNKNOWN_DIMENSION):
             warnings.append(
@@ -156,18 +170,20 @@ def calculate_document(
             )
         return CadDocument(
             unit=analysis.unit,
-            entities=analysis.entities,
+            entities=tuple(entity.geometry for entity in cad_entities),
             dimensions=analysis.dimensions,
             warnings=tuple(warnings),
             scale_mm_per_source_unit=None,
+            cad_entities=cad_entities,
         )
 
     scale = calibration
     _append_constraint_warnings(analysis, scale, effective_config, warnings)
     return CadDocument(
         unit=analysis.unit,
-        entities=tuple(_scale_entity(entity, scale) for entity in analysis.entities),
+        entities=tuple(entity.geometry for entity in cad_entities),
         dimensions=analysis.dimensions,
         warnings=tuple(warnings),
         scale_mm_per_source_unit=scale,
+        cad_entities=cad_entities,
     )

@@ -47,6 +47,18 @@ def test_unreadable_text_becomes_unknown_instead_of_zero() -> None:
     assert dimension.status is DimensionStatus.UNKNOWN
 
 
+def test_non_positive_length_and_angles_through_180_degrees_are_validated() -> None:
+    # Given values that must never become fabrication constraints
+    zero = parse_dimension_text("0", DimensionId("dim_zero"))
+    angle = parse_dimension_text("180°", DimensionId("dim_angle"))
+
+    # Then non-positive lengths are invalid while a straight angle is accepted
+    assert zero.status is DimensionStatus.INVALID
+    assert zero.parsed_value is None
+    assert angle.status is DimensionStatus.NEEDS_REVIEW
+    assert angle.parsed_value == 180.0
+
+
 def test_confirmation_requires_explicit_target_and_user_value() -> None:
     # Given a parsed dimension candidate
     parsed = parse_dimension_text("100", DimensionId("dim_3"))
