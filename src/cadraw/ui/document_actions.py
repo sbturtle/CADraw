@@ -35,5 +35,10 @@ def save_document(
         return False
     geometry_text = f"geometry {summary.geometry_entity_count}개"
     entity_text = f"entity {validation.total_entities}개"
-    set_caption(f"DXF 저장 완료 · {geometry_text} · {entity_text}")
+    omitted_text = (
+        f" · 미확정 geometry {summary.omitted_unresolved_count}개 제외"
+        if summary.omitted_unresolved_count
+        else ""
+    )
+    set_caption(f"DXF 저장 완료 · {geometry_text} · {entity_text}{omitted_text}")
     return True

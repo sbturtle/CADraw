@@ -2,7 +2,7 @@
 
 from typing import Final, final
 
-from PySide6.QtCore import QItemSelectionModel, Signal
+from PySide6.QtCore import QItemSelectionModel, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QGroupBox,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from cadraw.models import (
     DimensionId,
+    DimensionKind,
     DrawingAnalysis,
     EntityId,
 )
@@ -27,6 +28,9 @@ _VALUE_COLUMN: Final = 1
 _STATUS_COLUMN: Final = 3
 _MIN_MERGE_SELECTION: Final = 2
 _MIN_DELETE_SELECTION: Final = 1
+_AUTO_ANGLE_SOURCE: Final = "axis_inference"
+_DEFAULT_APPLY_TEXT: Final = "치수 적용"
+_ANGLE_APPLY_TEXT: Final = "각도 승인 후 다시 그리기"
 _GUIDANCE_TEXT = """선택된 선의 실제 길이를 직접 입력하세요.
 빈 값은 UNKNOWN으로 저장됩니다."""
 
@@ -40,6 +44,7 @@ class VerificationPanel(QGroupBox):
     merge_requested = Signal()
     delete_requested = Signal()
     redraw_toggled = Signal(bool)
+    dimension_apply_requested = Signal(int, str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """Create an empty verification panel."""
@@ -50,11 +55,14 @@ class VerificationPanel(QGroupBox):
         self._merge_button = QPushButton("선 병합", self)
         self._delete_button = QPushButton("선 삭제", self)
         self._redraw_button = QPushButton("선 다시 그리기", self)
+        self._apply_button = QPushButton("치수 적용", self)
         self._build()
 
     @property
     def selected_dimension_id(self) -> DimensionId | None:
         """Return the current row's stable dimension identity."""
+        if not self.selected_dimension_ids:
+            return None
         row = self._current_row()
         return self.dimension_id_for_row(row)
 
@@ -108,7 +116,14 @@ class VerificationPanel(QGroupBox):
                     f"대상 ID: {dimension.target_entity_ids[0]}",
                 )
             value = QTableWidgetItem(dimension.raw_text)
-            value.setToolTip("예: 100 또는 105.5")
+            value.setToolTip(
+                "예: 45 또는 45°"
+                if dimension.kind is DimensionKind.ANGLE
+                else "예: 100 또는 105.5",
+            )
+            if dimension.source == _AUTO_ANGLE_SOURCE:
+                value.setFlags(value.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                value.setToolTip("축 정렬로 자동 확정된 각도입니다.")
             unit = QTableWidgetItem(dimension.unit)
             status = QTableWidgetItem(status_text(dimension))
             self._dimension_table.setItem(row, 0, label)
@@ -137,7 +152,7 @@ class VerificationPanel(QGroupBox):
                 )
         block_signals = False
         _ = self._dimension_table.blockSignals(block_signals)
-        self.selection_changed.emit()
+        self._on_selection_changed()
 
     def set_line_actions_enabled(
         self,
@@ -149,6 +164,73 @@ class VerificationPanel(QGroupBox):
         _ = self._merge_button.setEnabled(merge)
         _ = self._delete_button.setEnabled(delete)
         _ = self._redraw_button.setEnabled(redraw)
+
+    def _on_selection_changed(self) -> None:
+        """Refresh the apply affordance before publishing row selection."""
+        dimension_id = self.selected_dimension_id
+        dimension = (
+            next(
+                (
+                    item
+                    for item in self._analysis.dimensions
+                    if item.dimension_id == dimension_id
+                ),
+                None,
+            )
+            if self._analysis is not None and dimension_id is not None
+            else None
+        )
+        self._apply_button.setText(
+            _ANGLE_APPLY_TEXT
+            if (
+                dimension is not None
+                and dimension.kind is DimensionKind.ANGLE
+                and dimension.source != _AUTO_ANGLE_SOURCE
+            )
+            else _DEFAULT_APPLY_TEXT,
+        )
+        self.selection_changed.emit()
+
+    def select_entity(self, entity_id: EntityId) -> None:
+        """Select every verification row attached to one source entity."""
+        self.select_entities((entity_id,))
+
+    def select_entities(self, entity_ids: tuple[EntityId, ...]) -> None:
+        """Select every verification row attached to any source entity."""
+        selected_entity_ids = set(entity_ids)
+        rows = (
+            tuple(
+                row
+                for dimension_id, row in self._dimension_row_by_id.items()
+                if selected_entity_ids.intersection(
+                    next(
+                        (
+                            dimension.target_entity_ids
+                            for dimension in self._analysis.dimensions
+                            if dimension.dimension_id == dimension_id
+                        ),
+                        (),
+                    ),
+                )
+            )
+            if self._analysis is not None
+            else ()
+        )
+        selection_model = self._dimension_table.selectionModel()
+        selection_model.clearSelection()
+        self._dimension_table.setCurrentCell(-1, -1)
+        if not rows:
+            self._on_selection_changed()
+            return
+        self._dimension_table.setCurrentCell(rows[0], 0)
+        for row in rows:
+            index = self._dimension_table.model().index(row, 0)
+            selection_model.select(
+                index,
+                QItemSelectionModel.SelectionFlag.Select
+                | QItemSelectionModel.SelectionFlag.Rows,
+            )
+        self.selection_changed.emit()
 
     def set_redraw_checked(self, checked: bool) -> None:
         """Set redraw mode through the native checkable action."""
@@ -189,6 +271,12 @@ class VerificationPanel(QGroupBox):
         )
         _ = self._redraw_button.toggled.connect(self.redraw_toggled)
         edit_toolbar.addWidget(self._redraw_button)
+        self._apply_button.setObjectName("apply_dimension")
+        self._apply_button.setToolTip(
+            "선택한 치수 값을 검증하고 CAD geometry를 다시 계산합니다.",
+        )
+        _ = self._apply_button.clicked.connect(self._apply_current_dimension)
+        edit_toolbar.addWidget(self._apply_button)
         edit_toolbar.addStretch()
         layout.addLayout(edit_toolbar)
         self._dimension_table.setObjectName("dimension_table")
@@ -215,10 +303,19 @@ class VerificationPanel(QGroupBox):
         )
         _ = self._dimension_table.itemChanged.connect(self._on_item_changed)
         _ = self._dimension_table.itemSelectionChanged.connect(
-            self.selection_changed,
+            self._on_selection_changed,
         )
         layout.addWidget(self._dimension_table)
         self._dimension_table.setMinimumHeight(140)
+
+    def _apply_current_dimension(self) -> None:
+        """Request validation of the currently selected dimension value."""
+        row = self._current_row()
+        if row < 0:
+            return
+        item = self._dimension_table.item(row, _VALUE_COLUMN)
+        if item is not None:
+            self.dimension_apply_requested.emit(row, item.text())
 
     def _current_row(self) -> int:
         """Return a selected row even when a range has no current index."""

@@ -6,6 +6,7 @@ from PIL import Image
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
+    QComboBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -15,13 +16,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cadraw.models import DimensionId, DrawingAnalysis, EntityId, Point
+from cadraw.models import CadDocument, DimensionId, DrawingAnalysis, EntityId, Point
+from cadraw.preview import PreviewConfig, PreviewMode
 from cadraw.ui.preview_widget import PreviewWidget
 from cadraw.ui.source_image_widget import SourceImageLabel
 from cadraw.ui.verification_panel import VerificationPanel
 
 _SOURCE_STRETCH: Final = 5
 _PREVIEW_STRETCH: Final = 4
+_PREVIEW_SELECTION_HINT: Final = (
+    "클릭: 한 선 · Ctrl+클릭: 복수 선택\n좌→우: 전체 포함 · 우→좌: 교차 포함"
+)
 _SUBTITLE_TEXT = """선은 자동으로 정리하고, 실제 치수는 입력된 값만 사용합니다.
 모르는 값은 미확인 상태로 남습니다."""
 
@@ -39,6 +44,9 @@ class WorkbenchView(QWidget):
     delete_requested = Signal()
     redraw_toggled = Signal(bool)
     source_line_drawn = Signal(float, float, float, float)
+    preview_selection_changed = Signal(tuple)
+    dimension_apply_requested = Signal(int, str)
+    preview_mode_changed = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """Initialize the empty workbench view."""
@@ -50,6 +58,8 @@ class WorkbenchView(QWidget):
         self._recalculate_button: QPushButton = QPushButton(self)
         self._save_button: QPushButton = QPushButton(self)
         self._caption = QLabel(self)
+        self._preview_info = QLabel(self)
+        self._mode_combo = QComboBox(self)
         self._build()
 
     @property
@@ -87,6 +97,35 @@ class WorkbenchView(QWidget):
     def set_preview_image(self, image: Image.Image) -> None:
         """Replace the normalized preview raster."""
         self._preview.set_image(image)
+
+    def set_preview_context(
+        self,
+        document: CadDocument,
+        config: PreviewConfig,
+    ) -> None:
+        """Provide the current coordinate space for preview hit testing."""
+        self._preview.set_interaction_context(document, config)
+
+    def set_selection_info(self, text: str) -> None:
+        """Display stable identity and dimension state for the selection."""
+        self._preview_info.setText(text)
+
+    def select_entity(self, entity_id: EntityId) -> None:
+        """Select the verification rows linked to a preview entity."""
+        self.select_entities((entity_id,))
+
+    def select_entities(self, entity_ids: tuple[EntityId, ...]) -> None:
+        """Select the verification rows linked to preview entities."""
+        self._verification.select_entities(entity_ids)
+
+    @property
+    def preview_mode(self) -> PreviewMode:
+        """Return the currently displayed coordinate-space mode."""
+        return (
+            PreviewMode.CAD
+            if self._mode_combo.currentIndex() == 0
+            else PreviewMode.DETECTED
+        )
 
     def set_main_actions_enabled(
         self,
@@ -147,10 +186,16 @@ class WorkbenchView(QWidget):
         root_layout.addWidget(self._caption)
         _ = self._verification.dimension_edited.connect(self.dimension_edited)
         _ = self._verification.selection_changed.connect(self.selection_changed)
+        _ = self._verification.dimension_apply_requested.connect(
+            self.dimension_apply_requested,
+        )
         _ = self._verification.merge_requested.connect(self.merge_requested)
         _ = self._verification.delete_requested.connect(self.delete_requested)
         _ = self._verification.redraw_toggled.connect(self.redraw_toggled)
         _ = self._source_label.line_drawn.connect(self.source_line_drawn)
+        _ = self._preview.selection_changed.connect(
+            self.preview_selection_changed,
+        )
 
     def _add_header(self, root_layout: QVBoxLayout) -> None:
         """Add title and safety guidance."""
@@ -193,8 +238,29 @@ class WorkbenchView(QWidget):
         return group
 
     def _create_preview_group(self) -> QGroupBox:
-        """Create the normalized-preview viewport."""
-        group = QGroupBox("정규화된 CAD Preview", self)
+        """Create the coordinate-space preview viewport."""
+        group = QGroupBox("Geometry Preview", self)
         layout = QVBoxLayout(group)
+        mode_toolbar = QHBoxLayout()
+        mode_toolbar.addWidget(QLabel("보기"))
+        self._mode_combo.setObjectName("preview_mode")
+        self._mode_combo.addItem("CAD 결과", PreviewMode.CAD.value)
+        self._mode_combo.addItem("검출 결과", PreviewMode.DETECTED.value)
+        _ = self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        mode_toolbar.addWidget(self._mode_combo)
+        mode_toolbar.addStretch()
+        layout.addLayout(mode_toolbar)
+        self._preview.setObjectName("cad_preview")
         layout.addWidget(self._preview)
+        self._preview_info.setObjectName("selection_info")
+        self._preview_info.setWordWrap(True)
+        self._preview_info.setText(_PREVIEW_SELECTION_HINT)
+        layout.addWidget(self._preview_info)
         return group
+
+    def _on_mode_changed(self, index: int) -> None:
+        """Forward the selected coordinate-space mode to MainWindow."""
+        if index == 0:
+            self.preview_mode_changed.emit(PreviewMode.CAD.value)
+        elif index == 1:
+            self.preview_mode_changed.emit(PreviewMode.DETECTED.value)

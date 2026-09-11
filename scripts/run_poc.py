@@ -265,7 +265,7 @@ def run(options: PocOptions) -> PocSummary:
             document,
             PreviewConfig(width=1200, height=900),
         ).save(preview_path)
-    _ = export_dxf(document, dxf_path)
+    _ = export_dxf(document, dxf_path, allow_unresolved=True)
     validation = validate_dxf(dxf_path)
     summary = PocSummary(
         image=str(image_path),

@@ -5,6 +5,7 @@ from enum import StrEnum
 from typing import final, override
 
 from cadraw.models import (
+    DetectedEntity,
     Dimension,
     DimensionId,
     DimensionKind,
@@ -91,6 +92,7 @@ def ensure_dimensions_unconfirmed(
     selected = set(entity_ids)
     if any(
         dimension.parsed_value is not None
+        and dimension.source != "axis_inference"
         and any(target_id in selected for target_id in dimension.target_entity_ids)
         for dimension in analysis.dimensions
     ):
@@ -107,10 +109,30 @@ def with_rebuilt_connections(
 ) -> DrawingAnalysis:
     """Replace entities and derive connections from the edited line set."""
     lines = tuple(entity for entity in entities if isinstance(entity, LineEntity))
+    detected_by_id = {
+        detected.entity_id: detected for detected in analysis.detected_entities
+    }
+    detected_entities = tuple(
+        replace(
+            detected_by_id.get(
+                entity.entity_id,
+                DetectedEntity(
+                    entity_id=entity.entity_id,
+                    geometry=entity,
+                    confidence=(
+                        entity.confidence if isinstance(entity, LineEntity) else 0.0
+                    ),
+                ),
+            ),
+            geometry=entity,
+        )
+        for entity in entities
+    )
     return replace(
         analysis,
         entities=entities,
         connections=build_connections(lines, config.endpoint_snap_distance),
+        detected_entities=detected_entities,
     )
 
 
