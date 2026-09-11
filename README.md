@@ -8,23 +8,34 @@ CADraw는 범용 CAD 편집기가 아닙니다. 사진에서 선 후보를 찾�
 
 - JPG/PNG 이미지 열기
 - OpenCV grayscale, blur, Canny, probabilistic Hough line detection
+- 카메라 손그림 기본값의 후보 확장과 최대 연결 성분 필터
 - 수평/수직 snap, endpoint snap, near-collinear line merge
 - horizontal / vertical / diagonal 방향 분류
 - 연결 관계와 낮은 신뢰도 경고를 갖는 typed intermediate representation
 - 정확히 연결된 unambiguous open chain을 순서 있는 `POLYLINE`으로 조립
 - 수동 치수 편집: 길이, `Ø` 직경, `R` 반지름, 각도
+- image-space 검출 geometry와 CAD-space mm geometry의 명시적 분리
+- `DetectedEntity` → `CadEntity` stable ID relation과 resolved/unresolved state
+- 연결된 선의 확정 길이·각도 기반 anchor reconstruction
+- Preview 선 직접 선택, entity 정보, 검출 결과/CAD 결과 toggle
+- Preview Ctrl 다중 선택, 좌→우 window/우→좌 crossing 선택
 - 치수 행 선택 시 대응 선을 원본 사진과 CAD preview에서 highlight
 - 치수 행에 선 방향과 로컬 길이를 사람이 읽을 수 있는 형태로 표시
 - 선택한 선 조각 병합, 잘못 인식한 선 삭제, 원본 이미지 위 선 다시 그리기
-- 첫 번째 확정 길이로만 전역 mm 스케일을 계산
+- 첫 번째 확정 길이는 연결되지 않은 geometry의 preview fallback scale로만 사용
 - Pillow 기반 CAD preview
 - `LINE`, `LWPOLYLINE`, `CIRCLE`, `ARC`, `TEXT` 레이어 분리 DXF export
-- DXF 재읽기 entity-count validation
+- DXF 재읽기 entity-count 및 실제 segment length validation
+- 미확정 geometry는 기본 DXF에서 제외하며 fixture만 명시적으로 허용 가능
 - OpenAI-compatible Vision API와 분리 가능한 `VisionAnalyzer` Protocol
 
 ## 안전한 동작 원칙
 
-사진상의 비율은 실제 치수로 확정하지 않습니다. 확정된 치수가 하나도 없으면 geometry는 pixel-like local unit으로 유지되고, UI와 DXF validation 결과에 스케일 미확인 상태가 표시됩니다. OCR/AI가 나중에 추가되더라도 결과는 `needs_review`로 들어가며 사용자가 확인하기 전에는 CAD 좌표를 만들지 않습니다.
+사진상의 비율은 입력 치수 대신 사용하지 않습니다. 연결 geometry에 확정 치수가 있으면
+각 segment의 명시 길이와 각도를 우선해 anchor부터 CAD mm 좌표를 재구성합니다.
+치수가 없거나 대각선 각도가 없으면 원본 방향을 preview용으로만 사용하고
+`UNRESOLVED` 또는 `UNKNOWN_ANGLE` 상태를 유지합니다. OCR/AI가 나중에 추가되더라도
+결과는 `needs_review`로 들어가며 사용자가 확인하기 전에는 확정 constraint가 되지 않습니다.
 
 ## 시작하기
 
@@ -135,6 +146,6 @@ CADraw/
 - 편집 실행 취소/다시 실행은 아직 지원하지 않습니다.
 - 실제 샘플은 현재 도면 주변 ROI를 수동 설정으로 검증했으며, 임의 사진의
   ROI 자동 추정은 아직 없습니다.
-- 여러 확정 치수를 geometry 길이에 동시에 반영하는 제약 solver는 없습니다.
-  첫 번째 확정 길이만 전역 scale 기준으로 사용하고 나머지는 검증 경고로 취급합니다.
+- 완전한 일반 constraint solver는 아직 없습니다. 현재는 connected open line graph에
+  길이·각도·방향·anchor 규칙을 적용합니다.
 - DXF는 1차 산출물이며 DWG는 아직 지원하지 않습니다.

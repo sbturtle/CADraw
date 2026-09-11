@@ -9,13 +9,16 @@ CADraw는 네 개의 경계로 나뉜 작은 데스크톱 애플리케이션입�
   -> detection.py
   -> normalization.py
   -> models.DrawingAnalysis
-  -> dimensions.py / calculator.py
+  -> dimensions.py / calculator.py / solver.py
   -> line_editing.py
   -> topology.py
   -> preview.py 와 export.py
 ```
 
-`ui/`는 이 흐름을 조합하기만 하고 기하 계산을 직접 하지 않습니다. 덕분에 PySide6가 설치되지 않은 환경에서도 도메인 테스트와 DXF 왕복(round-trip) 테스트를 실행할 수 있습니다.
+`ui/`는 이 흐름을 조합하기만 하고 기하 계산을 직접 하지 않습니다. Preview
+click은 stable ID만 전달하고, dimension editor는 typed `Dimension`만 갱신합니다.
+덕분에 PySide6가 설치되지 않은 환경에서도 도메인 테스트와 DXF 왕복
+(round-trip) 테스트를 실행할 수 있습니다.
 
 ## 모듈 책임
 
@@ -25,7 +28,8 @@ CADraw는 네 개의 경계로 나뉜 작은 데스크톱 애플리케이션입�
 | `detection.py` | 이미지 로딩, 전처리, 가장자리 필터링, OpenCV 선 후보 추출 |
 | `normalization.py` | 방향 분류, 스냅, 동일선 병합, 연결 정보 생성 |
 | `dimensions.py` | 길이/지름/반지름/각도 텍스트의 안전한 파싱 |
-| `calculator.py` | 확정 치수 기반 보정과 결정적 좌표 변환 |
+| `calculator.py` | 분석 상태를 계산 문서로 조합하고 경고를 관리 |
+| `solver.py` | 확정 length/angle constraint로 connected line CAD 좌표 재구성 |
 | `line_editing.py` | 병합·삭제·수동 다시 그리기의 immutable 분석 변환 |
 | `topology.py` | 정확히 연결된 열린 선 체인을 순서 있는 polyline으로 조립 |
 | `preview.py` | CAD 엔티티의 순수 Pillow 렌더링 |

@@ -99,6 +99,9 @@ At narrow widths the two panes stack in source order: source image, preview, ver
 - **States:** empty, rendered, selected entity.
 - **Accessibility:** caption identifies the surface; selected entity is also named in the verification list.
 - **Selection:** selecting a verification row highlights the linked source line and preview geometry with `accent-coral`.
+- **Multi-selection:** plain click replaces selection, Ctrl+click toggles a line,
+  left-to-right drag selects only fully enclosed lines, and right-to-left drag
+  selects any line crossing the window.
 - **Manual redraw:** the `선 다시 그리기` action switches the source surface to a
   crosshair cursor; dragging two points replaces the selected line or adds a new one.
 - **Motion:** no automatic movement; future zoom/pan is user-driven.

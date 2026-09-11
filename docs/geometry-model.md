@@ -14,6 +14,39 @@ Phase 1의 좌표는 원본 이미지의 픽셀 좌표계를 따르는 로컬 2D
 
 모델은 태그된 `EntityType` 열거형과 불변 데이터클래스를 사용합니다. 내보내기 코드는 알려진 모든 변형을 명시적으로 매칭합니다.
 
+`DrawingAnalysis.entities`는 image-space 검출 결과이며 `raw_start/raw_end`는
+원본 이미지 pixel 좌표를 보존합니다. `CadDocument.entities`는 같은 stable
+`EntityId`를 가진 CAD-space geometry입니다. 두 좌표계 사이의 명시적 관계는
+`DetectedEntity`와 `CadEntity`로 표현되며, `CadEntity.source_entity_id`가
+원본을 가리킵니다.
+
+`CadEntity.status`는 `RESOLVED`, `UNRESOLVED`, `UNKNOWN_ANGLE` 중 하나입니다.
+`inferred_for_preview`가 true인 좌표는 원본 방향이나 fallback scale을 사용한
+표시용 좌표이며, 사용자가 확정한 제작 치수와 동일하게 취급하지 않습니다.
+
+## 치수와 제약
+
+`Dimension`은 `dimension_id`, `target_entity_ids`, `kind`, `parsed_value`,
+`unit`, `source`, `confidence`, `status`를 가집니다. 상태는 기존
+`UNKNOWN/NEEDS_REVIEW/CONFIRMED`와 함께 `UNSET`, `USER_ENTERED`,
+`USER_CONFIRMED`, `AI_DETECTED`, `UNCERTAIN`, `INVALID`를 표현할 수 있습니다.
+`Constraint`는 확정된 `Dimension`의 solver 입력이며 현재 `LENGTH`와 `ANGLE`
+line constraint를 우선 지원합니다. AI/OCR은 이 모델에 제안값을 넣을 수 있지만
+solver는 source provider를 알지 못합니다.
+
+## 연결 재구성
+
+`solver.reconstruct_geometry`는 연결된 line graph의 첫 line 시작점을 `(0, 0)`
+anchor로 둡니다. 수평선은 source 방향의 ±X, 수직 하향선은 -Y를 유지하고,
+대각선은 확정 angle과 `dx=L*cos(theta)`, `dy=L*sin(theta)`를 사용합니다.
+명시 length가 없는 선은 상태를 `UNRESOLVED`로 두고 preview용 fallback만
+계산합니다. angle이 없는 길이 확정 대각선은 원본 방향을 임시 사용하며
+`UNKNOWN_ANGLE` 상태를 유지합니다.
+
+계산 문서가 `CadEntity` 상태를 갖고 있을 때 DXF export는 기본적으로
+`RESOLVED` geometry만 기록합니다. fixture 재현처럼 미확정 geometry가
+필요한 경우에만 `export_dxf(..., allow_unresolved=True)`를 명시합니다.
+
 ## 정규화
 
 `NormalizationConfig`가 모든 허용 오차를 관리합니다.
