@@ -41,9 +41,35 @@ class DimensionKind(StrEnum):
 class DimensionStatus(StrEnum):
     """Human-verification state of a dimension."""
 
+    UNSET = "unset"
     UNKNOWN = "unknown"
     NEEDS_REVIEW = "needs_review"
+    USER_ENTERED = "needs_review"
     CONFIRMED = "confirmed"
+    USER_CONFIRMED = "confirmed"
+    AI_DETECTED = "ai_detected"
+    UNCERTAIN = "uncertain"
+    INVALID = "invalid"
+
+
+class ConstraintKind(StrEnum):
+    """Constraint families accepted by the deterministic geometry solver."""
+
+    LENGTH = "length"
+    HORIZONTAL = "horizontal"
+    VERTICAL = "vertical"
+    ANGLE = "angle"
+    COINCIDENT = "coincident"
+    DIAMETER = "diameter"
+    RADIUS = "radius"
+
+
+class CadResolutionStatus(StrEnum):
+    """Whether a CAD entity is safe to treat as resolved geometry."""
+
+    RESOLVED = "resolved"
+    UNRESOLVED = "unresolved"
+    UNKNOWN_ANGLE = "unknown_angle"
 
 
 class WarningCode(StrEnum):
@@ -54,6 +80,7 @@ class WarningCode(StrEnum):
     UNCONNECTED_DIMENSION = "UNCONNECTED_DIMENSION"
     UNCERTAIN_TEXT = "UNCERTAIN_TEXT"
     CONSTRAINT_MISMATCH = "CONSTRAINT_MISMATCH"
+    UNKNOWN_ANGLE = "UNKNOWN_ANGLE"
     IMAGE_READ_FAILED = "IMAGE_READ_FAILED"
 
 
@@ -149,6 +176,39 @@ type GeometryEntity = LineEntity | PolylineEntity | CircleEntity | ArcEntity
 
 
 @dataclass(frozen=True, slots=True)
+class DetectedEntity:
+    """Image-space geometry and its source-image provenance."""
+
+    entity_id: EntityId
+    geometry: GeometryEntity
+    confidence: float
+    source_image_reference: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Constraint:
+    """One typed geometric constraint supplied by a verified dimension."""
+
+    kind: ConstraintKind
+    value: float | None
+    target_entity_ids: tuple[EntityId, ...]
+    status: DimensionStatus
+    inferred_for_preview: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CadEntity:
+    """CAD-space geometry linked back to one detected entity."""
+
+    entity_id: EntityId
+    source_entity_id: EntityId
+    geometry: GeometryEntity
+    constraints: tuple[Constraint, ...]
+    status: CadResolutionStatus
+    inferred_for_preview: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class Connection:
     """A relation between two line entities at a snapped endpoint."""
 
@@ -169,6 +229,7 @@ class Dimension:
     target_entity_ids: tuple[EntityId, ...]
     confidence: float
     status: DimensionStatus
+    source: str = "manual"
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +251,7 @@ class DrawingAnalysis:
     dimensions: tuple[Dimension, ...]
     connections: tuple[Connection, ...]
     warnings: tuple[AnalysisWarning, ...]
+    detected_entities: tuple[DetectedEntity, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,3 +263,4 @@ class CadDocument:
     dimensions: tuple[Dimension, ...]
     warnings: tuple[AnalysisWarning, ...]
     scale_mm_per_source_unit: float | None
+    cad_entities: tuple[CadEntity, ...] = ()
