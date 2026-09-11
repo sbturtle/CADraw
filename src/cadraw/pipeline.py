@@ -12,6 +12,7 @@ from cadraw.detection import (
 )
 from cadraw.models import (
     AnalysisWarning,
+    DetectedEntity,
     DrawingAnalysis,
     LineEntity,
     Point,
@@ -35,10 +36,22 @@ class PipelineConfig:
 
     @classmethod
     def from_detection_defaults(cls) -> "PipelineConfig":
-        """Create the conservative defaults used by the desktop app."""
+        """Create camera-sketch defaults that favor structural line chains."""
         return cls(
-            detection=DetectionConfig(),
-            normalization=NormalizationConfig(),
+            detection=DetectionConfig(
+                minimum_line_length=60.0,
+                hough_threshold=25,
+                maximum_line_gap=28,
+                maximum_candidates=64,
+            ),
+            normalization=NormalizationConfig(
+                horizontal_angle_tolerance_degrees=7.0,
+                vertical_angle_tolerance_degrees=7.0,
+                endpoint_snap_distance=18.0,
+                line_merge_tolerance=18.0,
+                minimum_line_length=60.0,
+                keep_largest_connected_component=True,
+            ),
         )
 
 
@@ -100,4 +113,13 @@ def analyze_image(image_path: Path, config: PipelineConfig) -> DrawingAnalysis:
             config.normalization.endpoint_snap_distance,
         ),
         warnings=tuple(warnings),
+        detected_entities=tuple(
+            DetectedEntity(
+                entity_id=line.entity_id,
+                geometry=line,
+                confidence=line.confidence,
+                source_image_reference=str(image_path),
+            )
+            for line in lines
+        ),
     )

@@ -11,6 +11,15 @@ from cadraw.pipeline import PipelineConfig, analyze_image
 _SAMPLE = Path(__file__).parents[1] / "sample" / "KakaoTalk_20260909_141552817.jpg"
 
 
+def test_default_pipeline_keeps_the_structural_chain_from_camera_noise() -> None:
+    # Given the supplied camera photograph with no special per-image settings
+    analysis = analyze_image(_SAMPLE, PipelineConfig.from_detection_defaults())
+
+    # Then the application defaults keep the four-stroke structural chain
+    assert len(analysis.entities) == 4
+    assert len(analysis.connections) == 3
+
+
 def test_supplied_hand_drawing_reduces_to_four_connected_strokes() -> None:
     # Given the supplied camera photograph and its documented ROI
     config = PipelineConfig(
@@ -38,6 +47,9 @@ def test_supplied_hand_drawing_reduces_to_four_connected_strokes() -> None:
     # Then the structural chain is separated from the handwritten labels
     assert analysis.image_size == (1920, 2560)
     assert len(analysis.entities) == 4
+    assert tuple(
+        detected.entity_id for detected in analysis.detected_entities
+    ) == tuple(entity.entity_id for entity in analysis.entities)
     assert len(analysis.connections) == 3
     assert {
         entity.orientation.value
@@ -75,3 +87,26 @@ def test_supplied_sample_runner_exports_all_confirmed_values(
         "20°",
         "150 mm",
     )
+
+
+def test_supplied_sample_reconstructs_entered_segment_lengths(
+    tmp_path: Path,
+) -> None:
+    # Given the same camera sample with four explicit segment lengths
+    summary = run(
+        PocOptions(
+            output_directory=tmp_path,
+            input_path=_SAMPLE,
+            dimension_texts=("100", "1050", "20", "150"),
+            confirm_length=None,
+            render_preview=True,
+        ),
+    )
+
+    # When the CAD-space DXF is reopened
+    validation = validate_dxf(tmp_path / "sample_drawing.dxf")
+
+    # Then every entered segment length survives the real sample pipeline
+    lengths = tuple(round(length, 6) for length in validation.geometry_lengths)
+    assert tuple(sorted(lengths)) == (20.0, 100.0, 150.0, 1050.0)
+    assert "UNKNOWN_ANGLE" in summary.warnings

@@ -1,7 +1,38 @@
 from PIL import Image
 
 from cadraw.models import CadDocument, EntityId, LineEntity, Orientation, Point
-from cadraw.preview import PreviewConfig, render_preview
+from cadraw.preview import PreviewConfig, preview_mapper, render_preview
+from cadraw.preview_selection import PreviewSelectionWindow, select_preview_entities
+
+
+def _selection_document() -> CadDocument:
+    """Build two separated lines for window and crossing selection tests."""
+    return CadDocument(
+        unit="mm",
+        entities=(
+            LineEntity(
+                entity_id=EntityId("line_a"),
+                raw_start=Point(10.0, 10.0),
+                raw_end=Point(30.0, 10.0),
+                start=Point(10.0, 10.0),
+                end=Point(30.0, 10.0),
+                orientation=Orientation.HORIZONTAL,
+                confidence=0.95,
+            ),
+            LineEntity(
+                entity_id=EntityId("line_b"),
+                raw_start=Point(40.0, 10.0),
+                raw_end=Point(60.0, 10.0),
+                start=Point(40.0, 10.0),
+                end=Point(60.0, 10.0),
+                orientation=Orientation.HORIZONTAL,
+                confidence=0.95,
+            ),
+        ),
+        dimensions=(),
+        warnings=(),
+        scale_mm_per_source_unit=1.0,
+    )
 
 
 def test_preview_renders_geometry_inside_requested_frame() -> None:
@@ -74,3 +105,64 @@ def test_preview_highlights_selected_geometry_only() -> None:
     assert highlighted_colors is not None
     assert (217, 119, 87) not in {color for _, color in plain_colors}
     assert (217, 119, 87) in {color for _, color in highlighted_colors}
+
+
+def test_cad_preview_inverts_y_axis_without_changing_source_preview() -> None:
+    # Given one normalized drawing bound in source/image coordinates
+    bounds = (0.0, 0.0, 100.0, 100.0)
+    source_mapper, _ = preview_mapper(
+        PreviewConfig(width=240, height=160),
+        bounds,
+    )
+    cad_mapper, _ = preview_mapper(
+        PreviewConfig(width=240, height=160, invert_y=True),
+        bounds,
+    )
+
+    # When the same endpoints are mapped for each coordinate-space preview
+    source_bottom = source_mapper(Point(0.0, 100.0))[1]
+    source_top = source_mapper(Point(0.0, 0.0))[1]
+    cad_bottom = cad_mapper(Point(0.0, 100.0))[1]
+    cad_top = cad_mapper(Point(0.0, 0.0))[1]
+
+    # Then CAD-space is displayed in y-up order while source stays y-down
+    assert source_top < source_bottom
+    assert cad_top > cad_bottom
+
+
+def test_left_to_right_window_selection_requires_full_line_containment() -> None:
+    # Given two separated lines in the rendered preview coordinate space
+    document = _selection_document()
+
+    # When a left-to-right window fully contains only the first line
+    selected = select_preview_entities(
+        document,
+        PreviewConfig(width=240, height=160),
+        PreviewSelectionWindow(
+            start=Point(30.0, 70.0),
+            end=Point(55.0, 90.0),
+            left_to_right=True,
+        ),
+    )
+
+    # Then only the fully enclosed line is selected
+    assert selected == (EntityId("line_a"),)
+
+
+def test_right_to_left_crossing_selection_accepts_partial_intersection() -> None:
+    # Given two separated lines in the rendered preview coordinate space
+    document = _selection_document()
+
+    # When a right-to-left crossing window touches both lines
+    selected = select_preview_entities(
+        document,
+        PreviewConfig(width=240, height=160),
+        PreviewSelectionWindow(
+            start=Point(75.0, 90.0),
+            end=Point(45.0, 70.0),
+            left_to_right=False,
+        ),
+    )
+
+    # Then both partially or fully intersecting lines are selected
+    assert selected == (EntityId("line_a"), EntityId("line_b"))
