@@ -14,6 +14,7 @@ from cadraw.models import (
     DimensionKind,
     EntityId,
     GeometryEntity,
+    GeometryRole,
     LineEntity,
     Point,
     PolylineEntity,
@@ -21,6 +22,7 @@ from cadraw.models import (
 
 _BACKGROUND = (255, 255, 255)
 _GEOMETRY = (20, 20, 19)
+_HOLE = (45, 104, 179)
 _DIMENSION = (201, 100, 66)
 _BORDER = (232, 230, 220)
 _SELECTED = (217, 119, 87)
@@ -138,7 +140,16 @@ def _draw_entity(
     config: PreviewConfig,
 ) -> None:
     """Render one tagged geometry variant."""
-    stroke = _SELECTED if entity.entity_id in config.highlight_entity_ids else _GEOMETRY
+    is_hole = isinstance(entity, (PolylineEntity, CircleEntity)) and (
+        entity.role is GeometryRole.HOLE
+    )
+    stroke = (
+        _SELECTED
+        if entity.entity_id in config.highlight_entity_ids
+        else _HOLE
+        if is_hole
+        else _GEOMETRY
+    )
     line_width = (
         config.selection_line_width
         if entity.entity_id in config.highlight_entity_ids

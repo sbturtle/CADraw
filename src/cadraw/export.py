@@ -17,6 +17,7 @@ from cadraw.models import (
     DimensionKind,
     EntityId,
     GeometryEntity,
+    GeometryRole,
     LineEntity,
     Point,
     PolylineEntity,
@@ -28,6 +29,7 @@ validate_dxf = dxf_validation.validate_dxf
 __all__ = ["DxfValidation", "ExportSummary", "export_dxf", "validate_dxf"]
 
 _GEOMETRY_LAYER = "GEOMETRY"
+_HOLE_LAYER = "HOLE"
 _DIMENSION_LAYER = "DIMENSION"
 _TEXT_HEIGHT = 3.0
 _MILLIMETRES = 4
@@ -165,13 +167,25 @@ def _add_geometry(modelspace: ModelspaceLike, entity: GeometryEntity) -> None:
                 [_point_tuple(point) for point in points],
                 format="xy",
                 close=closed,
-                dxfattribs={"layer": _GEOMETRY_LAYER},
+                dxfattribs={
+                    "layer": (
+                        _HOLE_LAYER
+                        if entity.role is GeometryRole.HOLE
+                        else _GEOMETRY_LAYER
+                    ),
+                },
             )
         case CircleEntity(center=center, radius=radius):
             _ = modelspace.add_circle(
                 _point_tuple(center),
                 radius,
-                dxfattribs={"layer": _GEOMETRY_LAYER},
+                dxfattribs={
+                    "layer": (
+                        _HOLE_LAYER
+                        if entity.role is GeometryRole.HOLE
+                        else _GEOMETRY_LAYER
+                    ),
+                },
             )
         case ArcEntity(
             center=center,
@@ -253,6 +267,7 @@ def export_dxf(
     dxf_document = _new_document("R2010")
     dxf_document.units = _MILLIMETRES
     _ = dxf_document.layers.add(_GEOMETRY_LAYER)
+    _ = dxf_document.layers.add(_HOLE_LAYER)
     _ = dxf_document.layers.add(_DIMENSION_LAYER)
     modelspace = dxf_document.modelspace()
     exportable_entities = _exportable_entities(document, allow_unresolved)

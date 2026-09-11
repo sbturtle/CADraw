@@ -1,7 +1,12 @@
 import cv2
 import numpy as np
 
-from cadraw.detection import DetectionConfig, detect_line_candidates
+from cadraw.detection import (
+    DetectionConfig,
+    detect_line_candidates,
+    detect_shape_candidates,
+)
+from cadraw.models import CircleCandidate, PolylineCandidate
 
 
 def test_opencv_detects_long_structural_strokes() -> None:
@@ -51,5 +56,32 @@ def test_border_filter_ignores_page_edges_in_photographs() -> None:
     assert candidates
     assert all(
         not (abs(candidate.start.x) < 42.0 and abs(candidate.end.x) < 42.0)
+        for candidate in candidates
+    )
+
+
+def test_shape_detector_returns_circle_and_closed_rectangle_candidates() -> None:
+    # Given a clean image containing the two supported closed drawing families
+    image = np.full((360, 480), 255, dtype=np.uint8)
+    _ = cv2.rectangle(image, (80, 80), (220, 190), 0, 5)
+    _ = cv2.circle(image, (350, 220), 42, 0, 5)
+
+    # When opt-in closed-shape detection runs
+    candidates = detect_shape_candidates(
+        image,
+        DetectionConfig(
+            detect_closed_shapes=True,
+            minimum_shape_area=500.0,
+            minimum_shape_radius=20.0,
+            maximum_shape_candidates=12,
+        ),
+    )
+
+    # Then each shape is represented by a typed image-space candidate
+    assert any(isinstance(candidate, CircleCandidate) for candidate in candidates)
+    assert any(
+        isinstance(candidate, PolylineCandidate)
+        and candidate.closed
+        and len(candidate.points) == 4
         for candidate in candidates
     )

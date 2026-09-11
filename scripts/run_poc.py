@@ -30,7 +30,15 @@ from cadraw.dimensions import (
     parse_dimension_text,
 )
 from cadraw.export import export_dxf, validate_dxf
-from cadraw.models import Dimension, DimensionId, DrawingAnalysis, LineEntity
+from cadraw.models import (
+    CircleEntity,
+    Dimension,
+    DimensionId,
+    DrawingAnalysis,
+    GeometryRole,
+    LineEntity,
+    PolylineEntity,
+)
 from cadraw.normalization import NormalizationConfig
 from cadraw.pipeline import PipelineConfig, analyze_image
 from cadraw.preview import PreviewConfig, render_preview
@@ -50,6 +58,10 @@ class PocOptions:
     dimension_texts: tuple[str, ...] | None
     confirm_length: float | None
     render_preview: bool
+    auto_region: bool = False
+    detect_shapes: bool = False
+    perspective: bool = False
+    ocr: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +77,11 @@ class PocSummary:
     dxf_entities: int
     dxf_types: tuple[tuple[str, int], ...]
     warnings: tuple[str, ...]
+    entity_types: tuple[str, ...] = ()
+    source_region: tuple[int, int, int, int] | None = None
+    hole_entities: int = 0
+    ocr_candidates: int = 0
+    perspective_corrected: bool = False
 
 
 @final
@@ -89,6 +106,10 @@ def _parse_options(argv: Sequence[str]) -> PocOptions:
     _ = parser.add_argument("--confirm-length", type=float)
     _ = parser.add_argument("--output-dir", type=Path, default=Path("artifacts"))
     _ = parser.add_argument("--no-preview", action="store_true")
+    _ = parser.add_argument("--auto-region", action="store_true")
+    _ = parser.add_argument("--detect-shapes", action="store_true")
+    _ = parser.add_argument("--perspective", action="store_true")
+    _ = parser.add_argument("--ocr", action="store_true")
     try:
         parsed = parser.parse_args(list(argv))
     except (argparse.ArgumentError, SystemExit) as error:
@@ -98,6 +119,10 @@ def _parse_options(argv: Sequence[str]) -> PocOptions:
     confirm_length = cast("float | None", parsed.confirm_length)
     output_directory = cast("Path", parsed.output_dir)
     no_preview = cast("bool", parsed.no_preview)
+    auto_region = cast("bool", parsed.auto_region)
+    detect_shapes = cast("bool", parsed.detect_shapes)
+    perspective = cast("bool", parsed.perspective)
+    ocr = cast("bool", parsed.ocr)
     if dimensions_option is not None and confirm_length is not None:
         raise PocUsageError(_DIMENSIONS_ERROR)
     dimension_texts = (
@@ -113,6 +138,10 @@ def _parse_options(argv: Sequence[str]) -> PocOptions:
         dimension_texts=dimension_texts,
         confirm_length=confirm_length,
         render_preview=not no_preview,
+        auto_region=auto_region,
+        detect_shapes=detect_shapes,
+        perspective=perspective,
+        ocr=ocr,
     )
 
 
@@ -205,8 +234,15 @@ def _add_sample_dimensions(
     )
 
 
-def _pipeline_config(input_path: Path | None) -> PipelineConfig:
-    """Use a documented crop for the supplied camera sample."""
+def _pipeline_config(
+    input_path: Path | None,
+    *,
+    auto_region: bool = False,
+    detect_shapes: bool = False,
+    perspective: bool = False,
+    ocr: bool = False,
+) -> PipelineConfig:
+    """Build the documented or enhanced camera-sample configuration."""
     if input_path is None:
         return PipelineConfig(
             detection=DetectionConfig(
@@ -214,12 +250,42 @@ def _pipeline_config(input_path: Path | None) -> PipelineConfig:
                 hough_threshold=45,
                 maximum_line_gap=24,
                 maximum_candidates=48,
+                detect_closed_shapes=detect_shapes,
             ),
             normalization=NormalizationConfig(
                 endpoint_snap_distance=32.0,
                 line_merge_tolerance=60.0,
                 minimum_line_length=80.0,
             ),
+            perspective_correction=perspective,
+            ocr_enabled=ocr,
+        )
+    if auto_region:
+        return PipelineConfig(
+            detection=DetectionConfig(
+                minimum_line_length=100.0,
+                hough_threshold=45,
+                maximum_line_gap=18,
+                maximum_candidates=48,
+                border_margin_ratio=0.0,
+                detect_closed_shapes=detect_shapes,
+                minimum_shape_area=800.0,
+                minimum_shape_span=30.0,
+                minimum_shape_radius=15.0,
+                maximum_shape_candidates=32,
+            ),
+            normalization=NormalizationConfig(
+                horizontal_angle_tolerance_degrees=7.0,
+                vertical_angle_tolerance_degrees=7.0,
+                endpoint_snap_distance=30.0,
+                line_merge_tolerance=30.0,
+                minimum_line_length=70.0,
+                keep_largest_connected_component=False,
+            ),
+            auto_source_region=True,
+            auto_region_margin_ratio=0.06,
+            perspective_correction=perspective,
+            ocr_enabled=ocr,
         )
     return PipelineConfig(
         detection=DetectionConfig(
@@ -228,6 +294,7 @@ def _pipeline_config(input_path: Path | None) -> PipelineConfig:
             maximum_line_gap=28,
             maximum_candidates=64,
             border_margin_ratio=0.0,
+            detect_closed_shapes=detect_shapes,
         ),
         normalization=NormalizationConfig(
             horizontal_angle_tolerance_degrees=7.0,
@@ -238,6 +305,8 @@ def _pipeline_config(input_path: Path | None) -> PipelineConfig:
             keep_largest_connected_component=True,
         ),
         source_region=(500, 680, 550, 1150),
+        perspective_correction=perspective,
+        ocr_enabled=ocr,
     )
 
 
@@ -253,7 +322,13 @@ def run(options: PocOptions) -> PocSummary:
     else:
         image_path = options.input_path
 
-    config = _pipeline_config(options.input_path)
+    config = _pipeline_config(
+        options.input_path,
+        auto_region=options.auto_region,
+        detect_shapes=options.detect_shapes,
+        perspective=options.perspective,
+        ocr=options.ocr,
+    )
     analysis = analyze_image(image_path, config)
     if options.dimension_texts is not None:
         analysis = _add_sample_dimensions(analysis, options.dimension_texts)
@@ -281,6 +356,15 @@ def run(options: PocOptions) -> PocSummary:
         dxf_entities=validation.total_entities,
         dxf_types=validation.entity_counts,
         warnings=tuple(warning.code.value for warning in document.warnings),
+        entity_types=tuple(entity.entity_type.value for entity in document.entities),
+        source_region=analysis.source_region,
+        hole_entities=sum(
+            entity.role is GeometryRole.HOLE
+            for entity in document.entities
+            if isinstance(entity, (CircleEntity, PolylineEntity))
+        ),
+        ocr_candidates=len(analysis.text_candidates),
+        perspective_corrected=analysis.perspective_transform is not None,
     )
     _ = summary_path.write_text(
         json.dumps(asdict(summary), ensure_ascii=False, indent=2),
@@ -298,7 +382,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 options=(
                     "[--input IMAGE] [--dimensions A,B,C,D] "
                     "[--confirm-length MM] "
-                    "[--output-dir DIR] [--no-preview]"
+                    "[--output-dir DIR] [--no-preview] "
+                    "[--auto-region] [--detect-shapes] "
+                    "[--perspective] [--ocr]"
                 ),
             ),
         )

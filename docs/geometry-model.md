@@ -100,3 +100,29 @@ polyline stream은 export/preview 단계에서만 만들어집니다. 따라서 
 ## 알 수 없는 값
 
 `Dimension.parsed_value`는 `float | None`입니다. 없는 지름, 반지름, 각도, 대상은 `None`으로 남고 미확정 상태를 가집니다. 내보내기는 연결되지 않은 치수 텍스트를 임의 좌표에 잘못 배치하는 대신 건너뜁니다.
+
+## 이미지에서 닫힌 형상
+
+`--detect-shapes`가 켜지면 검출 계층은 윤곽 후보를 다음 도메인 형상으로
+변환합니다.
+
+- 사변형 윤곽 -> `PolylineEntity(closed=True)`
+- 원형 윤곽 -> `CircleEntity`
+
+자동 inset으로 분석한 경우에도 후보의 좌표는 `_restore_source_coordinates`
+정책에 따라 원본 이미지 좌표로 복원됩니다. 이는 후보 형상 보존 단계이며,
+외곽 안에 포함된 작은 후보는 `GeometryRole.HOLE`로 표시됩니다. 해당 역할은
+미리보기 색상과 DXF `HOLE` 레이어까지 보존되지만, 자동 치수 확정이나
+기계적 feature 의미를 추측하지는 않습니다.
+
+## 투시 보정과 OCR
+
+`PerspectiveTransform`은 검출된 원본 사변형, 직사각형 분석 크기, 역행렬을
+보존합니다. 분석 geometry와 `TextCandidate.bounds`는 이 역행렬을 통해
+원본 사진 공간으로 복원됩니다. 페이지 경계가 없으면 변환은 `None`이고
+`PERSPECTIVE_NOT_FOUND` 경고가 추가됩니다.
+
+`TextCandidate`는 OCR 원문·box·신뢰도를 보존하며, 기존 dimension parser를
+통과한 값만 `Dimension`으로 변환합니다. OCR 치수는 `NEEDS_REVIEW`이고
+`target_entity_ids`가 비어 있어 사용자가 확인하기 전에는 DXF TEXT로 내보내지지
+않습니다.

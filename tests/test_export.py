@@ -1,4 +1,8 @@
+from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import Protocol, cast
+
+import ezdxf
 
 from cadraw.export import export_dxf, validate_dxf
 from cadraw.models import (
@@ -12,11 +16,24 @@ from cadraw.models import (
     DimensionKind,
     DimensionStatus,
     EntityId,
+    GeometryRole,
     LineEntity,
     Orientation,
     Point,
     PolylineEntity,
 )
+
+
+class _DxfAttributes(Protocol):
+    layer: str
+
+
+class _DxfEntity(Protocol):
+    dxf: _DxfAttributes
+
+
+class _DxfDocument(Protocol):
+    def modelspace(self) -> Iterable[_DxfEntity]: ...
 
 
 def test_dxf_export_round_trips_supported_geometry(tmp_path: Path) -> None:
@@ -157,3 +174,35 @@ def test_dxf_omits_unresolved_geometry_unless_explicitly_allowed(
     # Then unresolved geometry is never silently treated as production CAD
     assert validate_dxf(safe_path).total_entities == 0
     assert validate_dxf(allowed_path).count("LINE") == 1
+
+
+def test_hole_geometry_is_exported_on_the_hole_layer(tmp_path: Path) -> None:
+    # Given a semantic hole candidate in an otherwise empty document
+    hole = CircleEntity(
+        entity_id=EntityId("hole_1"),
+        center=Point(30.0, 30.0),
+        radius=5.0,
+        confidence=0.9,
+        role=GeometryRole.HOLE,
+    )
+    document = CadDocument(
+        unit="mm",
+        entities=(hole,),
+        dimensions=(),
+        warnings=(),
+        scale_mm_per_source_unit=None,
+    )
+    path = tmp_path / "hole.dxf"
+
+    # When the semantic geometry is exported and reopened
+    _ = export_dxf(document, path, allow_unresolved=True)
+    readfile = cast(
+        "Callable[[str], _DxfDocument]",
+        getattr(ezdxf, "readfile"),  # noqa: B009
+    )
+    reopened = readfile(str(path))
+
+    # Then downstream CAD users can distinguish holes from structure
+    exported = tuple(reopened.modelspace())
+    assert len(exported) == 1
+    assert exported[0].dxf.layer == "HOLE"

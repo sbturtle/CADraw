@@ -28,6 +28,13 @@ class EntityType(StrEnum):
     ARC = "arc"
 
 
+class GeometryRole(StrEnum):
+    """Semantic role assigned to detected geometry."""
+
+    STRUCTURE = "structure"
+    HOLE = "hole"
+
+
 class DimensionKind(StrEnum):
     """Physical measurement kinds supported by the MVP."""
 
@@ -82,6 +89,8 @@ class WarningCode(StrEnum):
     CONSTRAINT_MISMATCH = "CONSTRAINT_MISMATCH"
     UNKNOWN_ANGLE = "UNKNOWN_ANGLE"
     IMAGE_READ_FAILED = "IMAGE_READ_FAILED"
+    PERSPECTIVE_NOT_FOUND = "PERSPECTIVE_NOT_FOUND"
+    OCR_UNAVAILABLE = "OCR_UNAVAILABLE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +121,31 @@ class LineCandidate:
     start: Point
     end: Point
     confidence: float
+
+
+@dataclass(frozen=True, slots=True)
+class PolylineCandidate:
+    """A closed polygon candidate emitted by image processing."""
+
+    entity_id: EntityId
+    points: tuple[Point, ...]
+    closed: bool
+    confidence: float
+    role: GeometryRole = GeometryRole.STRUCTURE
+
+
+@dataclass(frozen=True, slots=True)
+class CircleCandidate:
+    """A circular candidate emitted by image processing."""
+
+    entity_id: EntityId
+    center: Point
+    radius: float
+    confidence: float
+    role: GeometryRole = GeometryRole.STRUCTURE
+
+
+type ShapeCandidate = PolylineCandidate | CircleCandidate
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +180,7 @@ class PolylineEntity:
     closed: bool
     confidence: float
     entity_type: EntityType = EntityType.POLYLINE
+    role: GeometryRole = GeometryRole.STRUCTURE
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +192,7 @@ class CircleEntity:
     radius: float
     confidence: float
     entity_type: EntityType = EntityType.CIRCLE
+    role: GeometryRole = GeometryRole.STRUCTURE
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,6 +278,25 @@ class AnalysisWarning:
 
 
 @dataclass(frozen=True, slots=True)
+class TextCandidate:
+    """One OCR text box before dimension association or confirmation."""
+
+    text: str
+    bounds: tuple[float, float, float, float]
+    confidence: float
+    source: str = "ocr"
+
+
+@dataclass(frozen=True, slots=True)
+class PerspectiveTransform:
+    """Perspective metadata needed to trace rectified geometry to the photo."""
+
+    source_quad: tuple[Point, Point, Point, Point]
+    target_size: tuple[int, int]
+    inverse_matrix: tuple[float, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class DrawingAnalysis:
     """The complete intermediate representation for one source image."""
 
@@ -252,6 +307,9 @@ class DrawingAnalysis:
     connections: tuple[Connection, ...]
     warnings: tuple[AnalysisWarning, ...]
     detected_entities: tuple[DetectedEntity, ...] = ()
+    source_region: tuple[int, int, int, int] | None = None
+    text_candidates: tuple[TextCandidate, ...] = ()
+    perspective_transform: PerspectiveTransform | None = None
 
 
 @dataclass(frozen=True, slots=True)

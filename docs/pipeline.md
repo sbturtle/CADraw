@@ -59,11 +59,30 @@ polyline 조립은 proximity connection을 다시 사용하지 않습니다. bra
 
 입출력 실패와 잘못된 DXF 파일은 각 경계에서 예외로 처리합니다. 알 수 없는 제작 정보는 예외가 아닙니다.
 
+## 확장 샘플 경로
+
+`--auto-region`은 입력 이미지의 바깥 여백을 결정적으로 제외하고, 검출된
+좌표를 원본 이미지 좌표로 되돌립니다. 명시적인 `source_region`이 있으면
+항상 명시 설정이 우선합니다. `--detect-shapes`는 이 영역의 이진 윤곽에서
+닫힌 사각형은 `PolylineEntity`, 원은 `CircleEntity`로 추가합니다.
+
+`--perspective`가 켜지면 페이지 사변형을 검출해 직사각형으로 워프한 뒤,
+역행렬로 모든 도형과 OCR box를 원본 사진 좌표로 되돌립니다. 페이지 경계가
+보이지 않으면 `PERSPECTIVE_NOT_FOUND`를 남기고 워프를 생략합니다.
+
+`--ocr`는 설치된 Tesseract TSV 결과를 `TextCandidate`로 보존하고, 기존
+`parse_dimension_text`를 거친 값만 `NEEDS_REVIEW` 치수로 추가합니다. 대상
+geometry는 자동 연결하지 않으므로 검토 전 DXF TEXT가 생성되지 않습니다.
+
+그래프 용지, 인쇄 표, 손글씨가 섞인 사진에서는 후보가 남을 수 있으므로
+preview와 DXF를 확인한 뒤 치수를 수동으로 확정해야 합니다. 외곽 닫힌 형상
+안에 포함된 작은 형상은 `HOLE` 역할로 분류하고 DXF `HOLE` 레이어에 씁니다.
+
 ## 향후 단계
 
 - Phase 2: 연결 line의 수동 length/angle reconstruction과 CAD-space export.
 - Phase 3: 구조화된 Pydantic 경계 페이로드를 사용하는 비전/OCR 어댑터.
-- Phase 4: 원근 보정, 원/홀/호(arc) 특화.
+- Phase 4: 페이지 경계가 없는 사진의 원근 추정, 원/홀/호(arc) 특화.
 - Phase 5: 확인 신뢰도 임계값과 소스 영역 강조.
 - Phase 6: 실제 현장 이미지와 임계값 튜닝.
 - Phase 7: Windows 설치 파일과 설정/API 키 저장.

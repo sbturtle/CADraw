@@ -91,6 +91,33 @@ GUI smoke test 없이 headless로 파이프라인만 실행하려면:
 uv run python scripts/run_poc.py --no-preview
 ```
 
+추가 사진 샘플에서 중앙 사진 영역과 닫힌 기본 형상을 함께 추출하려면:
+
+```powershell
+uv run python scripts/run_poc.py `
+  --input sample\KakaoTalk_20260911_193752753.jpg `
+  --auto-region --detect-shapes `
+  --output-dir artifacts\enhanced_sample
+```
+
+`--auto-region`은 사진 가장자리에서 일정 비율을 제외하는 결정적 inset이며,
+`--detect-shapes`는 윤곽에서 닫힌 사각형과 원 후보를 추가합니다. 검출된
+도형은 원본 사진 좌표로 복원되어 기존 DXF/preview 경로에 전달됩니다.
+
+페이지 경계를 찾을 수 있는 사진은 실제 사변형 투시 보정도 적용할 수 있습니다.
+OCR은 설치된 Tesseract를 사용할 때만 활성화되며, 엔진이 없으면 값을 추측하지
+않고 `OCR_UNAVAILABLE` 경고를 남깁니다.
+
+```powershell
+uv run python scripts/run_poc.py `
+  --input sample\KakaoTalk_20260911_193752753.jpg `
+  --auto-region --detect-shapes --perspective --ocr `
+  --output-dir artifacts\full_vision_sample
+```
+
+외곽 형상 안에 포함된 작은 닫힌 형상은 `HOLE` 의미로 보수적으로 분류합니다.
+미리보기에서는 파란색으로, DXF에서는 `HOLE` 레이어로 구분됩니다.
+
 ## 테스트와 정적 검사
 
 ```powershell
@@ -118,6 +145,8 @@ CADraw/
 │  ├─ app.py
 │  ├─ models.py
 │  ├─ detection.py
+│  ├─ perspective.py
+│  ├─ ocr.py
 │  ├─ normalization.py
 │  ├─ dimensions.py
 │  ├─ calculator.py
@@ -131,7 +160,13 @@ CADraw/
 ## 현재 한계
 
 - 손글씨 OCR과 자동 dimension-to-entity association은 아직 없습니다.
-- 사진 원근 보정, rectangle/circle/hole 특화 검출, arc 복원은 다음 단계입니다.
+- 페이지 경계가 사진에 보이지 않으면 실제 원근 보정을 적용할 수 없으며,
+  `PERSPECTIVE_NOT_FOUND` 경고와 함께 원본 좌표로 안전하게 처리합니다.
+- Tesseract가 설치되지 않은 환경에서는 OCR을 실행하지 않고
+  `OCR_UNAVAILABLE` 경고를 남깁니다.
+- hole/arc 특화 검출과 손글씨 의미 해석은 아직 제한적입니다.
+- rectangle/circle은 `--detect-shapes`에서 윤곽 후보로만 검출하며, 잡음이 많은
+  사진에서는 사용자가 결과를 확인해야 합니다.
 - polyline 조립은 정확히 동일한 endpoint를 가진 열린 단일 경로에만 적용되며,
   branch, 닫힌 loop, 가까울 뿐 일치하지 않는 gap은 안전하게 원본 `LINE`으로
   남습니다.
@@ -144,8 +179,8 @@ CADraw/
   한 선으로 즉시 합쳐집니다. 검출이 한 획을 여러 조각으로 따로 인식하고 서로
   어긋나지 않은 선을 이렇게 정리할 수 있습니다.
 - 편집 실행 취소/다시 실행은 아직 지원하지 않습니다.
-- 실제 샘플은 현재 도면 주변 ROI를 수동 설정으로 검증했으며, 임의 사진의
-  ROI 자동 추정은 아직 없습니다.
+- `--auto-region`은 문서 경계를 추정하거나 투시 변환하지 않고 사진 가장자리를
+  자르는 보수적 경로입니다. 기존 실제 샘플의 수동 ROI 경로는 그대로 유지됩니다.
 - 완전한 일반 constraint solver는 아직 없습니다. 현재는 connected open line graph에
   길이·각도·방향·anchor 규칙을 적용합니다.
 - DXF는 1차 산출물이며 DWG는 아직 지원하지 않습니다.
