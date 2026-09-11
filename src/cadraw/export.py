@@ -11,6 +11,7 @@ from cadraw import dxf_validation
 from cadraw.models import (
     ArcEntity,
     CadDocument,
+    CadResolutionStatus,
     CircleEntity,
     Dimension,
     DimensionKind,
@@ -142,6 +143,7 @@ class ExportSummary:
     path: Path
     geometry_entity_count: int
     dimension_text_count: int
+    omitted_unresolved_count: int = 0
 
 
 def _point_tuple(point: Point) -> tuple[float, float]:
@@ -151,7 +153,7 @@ def _point_tuple(point: Point) -> tuple[float, float]:
 
 def _add_geometry(modelspace: ModelspaceLike, entity: GeometryEntity) -> None:
     """Write one known geometry variant to the geometry layer."""
-    match entity:  # noqa: MATCH_OK
+    match entity:
         case LineEntity(start=start, end=end):
             _ = modelspace.add_line(
                 _point_tuple(start),
@@ -188,7 +190,7 @@ def _add_geometry(modelspace: ModelspaceLike, entity: GeometryEntity) -> None:
 
 def _entity_anchor(entity: GeometryEntity) -> Point:
     """Return a stable text anchor for a target entity."""
-    match entity:  # noqa: MATCH_OK
+    match entity:
         case LineEntity(start=start, end=end):
             return Point((start.x + end.x) / 2.0, (start.y + end.y) / 2.0)
         case PolylineEntity(points=points):
@@ -224,17 +226,40 @@ def _add_dimension_text(
     return True
 
 
-def export_dxf(document: CadDocument, path: Path) -> ExportSummary:
+def _exportable_entities(
+    document: CadDocument,
+    allow_unresolved: bool,
+) -> tuple[GeometryEntity, ...]:
+    """Keep unresolved calculated geometry out of safe production exports."""
+    if allow_unresolved or not document.cad_entities:
+        return document.entities
+    resolved_ids = {
+        entity.entity_id
+        for entity in document.cad_entities
+        if entity.status is CadResolutionStatus.RESOLVED
+    }
+    return tuple(
+        entity for entity in document.entities if entity.entity_id in resolved_ids
+    )
+
+
+def export_dxf(
+    document: CadDocument,
+    path: Path,
+    *,
+    allow_unresolved: bool = False,
+) -> ExportSummary:
     """Export known geometry and safe dimension labels to DXF."""
     dxf_document = _new_document("R2010")
     dxf_document.units = _MILLIMETRES
     _ = dxf_document.layers.add(_GEOMETRY_LAYER)
     _ = dxf_document.layers.add(_DIMENSION_LAYER)
     modelspace = dxf_document.modelspace()
-    geometry_entities = assemble_open_line_chains(document.entities)
+    exportable_entities = _exportable_entities(document, allow_unresolved)
+    geometry_entities = assemble_open_line_chains(exportable_entities)
     for entity in geometry_entities:
         _add_geometry(modelspace, entity)
-    entities_by_id = {entity.entity_id: entity for entity in document.entities}
+    entities_by_id = {entity.entity_id: entity for entity in exportable_entities}
     dimension_count = sum(
         _add_dimension_text(modelspace, dimension, entities_by_id)
         for dimension in document.dimensions
@@ -244,4 +269,5 @@ def export_dxf(document: CadDocument, path: Path) -> ExportSummary:
         path=path,
         geometry_entity_count=len(geometry_entities),
         dimension_text_count=dimension_count,
+        omitted_unresolved_count=(len(document.entities) - len(exportable_entities)),
     )

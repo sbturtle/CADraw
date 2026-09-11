@@ -4,6 +4,8 @@ from cadraw.export import export_dxf, validate_dxf
 from cadraw.models import (
     ArcEntity,
     CadDocument,
+    CadEntity,
+    CadResolutionStatus,
     CircleEntity,
     Dimension,
     DimensionId,
@@ -113,3 +115,45 @@ def test_unknown_dimension_is_not_exported_as_misleading_text(tmp_path: Path) ->
     # Then no zero or placeholder dimension text is written
     assert validation.total_entities == 0
     assert validation.count("TEXT") == 0
+
+
+def test_dxf_omits_unresolved_geometry_unless_explicitly_allowed(
+    tmp_path: Path,
+) -> None:
+    # Given a calculated document whose line has an unknown physical state
+    line = LineEntity(
+        entity_id=EntityId("line_unresolved"),
+        raw_start=Point(0.0, 0.0),
+        raw_end=Point(10.0, 0.0),
+        start=Point(0.0, 0.0),
+        end=Point(10.0, 0.0),
+        orientation=Orientation.HORIZONTAL,
+        confidence=1.0,
+    )
+    document = CadDocument(
+        unit="mm",
+        entities=(line,),
+        dimensions=(),
+        warnings=(),
+        scale_mm_per_source_unit=None,
+        cad_entities=(
+            CadEntity(
+                entity_id=line.entity_id,
+                source_entity_id=line.entity_id,
+                geometry=line,
+                constraints=(),
+                status=CadResolutionStatus.UNRESOLVED,
+                inferred_for_preview=True,
+            ),
+        ),
+    )
+
+    # When exporting with the safe default and with an explicit override
+    safe_path = tmp_path / "safe.dxf"
+    allowed_path = tmp_path / "allowed.dxf"
+    _ = export_dxf(document, safe_path)
+    _ = export_dxf(document, allowed_path, allow_unresolved=True)
+
+    # Then unresolved geometry is never silently treated as production CAD
+    assert validate_dxf(safe_path).total_entities == 0
+    assert validate_dxf(allowed_path).count("LINE") == 1

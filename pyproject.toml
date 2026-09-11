@@ -33,6 +33,7 @@ packages = ["src/cadraw"]
 typeCheckingMode = "all"
 pythonVersion = "3.12"
 pythonPlatform = "All"
+extraPaths = ["src"]
 include = ["src", "tests", "scripts"]
 exclude = ["**/__pycache__", "**/.venv", "**/build", "**/dist", "artifacts"]
 reportMissingTypeStubs = "none"
