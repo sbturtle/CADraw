@@ -1,6 +1,6 @@
 """CADraw domain package."""
 
-from cadraw import dxf_validation, topology
+from cadraw import dxf_validation, solver, topology
 from cadraw.dxf_validation import DxfValidation, validate_dxf
 from cadraw.topology import assemble_open_line_chains
 
@@ -11,6 +11,7 @@ __all__ = [
     "__version__",
     "assemble_open_line_chains",
     "dxf_validation",
+    "solver",
     "topology",
     "validate_dxf",
 ]

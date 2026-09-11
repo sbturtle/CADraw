@@ -47,6 +47,17 @@ def _components(
     return tuple(sorted(components))
 
 
+def connected_line_components(
+    lines: tuple[LineEntity, ...],
+) -> tuple[tuple[LineEntity, ...], ...]:
+    """Return exact-endpoint-connected line components in stable order."""
+    graph = _line_graph(lines)
+    return tuple(
+        tuple(lines[index] for index in component)
+        for component in _components(lines, graph)
+    )
+
+
 def _chain_points(
     component: tuple[int, ...],
     lines: tuple[LineEntity, ...],
