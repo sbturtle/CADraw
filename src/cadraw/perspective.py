@@ -111,6 +111,36 @@ def detect_page_quadrilateral(
     return max(candidates, key=lambda candidate: candidate[0])[1]
 
 
+def detect_page_quadrilateral_in_region(
+    image: GrayImage,
+    region: tuple[int, int, int, int],
+) -> tuple[Point, Point, Point, Point] | None:
+    """Find a page boundary inside a configured source-image region."""
+    x, y, width, height = region
+    cropped = image[y : y + height, x : x + width]
+    detected = detect_page_quadrilateral(cropped)
+    if detected is None:
+        return None
+    offset = Point(float(x), float(y))
+    return (
+        detected[0].translated(offset.x, offset.y),
+        detected[1].translated(offset.x, offset.y),
+        detected[2].translated(offset.x, offset.y),
+        detected[3].translated(offset.x, offset.y),
+    )
+
+
+def detect_page_quadrilateral_with_region_fallback(
+    image: GrayImage,
+    region: tuple[int, int, int, int] | None,
+) -> tuple[Point, Point, Point, Point] | None:
+    """Try the full image before a configured region."""
+    detected = detect_page_quadrilateral(image)
+    if detected is not None or region is None:
+        return detected
+    return detect_page_quadrilateral_in_region(image, region)
+
+
 def _detect_bright_page_fallback(
     image: GrayImage,
 ) -> tuple[Point, Point, Point, Point] | None:

@@ -2,6 +2,7 @@
 
 import csv
 import io
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ GrayImage = NDArray[np.uint8]
 _TESSERACT_NOT_FOUND: Final = "Tesseract 실행 파일을 찾을 수 없습니다."
 _OCR_INPUT_ENCODING_FAILED: Final = "OCR 입력 이미지를 인코딩할 수 없습니다."
 _TESSERACT_FAILED: Final = "Tesseract가 OCR에 실패했습니다."
+_TESSERACT_EXECUTABLE_ENV: Final = "CADRAW_TESSERACT"
 
 
 class OcrUnavailableError(RuntimeError):
@@ -114,7 +116,10 @@ def _parse_tesseract_tsv(payload: str) -> tuple[TextCandidate, ...]:
 
 def discover_tesseract_backend() -> OcrBackend | None:
     """Return a system OCR backend only when the executable is available."""
-    return TesseractOcrBackend() if shutil.which("tesseract") else None
+    executable = os.environ.get(_TESSERACT_EXECUTABLE_ENV, "tesseract")
+    return (
+        TesseractOcrBackend(executable=executable) if shutil.which(executable) else None
+    )
 
 
 def recognize_dimensions(

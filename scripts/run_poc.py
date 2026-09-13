@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run
+#!/usr/bin/env -S uv run python
 # /// script
 # dependencies = [
 #   "ezdxf>=1.3.0",
@@ -8,7 +8,7 @@
 # ]
 # ///
 # ─── How to run ───
-# uv run scripts/run_poc.py
+# uv run python scripts/run_poc.py
 
 """Generate and execute the reproducible Phase 1 fixture."""
 
@@ -378,7 +378,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
     if "--help" in arguments or "-h" in arguments:
         print(
-            "Usage: uv run scripts/run_poc.py {options}".format(
+            "Usage: uv run python scripts/run_poc.py {options}".format(
                 options=(
                     "[--input IMAGE] [--dimensions A,B,C,D] "
                     "[--confirm-length MM] "

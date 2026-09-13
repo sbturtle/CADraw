@@ -37,7 +37,7 @@ from cadraw.normalization import (
 )
 from cadraw.ocr import OcrBackend, discover_tesseract_backend, recognize_dimensions
 from cadraw.perspective import (
-    detect_page_quadrilateral,
+    detect_page_quadrilateral_with_region_fallback,
     transform_point,
     warp_page,
 )
@@ -207,8 +207,17 @@ def analyze_image(
     inverse_matrix: tuple[float, ...] | None = None
     perspective_transform: PerspectiveTransform | None = None
     warnings: list[AnalysisWarning] = []
+    source_region = config.source_region
+    if source_region is None and config.auto_source_region:
+        source_region = automatic_source_region(
+            source_image,
+            config.auto_region_margin_ratio,
+        )
     if config.perspective_correction:
-        page_quad = detect_page_quadrilateral(source_image)
+        page_quad = detect_page_quadrilateral_with_region_fallback(
+            source_image,
+            source_region,
+        )
         if page_quad is None:
             warnings.append(
                 AnalysisWarning(
@@ -221,13 +230,7 @@ def analyze_image(
             analysis_image = warp.image
             inverse_matrix = warp.inverse_matrix
             perspective_transform = warp.transform
-    source_region = config.source_region
-    if source_region is None and config.auto_source_region:
-        source_region = automatic_source_region(
-            analysis_image,
-            config.auto_region_margin_ratio,
-        )
-    if source_region is not None:
+    if source_region is not None and perspective_transform is None:
         x, y, width, height = source_region
         analysis_image = analysis_image[y : y + height, x : x + width]
         offset = Point(float(x), float(y))

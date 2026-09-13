@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QPushButton,
     QSplitter,
     QVBoxLayout,
@@ -241,6 +242,7 @@ class WorkbenchView(QWidget):
         """Create the coordinate-space preview viewport."""
         group = QGroupBox("Geometry Preview", self)
         layout = QVBoxLayout(group)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         mode_toolbar = QHBoxLayout()
         mode_toolbar.addWidget(QLabel("보기"))
         self._mode_combo.setObjectName("preview_mode")

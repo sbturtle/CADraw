@@ -179,3 +179,31 @@ def test_pipeline_records_perspective_metadata(tmp_path: Path) -> None:
     assert len(analysis.perspective_transform.inverse_matrix) == 9
     assert analysis.perspective_transform.target_size[0] > 300
     assert analysis.perspective_transform.target_size[1] > 300
+
+
+def test_pipeline_retries_page_detection_inside_auto_region(
+    tmp_path: Path,
+) -> None:
+    # Given a page boundary that is too small to qualify in the full photograph
+    image = np.full((400, 600), 30, dtype=np.uint8)
+    _ = cv2.rectangle(image, (150, 100), (420, 270), 240, thickness=-1)
+    _ = cv2.rectangle(image, (150, 100), (420, 270), 0, thickness=5)
+    image_path = tmp_path / "inset-page.png"
+    Image.fromarray(image).save(image_path)
+    config = PipelineConfig(
+        detection=DetectionConfig(border_margin_ratio=0.0),
+        normalization=NormalizationConfig(
+            minimum_line_length=20.0,
+            keep_largest_connected_component=False,
+        ),
+        auto_source_region=True,
+        auto_region_margin_ratio=0.1,
+        perspective_correction=True,
+    )
+
+    # When perspective analysis runs with automatic region selection
+    analysis = analyze_image(image_path, config)
+
+    # Then the page is rectified and the selected region remains provenance
+    assert analysis.perspective_transform is not None
+    assert analysis.source_region == (60, 40, 480, 320)

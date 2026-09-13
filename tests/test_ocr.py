@@ -1,9 +1,14 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from cadraw.models import DimensionKind, DimensionStatus, TextCandidate
-from cadraw.ocr import recognize_dimensions
+from cadraw.ocr import (
+    TesseractOcrBackend,
+    discover_tesseract_backend,
+    recognize_dimensions,
+)
 
 
 class _FakeOcrBackend:
@@ -62,3 +67,23 @@ def test_ocr_does_not_fabricate_dimensions_when_backend_is_unavailable(
     assert not result.available
     assert result.dimensions == ()
     assert result.candidates == ()
+
+
+def test_discovery_uses_configured_tesseract_executable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a local Tesseract executable configured outside PATH
+    executable = r"C:\Tools\tesseract.exe"
+    monkeypatch.setenv("CADRAW_TESSERACT", executable)
+
+    def fake_which(_executable: str) -> str:
+        return executable
+
+    monkeypatch.setattr("cadraw.ocr.shutil.which", fake_which)
+
+    # When the production OCR backend is discovered
+    backend = discover_tesseract_backend()
+
+    # Then the configured executable is preserved for real sample runs
+    assert isinstance(backend, TesseractOcrBackend)
+    assert backend.executable == executable

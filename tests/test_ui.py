@@ -489,6 +489,33 @@ ID: line_a
     assert preview.geometry().bottom() < info.geometry().top()
 
 
+def test_dimension_metadata_cells_are_read_only(tmp_path: Path) -> None:
+    # Given a loaded drawing with generated verification rows
+    _ = _application()
+    image_path = tmp_path / "sketch.png"
+    Image.fromarray(np.full((240, 320), 255, dtype=np.uint8)).save(image_path)
+    window = MainWindow(analyzer=_StaticAnalyzer(_two_line_analysis()))
+    assert window.load_path(image_path) is True
+    table = window.findChild(QTableWidget, "dimension_table")
+    assert table is not None
+
+    # When the verification table exposes metadata and editable values
+    readonly_columns = (0, 2, 3)
+    editable_value_rows: list[int] = []
+    for row in range(table.rowCount()):
+        for column in readonly_columns:
+            item = table.item(row, column)
+            assert item is not None
+
+            # Then metadata cannot be mutated through table activation
+            assert not bool(item.flags() & Qt.ItemFlag.ItemIsEditable)
+        value_item = table.item(row, 1)
+        assert value_item is not None
+        if bool(value_item.flags() & Qt.ItemFlag.ItemIsEditable):
+            editable_value_rows.append(row)
+    assert editable_value_rows
+
+
 def test_dimension_apply_button_and_preview_mode_toggle_are_available(
     tmp_path: Path,
 ) -> None:

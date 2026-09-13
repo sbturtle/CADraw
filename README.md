@@ -106,7 +106,12 @@ uv run python scripts/run_poc.py `
 
 페이지 경계를 찾을 수 있는 사진은 실제 사변형 투시 보정도 적용할 수 있습니다.
 OCR은 설치된 Tesseract를 사용할 때만 활성화되며, 엔진이 없으면 값을 추측하지
-않고 `OCR_UNAVAILABLE` 경고를 남깁니다.
+않고 `OCR_UNAVAILABLE` 경고를 남깁니다. Tesseract가 PATH에 없다면
+`CADRAW_TESSERACT`에 실행 파일 경로를 지정할 수 있습니다.
+
+```powershell
+$env:CADRAW_TESSERACT = "C:\Program Files\Tesseract-OCR\tesseract.exe"
+```
 
 ```powershell
 uv run python scripts/run_poc.py `

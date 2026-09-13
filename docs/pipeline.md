@@ -66,9 +66,11 @@ polyline 조립은 proximity connection을 다시 사용하지 않습니다. bra
 항상 명시 설정이 우선합니다. `--detect-shapes`는 이 영역의 이진 윤곽에서
 닫힌 사각형은 `PolylineEntity`, 원은 `CircleEntity`로 추가합니다.
 
-`--perspective`가 켜지면 페이지 사변형을 검출해 직사각형으로 워프한 뒤,
-역행렬로 모든 도형과 OCR box를 원본 사진 좌표로 되돌립니다. 페이지 경계가
-보이지 않으면 `PERSPECTIVE_NOT_FOUND`를 남기고 워프를 생략합니다.
+`--perspective`가 켜지면 전체 사진에서 페이지 사변형을 먼저 검출하고,
+실패하면 명시적/자동 `source_region` 안에서 한 번 더 찾습니다. 찾은 사변형은
+직사각형으로 워프하고, 역행렬로 모든 도형과 OCR box를 원본 사진 좌표로
+되돌립니다. 두 경로 모두 페이지 경계를 찾지 못하면
+`PERSPECTIVE_NOT_FOUND`를 남기고 워프를 생략합니다.
 
 `--ocr`는 설치된 Tesseract TSV 결과를 `TextCandidate`로 보존하고, 기존
 `parse_dimension_text`를 거친 값만 `NEEDS_REVIEW` 치수로 추가합니다. 대상

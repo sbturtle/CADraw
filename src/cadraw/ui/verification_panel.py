@@ -126,6 +126,10 @@ class VerificationPanel(QGroupBox):
                 value.setToolTip("축 정렬로 자동 확정된 각도입니다.")
             unit = QTableWidgetItem(dimension.unit)
             status = QTableWidgetItem(status_text(dimension))
+            for metadata_item in (label, unit, status):
+                metadata_item.setFlags(
+                    metadata_item.flags() & ~Qt.ItemFlag.ItemIsEditable,
+                )
             self._dimension_table.setItem(row, 0, label)
             self._dimension_table.setItem(row, _VALUE_COLUMN, value)
             self._dimension_table.setItem(row, 2, unit)

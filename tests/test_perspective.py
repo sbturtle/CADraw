@@ -4,7 +4,12 @@ import cv2
 import numpy as np
 
 from cadraw.models import Point
-from cadraw.perspective import detect_page_quadrilateral, transform_point, warp_page
+from cadraw.perspective import (
+    detect_page_quadrilateral,
+    detect_page_quadrilateral_in_region,
+    transform_point,
+    warp_page,
+)
 
 
 def test_warp_page_rectifies_a_known_quadrilateral() -> None:
@@ -56,3 +61,21 @@ def test_page_detector_finds_the_dominant_page_boundary() -> None:
     assert len(detected) == 4
     assert min(point.x for point in detected) < 100.0
     assert max(point.x for point in detected) > 600.0
+
+
+def test_page_detector_maps_a_boundary_found_inside_requested_region() -> None:
+    # Given a page that is too small to qualify in the full photograph
+    image = np.full((400, 600), 30, dtype=np.uint8)
+    _ = cv2.rectangle(image, (150, 100), (420, 270), 240, thickness=-1)
+    _ = cv2.rectangle(image, (150, 100), (420, 270), 0, thickness=5)
+    region = (60, 40, 480, 320)
+
+    # When page detection is retried inside the configured analysis region
+    detected = detect_page_quadrilateral_in_region(image, region)
+
+    # Then the resulting corners are restored to source-image coordinates
+    assert detected is not None
+    assert min(point.x for point in detected) > 140.0
+    assert min(point.y for point in detected) > 90.0
+    assert max(point.x for point in detected) < 430.0
+    assert max(point.y for point in detected) < 280.0
