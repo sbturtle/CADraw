@@ -29,7 +29,7 @@ class SourceImageLabel(QLabel):
         self._draw_start: Point | None = None
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setWordWrap(True)
-        self.setMinimumSize(420, 300)
+        self.setMinimumSize(420, 220)
 
     def set_source_pixmap(self, pixmap: QPixmap) -> None:
         """Replace the source image while preserving its source coordinates."""

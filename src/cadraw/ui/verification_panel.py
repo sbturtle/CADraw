@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -56,6 +57,10 @@ class VerificationPanel(QGroupBox):
         self._delete_button = QPushButton("선 삭제", self)
         self._redraw_button = QPushButton("선 다시 그리기", self)
         self._apply_button = QPushButton("치수 적용", self)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
         self._build()
 
     @property
@@ -309,8 +314,12 @@ class VerificationPanel(QGroupBox):
         _ = self._dimension_table.itemSelectionChanged.connect(
             self._on_selection_changed,
         )
-        layout.addWidget(self._dimension_table)
-        self._dimension_table.setMinimumHeight(140)
+        self._dimension_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        layout.addWidget(self._dimension_table, 1)
+        self._dimension_table.setMinimumHeight(88)
 
     def _apply_current_dimension(self) -> None:
         """Request validation of the currently selected dimension value."""

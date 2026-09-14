@@ -1,6 +1,6 @@
 """OpenCV image preparation and deterministic line candidate detection."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import hypot, pi
 from pathlib import Path
 from typing import cast, final, override
@@ -9,6 +9,11 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+from cadraw.arbitration import (
+    CandidateArbitrationConfig,
+    arbitrate_line_candidates,
+)
+from cadraw.grid_filter import filter_periodic_grid_candidates
 from cadraw.models import (
     CircleCandidate,
     EntityId,
@@ -28,6 +33,7 @@ _MIN_CIRCLE_CIRCULARITY = 0.68
 _MIN_CIRCLE_ASPECT_RATIO = 0.65
 _RECTANGLE_APPROX_POINTS = 4
 _MIN_RECTANGULARITY = 0.35
+_MIN_DUPLICATE_SHAPE_EXTENT_RATIO = 0.55
 
 
 @final
@@ -62,6 +68,9 @@ class DetectionConfig:
     minimum_shape_radius: float = 12.0
     maximum_shape_candidates: int = 64
     shape_threshold: int | None = None
+    arbitration: CandidateArbitrationConfig = field(
+        default_factory=CandidateArbitrationConfig,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,15 +207,30 @@ def detect_line_candidates(
             item[2].x,
         ),
     )
-    limited = candidates[: config.maximum_candidates]
-    return tuple(
+    ranked = tuple(
         LineCandidate(
-            entity_id=EntityId(f"line_raw_{index + 1:03d}"),
+            entity_id=EntityId(f"line_candidate_{index + 1:04d}"),
             start=start,
             end=end,
             confidence=confidence,
         )
-        for index, (_, start, end, confidence) in enumerate(limited)
+        for index, (_, start, end, confidence) in enumerate(candidates)
+    )
+    grid_filtered = filter_periodic_grid_candidates(
+        image,
+        ranked,
+        config.arbitration.grid,
+    )
+    arbitrated = arbitrate_line_candidates(grid_filtered, config.arbitration)
+    limited = arbitrated[: config.maximum_candidates]
+    return tuple(
+        LineCandidate(
+            entity_id=EntityId(f"line_raw_{index + 1:03d}"),
+            start=candidate.start,
+            end=candidate.end,
+            confidence=candidate.confidence,
+        )
+        for index, candidate in enumerate(limited)
     )
 
 
@@ -264,6 +288,13 @@ def _shape_duplicate(
     second_bounds = _shape_bounds(second)
     first_width = first_bounds[2] - first_bounds[0]
     first_height = first_bounds[3] - first_bounds[1]
+    second_width = second_bounds[2] - second_bounds[0]
+    second_height = second_bounds[3] - second_bounds[1]
+    width_ratio = min(first_width, second_width) / max(first_width, second_width)
+    height_ratio = min(first_height, second_height) / max(
+        first_height,
+        second_height,
+    )
     span = max(first_width, first_height, 1.0)
     centers_close = _shape_center(first).distance_to(
         _shape_center(second),
@@ -274,7 +305,12 @@ def _shape_duplicate(
         and first_bounds[1] <= second_bounds[3]
         and second_bounds[1] <= first_bounds[3]
     )
-    return centers_close and overlaps
+    return (
+        centers_close
+        and overlaps
+        and width_ratio >= _MIN_DUPLICATE_SHAPE_EXTENT_RATIO
+        and height_ratio >= _MIN_DUPLICATE_SHAPE_EXTENT_RATIO
+    )
 
 
 def _contour_shape_candidate(

@@ -1,5 +1,6 @@
 """Native workbench composition for the CADraw main window."""
 
+from collections.abc import Callable
 from typing import Final, final
 
 from PIL import Image
@@ -61,6 +62,12 @@ class WorkbenchView(QWidget):
         self._caption = QLabel(self)
         self._preview_info = QLabel(self)
         self._mode_combo = QComboBox(self)
+        self._rotate_left_button = QPushButton(self)
+        self._rotate_right_button = QPushButton(self)
+        self._zoom_out_button = QPushButton(self)
+        self._zoom_reset_button = QPushButton(self)
+        self._zoom_in_button = QPushButton(self)
+        self._zoom_label = QLabel(self)
         self._build()
 
     @property
@@ -168,20 +175,28 @@ class WorkbenchView(QWidget):
 
     def _build(self) -> None:
         """Construct the stable desktop layout and signal bridge."""
-        self.setMinimumSize(960, 680)
+        self.setMinimumSize(960, 600)
         self.resize(1240, 820)
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(16, 16, 16, 12)
         root_layout.setSpacing(12)
         self._add_header(root_layout)
         self._add_toolbar(root_layout)
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        splitter.addWidget(self._create_source_group())
-        splitter.addWidget(self._create_preview_group())
-        splitter.setStretchFactor(0, _SOURCE_STRETCH)
-        splitter.setStretchFactor(1, _PREVIEW_STRETCH)
-        root_layout.addWidget(splitter, 1)
-        root_layout.addWidget(self._verification)
+        drawing_splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        drawing_splitter.setObjectName("drawing_splitter")
+        drawing_splitter.setChildrenCollapsible(False)
+        drawing_splitter.addWidget(self._create_source_group())
+        drawing_splitter.addWidget(self._create_preview_group())
+        drawing_splitter.setStretchFactor(0, _SOURCE_STRETCH)
+        drawing_splitter.setStretchFactor(1, _PREVIEW_STRETCH)
+        vertical_splitter = QSplitter(Qt.Orientation.Vertical, self)
+        vertical_splitter.setObjectName("workbench_splitter")
+        vertical_splitter.setChildrenCollapsible(False)
+        vertical_splitter.addWidget(drawing_splitter)
+        vertical_splitter.addWidget(self._verification)
+        vertical_splitter.setStretchFactor(0, 3)
+        vertical_splitter.setStretchFactor(1, 2)
+        root_layout.addWidget(vertical_splitter, 1)
         self._caption.setObjectName("caption")
         self._caption.setText("사진을 불러오면 분석을 시작합니다.")
         root_layout.addWidget(self._caption)
@@ -252,13 +267,88 @@ class WorkbenchView(QWidget):
         mode_toolbar.addWidget(self._mode_combo)
         mode_toolbar.addStretch()
         layout.addLayout(mode_toolbar)
+        layout.addLayout(self._create_view_toolbar())
         self._preview.setObjectName("cad_preview")
-        layout.addWidget(self._preview)
+        layout.addWidget(self._preview, 1)
         self._preview_info.setObjectName("selection_info")
         self._preview_info.setWordWrap(True)
         self._preview_info.setText(_PREVIEW_SELECTION_HINT)
         layout.addWidget(self._preview_info)
         return group
+
+    def _configure_view_button(
+        self,
+        button: QPushButton,
+        object_name: str,
+        text: str,
+        tooltip: str,
+        callback: Callable[[], None],
+    ) -> None:
+        """Configure one compact preview navigation button."""
+        button.setObjectName(object_name)
+        button.setText(text)
+        button.setToolTip(tooltip)
+        button.setAccessibleName(tooltip)
+        button.setFixedWidth(32)
+        _ = button.clicked.connect(callback)
+
+    def _create_view_toolbar(self) -> QHBoxLayout:
+        """Create compact rotation, zoom, and reset controls."""
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel("보기"))
+        self._configure_view_button(
+            self._rotate_left_button,
+            "preview_rotate_left",
+            "↺",
+            "왼쪽으로 90도 회전",
+            self._preview.rotate_left,
+        )
+        toolbar.addWidget(self._rotate_left_button)
+        self._configure_view_button(
+            self._rotate_right_button,
+            "preview_rotate_right",
+            "↻",
+            "오른쪽으로 90도 회전",
+            self._preview.rotate_right,
+        )
+        toolbar.addWidget(self._rotate_right_button)
+        self._configure_view_button(
+            self._zoom_out_button,
+            "preview_zoom_out",
+            "-",
+            "미리보기 축소",
+            self._preview.zoom_out,
+        )
+        toolbar.addWidget(self._zoom_out_button)
+        self._configure_view_button(
+            self._zoom_reset_button,
+            "preview_zoom_reset",
+            "맞춤",
+            "회전과 확대를 초기화하고 화면에 맞춤",
+            self._preview.reset_view,
+        )
+        self._zoom_reset_button.setFixedWidth(48)
+        toolbar.addWidget(self._zoom_reset_button)
+        self._configure_view_button(
+            self._zoom_in_button,
+            "preview_zoom_in",
+            "+",
+            "미리보기 확대",
+            self._preview.zoom_in,
+        )
+        toolbar.addWidget(self._zoom_in_button)
+        self._zoom_label.setObjectName("preview_view_state")
+        self._zoom_label.setFixedWidth(64)
+        self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        toolbar.addWidget(self._zoom_label)
+        toolbar.addStretch()
+        _ = self._preview.view_changed.connect(self._update_preview_view_state)
+        self._update_preview_view_state()
+        return toolbar
+
+    def _update_preview_view_state(self) -> None:
+        """Keep the compact view-state indicator synchronized."""
+        self._zoom_label.setText(self._preview.view_state_label)
 
     def _on_mode_changed(self, index: int) -> None:
         """Forward the selected coordinate-space mode to MainWindow."""
