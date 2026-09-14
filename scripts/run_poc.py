@@ -23,7 +23,7 @@ from typing import Final, cast, final, override
 from PIL import Image, ImageDraw, ImageFont
 
 from cadraw.calculator import calculate_document
-from cadraw.detection import DetectionConfig
+from cadraw.detection import DetectionConfig, DrawingFieldConfig
 from cadraw.dimensions import (
     associate_dimension,
     confirm_dimension_text,
@@ -263,16 +263,17 @@ def _pipeline_config(
     if auto_region:
         return PipelineConfig(
             detection=DetectionConfig(
-                minimum_line_length=100.0,
-                hough_threshold=45,
-                maximum_line_gap=18,
-                maximum_candidates=48,
+                minimum_line_length=60.0,
+                hough_threshold=25,
+                maximum_line_gap=28,
+                maximum_candidates=256,
                 border_margin_ratio=0.0,
                 detect_closed_shapes=detect_shapes,
                 minimum_shape_area=800.0,
                 minimum_shape_span=30.0,
                 minimum_shape_radius=15.0,
                 maximum_shape_candidates=32,
+                drawing_field=DrawingFieldConfig(enabled=True),
             ),
             normalization=NormalizationConfig(
                 horizontal_angle_tolerance_degrees=7.0,
@@ -287,24 +288,13 @@ def _pipeline_config(
             perspective_correction=perspective,
             ocr_enabled=ocr,
         )
-    return PipelineConfig(
-        detection=DetectionConfig(
-            minimum_line_length=70.0,
-            hough_threshold=25,
-            maximum_line_gap=28,
-            maximum_candidates=64,
-            border_margin_ratio=0.0,
+    defaults = PipelineConfig.from_detection_defaults()
+    return replace(
+        defaults,
+        detection=replace(
+            defaults.detection,
             detect_closed_shapes=detect_shapes,
         ),
-        normalization=NormalizationConfig(
-            horizontal_angle_tolerance_degrees=7.0,
-            vertical_angle_tolerance_degrees=7.0,
-            endpoint_snap_distance=45.0,
-            line_merge_tolerance=45.0,
-            minimum_line_length=60.0,
-            keep_largest_connected_component=True,
-        ),
-        source_region=(500, 680, 550, 1150),
         perspective_correction=perspective,
         ocr_enabled=ocr,
     )

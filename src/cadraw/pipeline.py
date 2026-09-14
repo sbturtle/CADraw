@@ -6,6 +6,7 @@ from typing import cast
 
 from cadraw.detection import (
     DetectionConfig,
+    DrawingFieldConfig,
     GrayImage,
     automatic_source_region,
     detect_line_candidates,
@@ -63,7 +64,11 @@ class PipelineConfig:
                 minimum_line_length=60.0,
                 hough_threshold=25,
                 maximum_line_gap=28,
-                maximum_candidates=64,
+                maximum_candidates=256,
+                drawing_field=DrawingFieldConfig(
+                    enabled=True,
+                    frame_margin_ratio=0.10,
+                ),
             ),
             normalization=NormalizationConfig(
                 horizontal_angle_tolerance_degrees=7.0,
@@ -71,7 +76,7 @@ class PipelineConfig:
                 endpoint_snap_distance=18.0,
                 line_merge_tolerance=18.0,
                 minimum_line_length=60.0,
-                keep_largest_connected_component=True,
+                keep_largest_connected_component=False,
             ),
         )
 
@@ -194,6 +199,20 @@ def _restore_text_candidate(
     )
 
 
+def _effective_detection_config(config: PipelineConfig) -> DetectionConfig:
+    """Disable field discovery when an explicit region already narrows input."""
+    detection_config = config.detection
+    if config.source_region is not None and detection_config.drawing_field.enabled:
+        return replace(
+            detection_config,
+            drawing_field=replace(
+                detection_config.drawing_field,
+                enabled=False,
+            ),
+        )
+    return detection_config
+
+
 def analyze_image(
     image_path: Path,
     config: PipelineConfig,
@@ -234,16 +253,20 @@ def analyze_image(
         x, y, width, height = source_region
         analysis_image = analysis_image[y : y + height, x : x + width]
         offset = Point(float(x), float(y))
-    candidates = detect_line_candidates(analysis_image, config.detection)
+    detection_config = _effective_detection_config(config)
+    candidates = detect_line_candidates(analysis_image, detection_config)
     lines = normalize_lines(candidates, config.normalization)
-    if config.normalization.keep_largest_connected_component:
+    if (
+        config.normalization.keep_largest_connected_component
+        and not detection_config.drawing_field.enabled
+    ):
         lines = select_largest_connected_component(
             lines,
             config.normalization.endpoint_snap_distance,
         )
     shape_entities = tuple(
         _shape_candidate_to_entity(candidate)
-        for candidate in detect_shape_candidates(analysis_image, config.detection)
+        for candidate in detect_shape_candidates(analysis_image, detection_config)
     )
     restored_lines = tuple(
         entity

@@ -1,7 +1,7 @@
 """OpenCV image preparation and deterministic line candidate detection."""
 
 from dataclasses import dataclass, field
-from math import hypot, pi
+from math import atan2, degrees, hypot, pi
 from pathlib import Path
 from typing import cast, final, override
 
@@ -34,6 +34,36 @@ _MIN_CIRCLE_ASPECT_RATIO = 0.65
 _RECTANGLE_APPROX_POINTS = 4
 _MIN_RECTANGULARITY = 0.35
 _MIN_DUPLICATE_SHAPE_EXTENT_RATIO = 0.55
+_AXIS_TOLERANCE_DEGREES = 5.0
+_MIN_SELECTED_CANDIDATES = 3
+
+
+@dataclass(frozen=True, slots=True)
+class DrawingFieldConfig:
+    """Settings for rejecting page clutter before the candidate budget."""
+
+    enabled: bool = False
+    frame_margin_ratio: float = 0.10
+    minimum_cell_size: float = 80.0
+    cell_size_ratio: float = 0.03
+    angle_bin_size_degrees: float = 15.0
+    minimum_angle_bins: int = 2
+    minimum_field_score_ratio: float = 0.05
+    field_band_ratio: float = 0.08
+    endpoint_closure_distance: float = 18.0
+    parallel_min_length_ratio: float = 0.12
+    parallel_min_overlap_ratio: float = 0.35
+    parallel_min_offset_ratio: float = 0.15
+    parallel_max_offset_ratio: float = 0.35
+    parallel_axis_tolerance_degrees: float = 7.0
+    local_contrast_offset: float = 16.0
+    periodic_min_family_count: int = 6
+    periodic_min_span_ratio: float = 0.15
+    periodic_min_spacing: float = 12.0
+    periodic_max_spacing_ratio: float = 0.06
+    periodic_spacing_cv_limit: float = 0.30
+    periodic_band_width: float = 8.0
+    periodic_max_intensity: float = 135.0
 
 
 @final
@@ -71,6 +101,7 @@ class DetectionConfig:
     arbitration: CandidateArbitrationConfig = field(
         default_factory=CandidateArbitrationConfig,
     )
+    drawing_field: DrawingFieldConfig = field(default_factory=DrawingFieldConfig)
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +184,637 @@ def _is_border_candidate(
     return on_left or on_right or on_top or on_bottom
 
 
+def _line_angle_degrees(candidate: LineCandidate) -> float:
+    """Return an orientation-independent angle for one candidate."""
+    return (
+        degrees(
+            atan2(
+                candidate.end.y - candidate.start.y,
+                candidate.end.x - candidate.start.x,
+            ),
+        )
+        % 180.0
+    )
+
+
+def _line_intensity(image: GrayImage, candidate: LineCandidate) -> float:
+    """Estimate the darkest grayscale value along a candidate stroke."""
+    length = candidate.start.distance_to(candidate.end)
+    if length == 0.0:
+        return 255.0
+    direction = (
+        (candidate.end.x - candidate.start.x) / length,
+        (candidate.end.y - candidate.start.y) / length,
+    )
+    normal = (-direction[1], direction[0])
+    height, width = cast("tuple[int, int]", image.shape[:2])
+    sample_count = max(12, min(160, int(length / 4.0)))
+    values: list[int] = []
+    for fraction in np.linspace(0.0, 1.0, sample_count):
+        center_x = candidate.start.x + (candidate.end.x - candidate.start.x) * float(
+            fraction
+        )
+        center_y = candidate.start.y + (candidate.end.y - candidate.start.y) * float(
+            fraction
+        )
+        band_values = [
+            int(
+                cast(
+                    "int",
+                    image[
+                        min(
+                            height - 1,
+                            max(0, round(center_y + normal[1] * offset)),
+                        ),
+                        min(
+                            width - 1,
+                            max(0, round(center_x + normal[0] * offset)),
+                        ),
+                    ],
+                ),
+            )
+            for offset in (-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0)
+        ]
+        values.append(min(band_values))
+    return float(np.median(np.asarray(values, dtype=np.float32)))
+
+
+def _line_local_contrast(
+    image: GrayImage,
+    candidate: LineCandidate,
+    offset: float,
+) -> float:
+    """Compare stroke darkness with pixels just outside its narrow band."""
+    length = candidate.start.distance_to(candidate.end)
+    if length == 0.0:
+        return 0.0
+    direction = (
+        (candidate.end.x - candidate.start.x) / length,
+        (candidate.end.y - candidate.start.y) / length,
+    )
+    normal = (-direction[1], direction[0])
+    height, width = cast("tuple[int, int]", image.shape[:2])
+    sample_count = max(12, min(80, int(length / 8.0)))
+    inside: list[int] = []
+    outside: list[int] = []
+    for fraction in np.linspace(0.1, 0.9, sample_count):
+        center_x = candidate.start.x + (candidate.end.x - candidate.start.x) * float(
+            fraction
+        )
+        center_y = candidate.start.y + (candidate.end.y - candidate.start.y) * float(
+            fraction
+        )
+        band_values: list[int] = []
+        for band_offset in (-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0):
+            sample_x = min(
+                width - 1,
+                max(0, round(center_x + normal[0] * band_offset)),
+            )
+            sample_y = min(
+                height - 1,
+                max(0, round(center_y + normal[1] * band_offset)),
+            )
+            band_values.append(int(cast("int", image[sample_y, sample_x])))
+        inside.append(min(band_values))
+        for sample_offset in (-offset, offset):
+            sample_x = min(
+                width - 1,
+                max(0, round(center_x + normal[0] * sample_offset)),
+            )
+            sample_y = min(
+                height - 1,
+                max(0, round(center_y + normal[1] * sample_offset)),
+            )
+            outside.append(int(cast("int", image[sample_y, sample_x])))
+    return max(
+        0.0,
+        float(np.median(np.asarray(outside, dtype=np.float32)))
+        - float(np.median(np.asarray(inside, dtype=np.float32))),
+    )
+
+
+def _touches_frame(
+    candidate: LineCandidate,
+    width: int,
+    height: int,
+    margin_ratio: float,
+) -> bool:
+    """Return whether a candidate enters the photograph frame margin."""
+    x_margin = width * margin_ratio
+    y_margin = height * margin_ratio
+    for fraction in np.linspace(0.0, 1.0, 5):
+        x = candidate.start.x + (candidate.end.x - candidate.start.x) * float(
+            fraction,
+        )
+        y = candidate.start.y + (candidate.end.y - candidate.start.y) * float(
+            fraction,
+        )
+        if (
+            x <= x_margin
+            or x >= width - x_margin
+            or y <= y_margin
+            or y >= height - y_margin
+        ):
+            return True
+    return False
+
+
+def _cluster_periodic_offsets(
+    offsets: list[float],
+    band_width: float,
+) -> tuple[float, ...]:
+    """Collapse nearby Hough offsets into one rail position."""
+    if not offsets:
+        return ()
+    ordered = sorted(offsets)
+    clusters: list[list[float]] = [[ordered[0]]]
+    for offset in ordered[1:]:
+        if offset - clusters[-1][-1] <= band_width:
+            clusters[-1].append(offset)
+        else:
+            clusters.append([offset])
+    return tuple(float(np.median(np.asarray(cluster))) for cluster in clusters)
+
+
+def _periodic_family_offsets(
+    candidates: tuple[LineCandidate, ...],
+    width: int,
+    height: int,
+    config: DrawingFieldConfig,
+    horizontal: bool,
+) -> tuple[float, ...]:
+    """Find regularly spaced horizontal or vertical background rails."""
+    minimum_span = min(width, height) * config.periodic_min_span_ratio
+    offsets = [
+        (candidate.start.y + candidate.end.y) / 2.0
+        if horizontal
+        else (candidate.start.x + candidate.end.x) / 2.0
+        for candidate in candidates
+        if candidate.start.distance_to(candidate.end) >= minimum_span
+        and (
+            abs(_line_angle_degrees(candidate)) <= _AXIS_TOLERANCE_DEGREES
+            if horizontal
+            else abs(_line_angle_degrees(candidate) - 90.0) <= _AXIS_TOLERANCE_DEGREES
+        )
+    ]
+    clustered = _cluster_periodic_offsets(
+        offsets,
+        config.periodic_band_width,
+    )
+    if len(clustered) < config.periodic_min_family_count:
+        return ()
+    spacings = np.diff(np.asarray(clustered, dtype=np.float64))
+    if len(spacings) == 0:
+        return ()
+    mean_spacing = float(np.mean(spacings))
+    if not (
+        config.periodic_min_spacing
+        <= mean_spacing
+        <= min(width, height) * config.periodic_max_spacing_ratio
+    ):
+        return ()
+    spacing_cv = float(np.std(spacings) / mean_spacing)
+    if spacing_cv > config.periodic_spacing_cv_limit:
+        return ()
+    return clustered
+
+
+def _remove_periodic_rails(
+    image: GrayImage,
+    candidates: tuple[LineCandidate, ...],
+    config: DrawingFieldConfig,
+) -> tuple[LineCandidate, ...]:
+    """Remove only light candidates supported by a regular rail family."""
+    if not candidates:
+        return ()
+    height, width = cast("tuple[int, int]", image.shape[:2])
+    families = (
+        (
+            True,
+            _periodic_family_offsets(
+                candidates,
+                width,
+                height,
+                config,
+                horizontal=True,
+            ),
+        ),
+        (
+            False,
+            _periodic_family_offsets(
+                candidates,
+                width,
+                height,
+                config,
+                horizontal=False,
+            ),
+        ),
+    )
+    if not any(offsets for _, offsets in families):
+        return candidates
+    retained: list[LineCandidate] = []
+    for candidate in candidates:
+        angle = _line_angle_degrees(candidate)
+        is_light_rail = False
+        for horizontal, offsets in families:
+            axis_delta = abs(angle) if horizontal else abs(angle - 90.0)
+            if axis_delta > _AXIS_TOLERANCE_DEGREES or not offsets:
+                continue
+            offset = (
+                (candidate.start.y + candidate.end.y) / 2.0
+                if horizontal
+                else (candidate.start.x + candidate.end.x) / 2.0
+            )
+            if (
+                min(abs(offset - family_offset) for family_offset in offsets)
+                <= config.periodic_band_width
+                and _line_intensity(image, candidate) >= config.periodic_max_intensity
+            ):
+                is_light_rail = True
+                break
+        if not is_light_rail:
+            retained.append(candidate)
+    return tuple(retained)
+
+
+def _axis_delta(candidate: LineCandidate, axis: float) -> float:
+    """Return the smallest difference between a line and an image axis."""
+    difference = abs(_line_angle_degrees(candidate) - axis)
+    return min(difference, 180.0 - difference)
+
+
+def _select_parallel_axis_field_candidates(
+    image: GrayImage,
+    candidates: tuple[LineCandidate, ...],
+    config: DrawingFieldConfig,
+) -> tuple[LineCandidate, ...]:
+    """Recover a drawing region from an overlapping axis-line pair."""
+    height, width = cast("tuple[int, int]", image.shape[:2])
+    minimum_length = min(width, height) * config.parallel_min_length_ratio
+    axis_candidates = tuple(
+        (
+            candidate,
+            0.0
+            if _axis_delta(candidate, 0.0) <= config.parallel_axis_tolerance_degrees
+            else 90.0,
+        )
+        for candidate in candidates
+        if candidate.start.distance_to(candidate.end) >= minimum_length
+        and (
+            _axis_delta(candidate, 0.0) <= config.parallel_axis_tolerance_degrees
+            or _axis_delta(candidate, 90.0) <= config.parallel_axis_tolerance_degrees
+        )
+    )
+    best_pair: (
+        tuple[
+            float,
+            float,
+            LineCandidate,
+            LineCandidate,
+            float,
+            float,
+        ]
+        | None
+    ) = None
+    for first_index, (first, first_axis) in enumerate(axis_candidates):
+        for second, second_axis in axis_candidates[first_index + 1 :]:
+            if first_axis != second_axis:
+                continue
+            if first_axis == 0.0:
+                offset = (
+                    abs((first.start.y + first.end.y) - (second.start.y + second.end.y))
+                    / 2.0
+                )
+                first_projection = sorted((first.start.x, first.end.x))
+                second_projection = sorted((second.start.x, second.end.x))
+            else:
+                offset = (
+                    abs((first.start.x + first.end.x) - (second.start.x + second.end.x))
+                    / 2.0
+                )
+                first_projection = sorted((first.start.y, first.end.y))
+                second_projection = sorted((second.start.y, second.end.y))
+            overlap = max(
+                0.0,
+                min(first_projection[1], second_projection[1])
+                - max(first_projection[0], second_projection[0]),
+            )
+            shorter_length = min(
+                first.start.distance_to(first.end),
+                second.start.distance_to(second.end),
+            )
+            if (
+                offset < min(width, height) * config.parallel_min_offset_ratio
+                or offset > min(width, height) * config.parallel_max_offset_ratio
+                or overlap < shorter_length * config.parallel_min_overlap_ratio
+            ):
+                continue
+            score = (
+                first.start.distance_to(first.end)
+                + second.start.distance_to(second.end)
+                + overlap
+            )
+            if best_pair is None or score > best_pair[0]:
+                best_pair = (
+                    score,
+                    first_axis,
+                    first,
+                    second,
+                    offset,
+                    shorter_length,
+                )
+    if best_pair is None:
+        return ()
+    _, axis, first, second, offset, shorter_length = best_pair
+    min_x = min(
+        first.start.x,
+        first.end.x,
+        second.start.x,
+        second.end.x,
+    )
+    max_x = max(
+        first.start.x,
+        first.end.x,
+        second.start.x,
+        second.end.x,
+    )
+    min_y = min(
+        first.start.y,
+        first.end.y,
+        second.start.y,
+        second.end.y,
+    )
+    max_y = max(
+        first.start.y,
+        first.end.y,
+        second.start.y,
+        second.end.y,
+    )
+    x_margin = 0.35 * shorter_length if axis == 0.0 else offset
+    y_margin = offset
+    y_margin_before = 0.35 * shorter_length
+    y_margin_after = 0.80 * shorter_length
+    if axis == 0.0:
+        x_low = min_x - x_margin
+        x_high = max_x + x_margin
+        y_low = min_y - y_margin
+        y_high = max_y + y_margin
+    else:
+        x_low = min_x - x_margin
+        x_high = max_x + x_margin
+        y_low = min_y - y_margin_before
+        y_high = max_y + y_margin_after
+    selected = tuple(
+        candidate
+        for candidate in candidates
+        if (
+            x_low <= (candidate.start.x + candidate.end.x) / 2.0 <= x_high
+            and y_low <= (candidate.start.y + candidate.end.y) / 2.0 <= y_high
+        )
+    )
+    return selected if len(selected) >= _MIN_SELECTED_CANDIDATES else ()
+
+
+@dataclass(slots=True)
+class _DrawingFieldCell:
+    """Accumulated support for one coarse image cell."""
+
+    weight: float = 0.0
+    angle_bins: set[int] = field(default_factory=set)
+    candidate_indices: list[int] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class _DrawingFieldComponent:
+    """Connected coarse cells describing one candidate drawing field."""
+
+    score: float
+    angle_count: int
+    cells: tuple[tuple[int, int], ...]
+    center_x: float
+    center_y: float
+
+
+def _build_drawing_field_cells(
+    image: GrayImage,
+    candidates: tuple[LineCandidate, ...],
+    config: DrawingFieldConfig,
+    cell_size: float,
+) -> dict[tuple[int, int], _DrawingFieldCell]:
+    """Accumulate contrast-weighted candidates into coarse image cells."""
+    cells: dict[tuple[int, int], _DrawingFieldCell] = {}
+    for index, candidate in enumerate(candidates):
+        length = candidate.start.distance_to(candidate.end)
+        contrast = _line_local_contrast(
+            image,
+            candidate,
+            config.local_contrast_offset,
+        )
+        weight = min(length, 2.0 * cell_size) * (0.30 + contrast / 255.0)
+        midpoint_x = (candidate.start.x + candidate.end.x) / 2.0
+        midpoint_y = (candidate.start.y + candidate.end.y) / 2.0
+        key = (int(midpoint_x // cell_size), int(midpoint_y // cell_size))
+        cell = cells.setdefault(key, _DrawingFieldCell())
+        cell.weight += weight
+        angle_bin = int(
+            _line_angle_degrees(candidate) / config.angle_bin_size_degrees,
+        )
+        cell.angle_bins.add(angle_bin)
+        cell.candidate_indices.append(index)
+    return cells
+
+
+def _collect_drawing_field_components(
+    cells: dict[tuple[int, int], _DrawingFieldCell],
+    candidates: tuple[LineCandidate, ...],
+    config: DrawingFieldConfig,
+) -> tuple[_DrawingFieldComponent, ...]:
+    """Find connected coarse-cell fields and their spatial centers."""
+    unseen = set(cells)
+    components: list[_DrawingFieldComponent] = []
+    while unseen:
+        root = min(unseen)
+        stack = [root]
+        unseen.remove(root)
+        component: list[tuple[int, int]] = []
+        while stack:
+            current = stack.pop()
+            component.append(current)
+            cell_x, cell_y = current
+            for delta_x in (-1, 0, 1):
+                for delta_y in (-1, 0, 1):
+                    neighbor = (cell_x + delta_x, cell_y + delta_y)
+                    if neighbor in unseen:
+                        unseen.remove(neighbor)
+                        stack.append(neighbor)
+        weight = sum(cells[key].weight for key in component)
+        angle_bins: set[int] = set()
+        for key in component:
+            angle_bins.update(cells[key].angle_bins)
+        score = weight * min(
+            1.0,
+            len(angle_bins) / max(1, config.minimum_angle_bins + 1),
+        )
+        candidate_indices = tuple(
+            index for key in component for index in cells[key].candidate_indices
+        )
+        component_candidates = tuple(candidates[index] for index in candidate_indices)
+        min_x = min(
+            point.x
+            for candidate in component_candidates
+            for point in (candidate.start, candidate.end)
+        )
+        min_y = min(
+            point.y
+            for candidate in component_candidates
+            for point in (candidate.start, candidate.end)
+        )
+        max_x = max(
+            point.x
+            for candidate in component_candidates
+            for point in (candidate.start, candidate.end)
+        )
+        max_y = max(
+            point.y
+            for candidate in component_candidates
+            for point in (candidate.start, candidate.end)
+        )
+        components.append(
+            _DrawingFieldComponent(
+                score=score,
+                angle_count=len(angle_bins),
+                cells=tuple(component),
+                center_x=(min_x + max_x) / 2.0,
+                center_y=(min_y + max_y) / 2.0,
+            ),
+        )
+    return tuple(components)
+
+
+def _accepted_drawing_field_cells(
+    components: tuple[_DrawingFieldComponent, ...],
+    config: DrawingFieldConfig,
+    width: int,
+    height: int,
+) -> set[tuple[int, int]]:
+    """Choose the strongest central field and its aligned companion fields."""
+    if not components:
+        return set()
+    best_score = max(component.score for component in components)
+    qualified = tuple(
+        component
+        for component in components
+        if component.score >= best_score * config.minimum_field_score_ratio
+        and (component.angle_count >= config.minimum_angle_bins or len(components) == 1)
+    )
+    if not qualified:
+        return set()
+    anchor = min(
+        qualified,
+        key=lambda component: (
+            hypot(
+                (component.center_x - width / 2.0) / max(1.0, width),
+                (component.center_y - height / 2.0) / max(1.0, height),
+            ),
+            -component.score,
+        ),
+    )
+    accepted_cells: set[tuple[int, int]] = set()
+    for drawing_field in qualified:
+        if (
+            abs(drawing_field.center_y - anchor.center_y)
+            <= height * config.field_band_ratio
+            or drawing_field is anchor
+        ):
+            accepted_cells.update(drawing_field.cells)
+    return accepted_cells
+
+
+def _close_drawing_field_candidates(
+    candidates: tuple[LineCandidate, ...],
+    selected_indices: set[int],
+    closure_distance: float,
+) -> set[int]:
+    """Include only candidates joined to the selected stroke endpoints."""
+    while True:
+        additions = {
+            index
+            for index, candidate in enumerate(candidates)
+            if index not in selected_indices
+            and any(
+                first_point.distance_to(second_point) <= closure_distance
+                for selected_index in selected_indices
+                for first_point in (
+                    candidates[selected_index].start,
+                    candidates[selected_index].end,
+                )
+                for second_point in (candidate.start, candidate.end)
+            )
+        }
+        if not additions:
+            return selected_indices
+        selected_indices.update(additions)
+
+
+def _select_drawing_field_candidates(
+    image: GrayImage,
+    candidates: tuple[LineCandidate, ...],
+    config: DrawingFieldConfig,
+) -> tuple[LineCandidate, ...]:
+    """Keep candidates belonging to multi-angle dark-ink fields."""
+    if not candidates:
+        return ()
+    height, width = cast("tuple[int, int]", image.shape[:2])
+    frame_candidates = tuple(
+        candidate
+        for candidate in candidates
+        if not _touches_frame(
+            candidate,
+            width,
+            height,
+            config.frame_margin_ratio,
+        )
+    )
+    filtered = _remove_periodic_rails(image, frame_candidates, config)
+    if not filtered:
+        return ()
+    parallel_selected = _select_parallel_axis_field_candidates(
+        image,
+        filtered,
+        config,
+    )
+    if parallel_selected:
+        return parallel_selected
+    cell_size = max(
+        config.minimum_cell_size,
+        min(width, height) * config.cell_size_ratio,
+    )
+    cells = _build_drawing_field_cells(image, filtered, config, cell_size)
+    if not cells:
+        return ()
+    accepted_cells = _accepted_drawing_field_cells(
+        _collect_drawing_field_components(cells, filtered, config),
+        config,
+        width,
+        height,
+    )
+    if not accepted_cells:
+        return ()
+    selected_indices = {
+        index for key in accepted_cells for index in cells[key].candidate_indices
+    }
+    selected_indices = _close_drawing_field_candidates(
+        filtered,
+        selected_indices,
+        config.endpoint_closure_distance,
+    )
+    return tuple(
+        candidate
+        for index, candidate in enumerate(filtered)
+        if index in selected_indices
+    )
+
+
 def detect_line_candidates(
     image: GrayImage,
     config: DetectionConfig,
@@ -222,7 +884,16 @@ def detect_line_candidates(
         config.arbitration.grid,
     )
     arbitrated = arbitrate_line_candidates(grid_filtered, config.arbitration)
-    limited = arbitrated[: config.maximum_candidates]
+    field_selected = (
+        _select_drawing_field_candidates(
+            image,
+            arbitrated,
+            config.drawing_field,
+        )
+        if config.drawing_field.enabled
+        else arbitrated
+    )
+    limited = field_selected[: config.maximum_candidates]
     return tuple(
         LineCandidate(
             entity_id=EntityId(f"line_raw_{index + 1:03d}"),

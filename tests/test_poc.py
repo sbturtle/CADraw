@@ -29,6 +29,31 @@ def test_reproducible_poc_runner_writes_expected_artifacts(tmp_path: Path) -> No
     assert (tmp_path / "sample_summary.json").exists()
 
 
+def test_runner_does_not_reuse_legacy_region_for_arbitrary_input(
+    tmp_path: Path,
+) -> None:
+    # Given an arbitrary source image that is not the legacy sample
+    image = Image.new("L", (320, 240), color=255)
+    draw = ImageDraw.Draw(image)
+    draw.line((80, 60, 260, 60), fill=0, width=5)
+    image_path = tmp_path / "arbitrary.png"
+    image.save(image_path)
+
+    # When the real runner analyzes that image without a user ROI
+    summary = run(
+        PocOptions(
+            output_directory=tmp_path / "output",
+            input_path=image_path,
+            dimension_texts=None,
+            confirm_length=None,
+            render_preview=False,
+        ),
+    )
+
+    # Then it does not silently crop to coordinates from another photograph
+    assert summary.source_region is None
+
+
 def test_enhanced_runner_exports_detected_closed_shapes(tmp_path: Path) -> None:
     # Given a photographed-style input with one rectangle and one circle
     image = Image.new("L", (480, 360), color=255)

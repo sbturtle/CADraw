@@ -3,6 +3,7 @@ import numpy as np
 
 from cadraw.detection import (
     DetectionConfig,
+    DrawingFieldConfig,
     detect_line_candidates,
     detect_shape_candidates,
 )
@@ -56,6 +57,42 @@ def test_border_filter_ignores_page_edges_in_photographs() -> None:
     assert candidates
     assert all(
         not (abs(candidate.start.x) < 42.0 and abs(candidate.end.x) < 42.0)
+        for candidate in candidates
+    )
+
+
+def test_drawing_field_rejects_frame_edges_and_keeps_multiaxis_sketch() -> None:
+    # Given a page with long frame rails and a compact hand-drawn profile
+    image = np.full((480, 640), 255, dtype=np.uint8)
+    _ = cv2.line(image, (0, 55), (639, 55), 0, 4)
+    _ = cv2.line(image, (0, 425), (639, 425), 0, 4)
+    _ = cv2.line(image, (190, 150), (430, 150), 0, 5)
+    _ = cv2.line(image, (190, 150), (190, 350), 0, 5)
+    _ = cv2.line(image, (190, 350), (430, 350), 0, 5)
+    _ = cv2.line(image, (430, 150), (430, 350), 0, 5)
+    _ = cv2.line(image, (260, 230), (360, 230), 0, 5)
+
+    # When drawing-field selection runs before the candidate budget
+    candidates = detect_line_candidates(
+        image,
+        DetectionConfig(
+            minimum_line_length=50.0,
+            hough_threshold=20,
+            maximum_line_gap=12,
+            maximum_candidates=64,
+            border_margin_ratio=0.0,
+            drawing_field=DrawingFieldConfig(enabled=True),
+        ),
+    )
+
+    # Then the compact multi-axis profile remains and frame rails do not
+    assert candidates
+    assert all(
+        100.0 < (candidate.start.y + candidate.end.y) / 2.0 < 380.0
+        for candidate in candidates
+    )
+    assert all(
+        120.0 < (candidate.start.x + candidate.end.x) / 2.0 < 500.0
         for candidate in candidates
     )
 
