@@ -69,16 +69,75 @@ polyline 조립은 proximity connection을 다시 사용하지 않습니다. bra
 `--perspective`가 켜지면 전체 사진에서 페이지 사변형을 먼저 검출하고,
 실패하면 명시적/자동 `source_region` 안에서 한 번 더 찾습니다. 찾은 사변형은
 직사각형으로 워프하고, 역행렬로 모든 도형과 OCR box를 원본 사진 좌표로
-되돌립니다. 두 경로 모두 페이지 경계를 찾지 못하면
-`PERSPECTIVE_NOT_FOUND`를 남기고 워프를 생략합니다.
+되돌립니다. 워프 stream의 geometry evidence가 원본 stream보다 나쁘면
+`PERSPECTIVE_REJECTED`를 남기고 원본 stream을 사용합니다. 페이지 경계를
+찾지 못한 경우에는 `PERSPECTIVE_NOT_FOUND`와 `DOCUMENT_NOT_FOUND`를 남깁니다.
 
 `--ocr`는 설치된 Tesseract TSV 결과를 `TextCandidate`로 보존하고, 기존
 `parse_dimension_text`를 거친 값만 `NEEDS_REVIEW` 치수로 추가합니다. 대상
 geometry는 자동 연결하지 않으므로 검토 전 DXF TEXT가 생성되지 않습니다.
 
 그래프 용지, 인쇄 표, 손글씨가 섞인 사진에서는 후보가 남을 수 있으므로
-preview와 DXF를 확인한 뒤 치수를 수동으로 확정해야 합니다. 외곽 닫힌 형상
-안에 포함된 작은 형상은 `HOLE` 역할로 분류하고 DXF `HOLE` 레이어에 씁니다.
+preview와 DXF를 확인한 뒤 치수를 수동으로 확정해야 합니다. 닫힌 형상
+후보가 작은 정사각형의 반복 격자 패턴으로 판단되거나 선보다 과도하게
+많으면 `GRAPH_PAPER_DETECTED` 경고와 `TOO_MUCH_NOISE` 상태를 남깁니다.
+이 상태에서는 후보를 삭제하지 않고 원본 좌표와 entity id를 보존하지만,
+DXF 저장은 보류합니다. 외곽 닫힌 형상 안에 포함된 작은 형상은 `HOLE`
+역할로 분류하고 DXF `HOLE` 레이어에 씁니다.
+
+## 사진 전처리와 검토 선택
+
+사진 분석은 원본 grayscale 배열과 원본 좌표를 보존한 채 네 가지 독립
+variant를 평가합니다.
+
+1. grayscale + adaptive threshold
+2. CLAHE + adaptive threshold
+3. morphology background shadow removal + adaptive threshold
+4. blur + Otsu threshold
+
+각 variant는 자체 enhanced raster에서 Hough geometry를 실행합니다. 선택 점수는
+의미 있는 선 수와 평균 길이, endpoint 연결성, geometry coverage,
+중복선 비율, 짧은 잡음 비율, connected-component 품질을 조합합니다.
+선 개수만 많다고 선택하지 않으며, 점수가 가까우면 의미 있는 선 비율과
+짧은 잡음이 적은 결과를 우선합니다. 선택된 variant와 각 점수 구성은
+`DrawingAnalysis.preprocessing_reports`에 보존됩니다.
+
+현재 heuristic은 다음과 같습니다.
+
+```text
+score =
+  .35 * meaningful_line_score
+  + .15 * average_length_score
+  + .15 * connected_endpoint_ratio
+  + .10 * geometry_coverage
+  + .10 * component_quality
+  - .15 * duplicate_line_ratio
+  - .25 * short_noise_ratio
+```
+
+`meaningful_line_score`는 최소 선 길이보다 충분히 긴 선의 비율이고,
+`component_quality`는 foreground mask의 큰 연결 성분이 차지하는 비율입니다.
+따라서 반복 Hough segment나 짧은 배경 선이 많아지는 결과는 자동으로
+불리해집니다. 최고 composite score 차이가 `.05` 이내이면 긴 선의 수와
+짧은 잡음 역비율을 보조 기준으로 사용해 희미한 실제 stroke가 빠지지 않게
+합니다.
+
+자동 선택 점수가 임계값보다 낮으면 원본 분석 stream으로 안전하게 fallback하고
+`PREPROCESSING_UNCERTAIN` 상태를 남깁니다. geometry가 없으면
+`NO_GEOMETRY_DETECTED`, 잡음이 지배하면 `TOO_MUCH_NOISE`를 남기며, UI에서는
+DXF 저장을 보류합니다. 사용자는 `1 표준 강화`, `2 CLAHE 강화`,
+`3 그림자 보정` 세 개의 작은 미리보기 버튼 중 하나를 골라 재분석할 수
+있습니다. 명시적으로 고른 결과가 낮은 점수이면 `VERY_LOW_CONFIDENCE`
+경고를 계속 보이지만, 그 선택 자체를 사람의 검토 승인으로 취급합니다.
+원본 사진과 geometry-only foreground view는 별도로 유지됩니다.
+
+`PipelineConfig.preprocessing_debug_directory` 또는 CLI의 `--debug-dir DIR`을
+명시한 경우에만 `original.png`, variant별 `*_enhanced.png`, `*_mask.png`를
+기록합니다. 전처리 mask는 OCR 입력이나 원본 사진을 대체하지 않습니다.
+페이지 사변형은 area/rectangularity/side/edge/contrast confidence가 낮으면
+워프하지 않고 원본 좌표로 fallback하며 `DOCUMENT_NOT_FOUND`와
+`PERSPECTIVE_NOT_FOUND`를 남깁니다. confidence가 충분해도 source/warped
+geometry 비교에서 개선이 없으면 `PERSPECTIVE_REJECTED`를 남깁니다.
 
 ## 향후 단계
 

@@ -175,6 +175,7 @@ def calculate_document(
             warnings=tuple(warnings),
             scale_mm_per_source_unit=None,
             cad_entities=cad_entities,
+            analysis_status=analysis.status,
         )
 
     scale = calibration
@@ -186,4 +187,5 @@ def calculate_document(
         warnings=tuple(warnings),
         scale_mm_per_source_unit=scale,
         cad_entities=cad_entities,
+        analysis_status=analysis.status,
     )

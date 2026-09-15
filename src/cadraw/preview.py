@@ -12,6 +12,7 @@ from cadraw.models import (
     CadDocument,
     CircleEntity,
     DimensionKind,
+    DrawingAnalysis,
     EntityId,
     GeometryEntity,
     GeometryRole,
@@ -26,6 +27,8 @@ _HOLE = (45, 104, 179)
 _DIMENSION = (201, 100, 66)
 _BORDER = (232, 230, 220)
 _SELECTED = (217, 119, 87)
+_FOREGROUND_OVERLAY_ERROR = "source image size is required for foreground overlay"
+_FOREGROUND_MIN_POINTS = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +206,69 @@ def _draw_entity(
                 fill=stroke,
                 width=line_width,
             )
+
+
+def render_foreground_overlay(analysis: DrawingAnalysis) -> Image.Image:
+    """Render accepted source geometry on a transparent background.
+
+    This is an auditable geometry overlay, not a guessed pixel segmentation.
+    The source photograph stays unchanged and only accepted entities are
+    included, so the result is safe to inspect without feeding pixels back
+    into detection or dimension inference.
+    """
+    if analysis.image_size is None:
+        raise ValueError(_FOREGROUND_OVERLAY_ERROR)
+    image = Image.new("RGBA", analysis.image_size, (255, 255, 255, 0))
+    draw = ImageDraw.Draw(image)
+    source_entities = (
+        tuple(detected.geometry for detected in analysis.detected_entities)
+        if analysis.detected_entities
+        else analysis.entities
+    )
+    for entity in source_entities:
+        if isinstance(entity, LineEntity):
+            draw.line(
+                (
+                    (entity.raw_start.x, entity.raw_start.y),
+                    (entity.raw_end.x, entity.raw_end.y),
+                ),
+                fill=(*_GEOMETRY, 255),
+                width=4,
+            )
+        elif isinstance(entity, PolylineEntity):
+            points = tuple((point.x, point.y) for point in entity.points)
+            if len(points) >= _FOREGROUND_MIN_POINTS:
+                draw.line(
+                    (*points, points[0]) if entity.closed else points,
+                    fill=(*_GEOMETRY, 255),
+                    width=4,
+                    joint="curve",
+                )
+        elif isinstance(entity, CircleEntity):
+            draw.ellipse(
+                (
+                    entity.center.x - entity.radius,
+                    entity.center.y - entity.radius,
+                    entity.center.x + entity.radius,
+                    entity.center.y + entity.radius,
+                ),
+                outline=(*_GEOMETRY, 255),
+                width=4,
+            )
+        else:
+            draw.arc(
+                (
+                    entity.center.x - entity.radius,
+                    entity.center.y - entity.radius,
+                    entity.center.x + entity.radius,
+                    entity.center.y + entity.radius,
+                ),
+                start=entity.start_angle_degrees,
+                end=entity.end_angle_degrees,
+                fill=(*_GEOMETRY, 255),
+                width=4,
+            )
+    return image
 
 
 def render_preview(document: CadDocument, config: PreviewConfig) -> Image.Image:

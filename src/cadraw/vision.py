@@ -22,6 +22,14 @@ class MockVisionAnalyzer:
 
     config: PipelineConfig
 
-    def analyze(self, image_path: Path) -> DrawingAnalysis:
+    def analyze(
+        self,
+        image_path: Path,
+        preprocessing_variant: str | None = None,
+    ) -> DrawingAnalysis:
         """Run OpenCV detection without a network provider or guessed text."""
-        return analyze_image(image_path, self.config)
+        return analyze_image(
+            image_path,
+            self.config,
+            preprocessing_variant=preprocessing_variant,
+        )

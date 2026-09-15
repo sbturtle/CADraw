@@ -1,4 +1,4 @@
-"""Strict periodic-grid filtering for image-space line candidates."""
+"""Strict periodic-grid filtering for image-space candidates."""
 
 from dataclasses import dataclass
 from math import atan2, degrees
@@ -8,7 +8,11 @@ from typing import cast
 import numpy as np
 from numpy.typing import NDArray
 
-from cadraw.models import LineCandidate
+from cadraw.models import LineCandidate, PolylineCandidate, ShapeCandidate
+
+_SHAPE_SQUARE_RATIO = 0.65
+_SHAPE_CELL_EXTENT_RATIO = 0.08
+_SHAPE_SIZE_TOLERANCE_RATIO = 0.30
 
 type GrayImage = NDArray[np.uint8]
 
@@ -27,6 +31,16 @@ class GridFilterConfig:
     minimum_span_ratio: float = 0.55
     band_width: float = 6.0
     maximum_grid_intensity: float = 135.0
+
+
+@dataclass(frozen=True, slots=True)
+class ShapeGridFilterResult:
+    """Shape candidates plus evidence that a periodic grid was removed."""
+
+    candidates: tuple[ShapeCandidate, ...]
+    grid_detected: bool = False
+    removed_count: int = 0
+    grid_like_count: int = 0
 
 
 def _line_length(candidate: LineCandidate) -> float:
@@ -189,3 +203,142 @@ def filter_periodic_grid_candidates(
         ):
             retained.append(candidate)
     return tuple(retained)
+
+
+def _shape_bounds(
+    candidate: PolylineCandidate,
+) -> tuple[float, float, float, float]:
+    """Return the axis-aligned bounds of one polygon candidate."""
+    return (
+        min(float(point.x) for point in candidate.points),
+        min(float(point.y) for point in candidate.points),
+        max(float(point.x) for point in candidate.points),
+        max(float(point.y) for point in candidate.points),
+    )
+
+
+def _shape_size(
+    candidate: PolylineCandidate,
+) -> tuple[float, float]:
+    """Return one polygon's width and height."""
+    bounds = _shape_bounds(candidate)
+    return bounds[2] - bounds[0], bounds[3] - bounds[1]
+
+
+def _shape_center(
+    candidate: PolylineCandidate,
+) -> tuple[float, float]:
+    """Return one polygon's center."""
+    bounds = _shape_bounds(candidate)
+    return (0.5 * (bounds[0] + bounds[2]), 0.5 * (bounds[1] + bounds[3]))
+
+
+def _regular_shape_offsets(
+    offsets: list[float],
+    config: GridFilterConfig,
+) -> tuple[float, ...]:
+    """Return regularly spaced centers from a candidate coordinate family."""
+    clustered = _cluster_offsets(sorted(offsets), config.band_width)
+    if len(clustered) < config.minimum_family_count:
+        return ()
+    spacings = np.diff(np.asarray(clustered, dtype=np.float64))
+    if len(spacings) == 0:
+        return ()
+    mean_spacing = float(np.mean(spacings))
+    if mean_spacing <= config.band_width * 2.0:
+        return ()
+    spacing_cv = float(np.std(spacings) / mean_spacing)
+    if spacing_cv > config.spacing_cv_limit:
+        return ()
+    return clustered
+
+
+def inspect_periodic_grid_shapes(
+    candidates: tuple[ShapeCandidate, ...],
+    width: int,
+    height: int,
+    config: GridFilterConfig | None = None,
+) -> ShapeGridFilterResult:
+    """Report small polygons proven to form a two-dimensional paper grid."""
+    settings = config if config is not None else GridFilterConfig()
+    grid_like_count = 0
+    grid_members: tuple[PolylineCandidate, ...] = ()
+    if settings.enabled:
+        polygons = tuple(
+            candidate
+            for candidate in candidates
+            if isinstance(candidate, PolylineCandidate)
+        )
+        minimum_family_members = settings.minimum_family_count * 2
+        if len(polygons) >= minimum_family_members:
+            maximum_cell_extent = min(width, height) * _SHAPE_CELL_EXTENT_RATIO
+            small_polygons = tuple(
+                candidate
+                for candidate in polygons
+                if (
+                    max(_shape_size(candidate)) <= maximum_cell_extent
+                    and min(_shape_size(candidate)) / max(_shape_size(candidate))
+                    >= _SHAPE_SQUARE_RATIO
+                )
+            )
+            grid_like_count = len(small_polygons)
+            if len(small_polygons) >= minimum_family_members:
+                sizes = tuple(_shape_size(candidate) for candidate in small_polygons)
+                reference_width = float(
+                    np.median(np.asarray([size[0] for size in sizes])),
+                )
+                reference_height = float(
+                    np.median(np.asarray([size[1] for size in sizes])),
+                )
+                size_tolerance = max(
+                    settings.band_width,
+                    max(reference_width, reference_height)
+                    * _SHAPE_SIZE_TOLERANCE_RATIO,
+                )
+                same_size = tuple(
+                    candidate
+                    for candidate, (candidate_width, candidate_height) in zip(
+                        small_polygons,
+                        sizes,
+                        strict=True,
+                    )
+                    if (
+                        abs(candidate_width - reference_width) <= size_tolerance
+                        and abs(candidate_height - reference_height) <= size_tolerance
+                    )
+                )
+                grid_like_count = len(same_size)
+                if len(same_size) >= minimum_family_members:
+                    horizontal = _regular_shape_offsets(
+                        [_shape_center(candidate)[1] for candidate in same_size],
+                        settings,
+                    )
+                    vertical = _regular_shape_offsets(
+                        [_shape_center(candidate)[0] for candidate in same_size],
+                        settings,
+                    )
+                    if horizontal and vertical:
+                        grid_members = tuple(
+                            candidate
+                            for candidate in same_size
+                            if (
+                                any(
+                                    abs(_shape_center(candidate)[1] - offset)
+                                    <= settings.band_width
+                                    for offset in horizontal
+                                )
+                                and any(
+                                    abs(_shape_center(candidate)[0] - offset)
+                                    <= settings.band_width
+                                    for offset in vertical
+                                )
+                            )
+                        )
+                        if len(grid_members) < minimum_family_members:
+                            grid_members = ()
+    return ShapeGridFilterResult(
+        candidates,
+        grid_detected=bool(grid_members),
+        removed_count=len(grid_members),
+        grid_like_count=grid_like_count,
+    )

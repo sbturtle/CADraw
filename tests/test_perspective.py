@@ -5,8 +5,11 @@ import numpy as np
 
 from cadraw.models import Point
 from cadraw.perspective import (
+    PageQuadConfig,
     detect_page_quadrilateral,
     detect_page_quadrilateral_in_region,
+    detect_page_quadrilateral_scored,
+    score_page_quadrilateral,
     transform_point,
     warp_page,
 )
@@ -79,3 +82,26 @@ def test_page_detector_maps_a_boundary_found_inside_requested_region() -> None:
     assert min(point.y for point in detected) > 90.0
     assert max(point.x for point in detected) < 430.0
     assert max(point.y for point in detected) < 280.0
+
+
+def test_page_candidate_confidence_accepts_dominant_bordered_page() -> None:
+    # Given a high-contrast photographed page boundary
+    image = np.full((520, 720), 30, dtype=np.uint8)
+    quad = (
+        Point(80.0, 40.0),
+        Point(640.0, 70.0),
+        Point(665.0, 470.0),
+        Point(50.0, 440.0),
+    )
+    polygon = np.asarray([(point.x, point.y) for point in quad], dtype=np.int32)
+    _ = cv2.fillConvexPoly(image, polygon, 240)
+    _ = cv2.polylines(image, [polygon], isClosed=True, color=0, thickness=6)
+
+    # When the candidate is scored and gated
+    candidate = score_page_quadrilateral(image, quad, PageQuadConfig())
+    detection = detect_page_quadrilateral_scored(image)
+
+    # Then confidence is high enough for a safe perspective correction
+    assert candidate.confidence >= 0.62
+    assert detection.candidate is not None
+    assert detection.candidate.confidence >= 0.62

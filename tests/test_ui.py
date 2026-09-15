@@ -166,6 +166,42 @@ def test_main_window_loads_real_image_through_production_path(tmp_path: Path) ->
     assert window.document is not None
 
 
+def test_preprocessing_choices_reanalyze_without_losing_original_photo(
+    tmp_path: Path,
+) -> None:
+    # Given a photographed-style source with an uneven background
+    _ = _application()
+    image = np.full((240, 320), 235, dtype=np.uint8)
+    image[80:160, :] -= 30
+    _ = cv2.line(image, (40, 120), (280, 120), 60, 5)
+    image_path = tmp_path / "shadowed-sketch.png"
+    Image.fromarray(image).save(image_path)
+    window = MainWindow()
+    assert window.load_path(image_path) is True
+    preprocessing_buttons = tuple(
+        window.findChild(QPushButton, f"preprocessing_{index}") for index in range(1, 4)
+    )
+    source_original = window.findChild(
+        QPushButton,
+        "source_mode_original",
+    )
+    assert all(button is not None for button in preprocessing_buttons)
+    assert source_original is not None
+    second_preprocessing = preprocessing_buttons[1]
+    assert second_preprocessing is not None
+
+    # When the reviewer chooses the second of three visible variants
+    second_preprocessing.click()
+    _application().processEvents()
+
+    # Then that variant is used while the original source mode remains available
+    assert window.analysis is not None
+    assert window.analysis.selected_preprocessing_variant == "clahe_adaptive"
+    source_original.click()
+    _application().processEvents()
+    assert source_original.isChecked()
+
+
 def test_manual_dimension_edit_recalculates_and_exports(tmp_path: Path) -> None:
     # Given a loaded drawing with an editable unknown dimension row
     _ = _application()
@@ -175,6 +211,10 @@ def test_manual_dimension_edit_recalculates_and_exports(tmp_path: Path) -> None:
     Image.fromarray(image).save(image_path)
     window = MainWindow()
     assert window.load_path(image_path) is True
+    preprocessing = window.findChild(QPushButton, "preprocessing_1")
+    assert preprocessing is not None
+    preprocessing.click()
+    _application().processEvents()
 
     # When the user enters a physical length in the real table widget
     window.set_dimension_text(0, "100")

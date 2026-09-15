@@ -13,6 +13,16 @@ from cadraw.ui.main_window import MainWindow
 from cadraw.ui.preview_widget import PreviewWidget
 from cadraw.ui.workbench_view import WorkbenchView
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_SAMPLE_PATH = next(
+    path
+    for path in (
+        _PROJECT_ROOT / "sample" / "KakaoTalk_20260909_141552817.jpg",
+        _PROJECT_ROOT / "sample" / "1.jpg",
+    )
+    if path.exists()
+)
+
 
 def _application() -> QApplication:
     """Return the test process QApplication."""
@@ -144,12 +154,7 @@ def test_line_list_stays_scrollable_when_workbench_is_resized() -> None:
     # Given a real sample with more line rows than a compact table can show
     _ = _application()
     window = MainWindow()
-    sample_path = (
-        Path(__file__).resolve().parents[1]
-        / "sample"
-        / "KakaoTalk_20260909_141552817.jpg"
-    )
-    assert window.load_path(sample_path) is True
+    assert window.load_path(_SAMPLE_PATH) is True
     window.resize(960, 600)
     window.show()
     _application().processEvents()

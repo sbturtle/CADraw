@@ -23,7 +23,7 @@ from typing import Final, cast, final, override
 from PIL import Image, ImageDraw, ImageFont
 
 from cadraw.calculator import calculate_document
-from cadraw.detection import DetectionConfig, DrawingFieldConfig
+from cadraw.detection import DetectionConfig, DrawingFieldConfig, ImageReadError
 from cadraw.dimensions import (
     associate_dimension,
     confirm_dimension_text,
@@ -31,6 +31,7 @@ from cadraw.dimensions import (
 )
 from cadraw.export import export_dxf, validate_dxf
 from cadraw.models import (
+    AnalysisStatus,
     CircleEntity,
     Dimension,
     DimensionId,
@@ -41,12 +42,26 @@ from cadraw.models import (
 )
 from cadraw.normalization import NormalizationConfig
 from cadraw.pipeline import PipelineConfig, analyze_image
-from cadraw.preview import PreviewConfig, render_preview
+from cadraw.preview import (
+    PreviewConfig,
+    render_foreground_overlay,
+    render_preview,
+)
 
 _SAMPLE_DIMENSION_COUNT: Final = 4
 _MIN_VERTICAL_TARGETS: Final = 2
 _ARGUMENTS_ERROR: Final = "arguments"
 _DIMENSIONS_ERROR: Final = "dimensions"
+_LEGACY_SAMPLE_NAME: Final = "KakaoTalk_20260909_141552817.jpg"
+_BLOCKED_ANALYSIS_STATUSES = frozenset(
+    {
+        AnalysisStatus.NO_GEOMETRY_DETECTED,
+        AnalysisStatus.VERY_LOW_CONFIDENCE,
+        AnalysisStatus.TOO_MUCH_NOISE,
+        AnalysisStatus.DOCUMENT_NOT_FOUND,
+        AnalysisStatus.PREPROCESSING_UNCERTAIN,
+    },
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +77,7 @@ class PocOptions:
     detect_shapes: bool = False
     perspective: bool = False
     ocr: bool = False
+    debug_directory: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +98,10 @@ class PocSummary:
     hole_entities: int = 0
     ocr_candidates: int = 0
     perspective_corrected: bool = False
+    analysis_status: str = "READY"
+    export_status: str = "EXPORTED"
+    selected_preprocessing_variant: str | None = None
+    preprocessing_reports: tuple[dict[str, object], ...] = ()
 
 
 @final
@@ -110,6 +130,7 @@ def _parse_options(argv: Sequence[str]) -> PocOptions:
     _ = parser.add_argument("--detect-shapes", action="store_true")
     _ = parser.add_argument("--perspective", action="store_true")
     _ = parser.add_argument("--ocr", action="store_true")
+    _ = parser.add_argument("--debug-dir", type=Path)
     try:
         parsed = parser.parse_args(list(argv))
     except (argparse.ArgumentError, SystemExit) as error:
@@ -123,6 +144,7 @@ def _parse_options(argv: Sequence[str]) -> PocOptions:
     detect_shapes = cast("bool", parsed.detect_shapes)
     perspective = cast("bool", parsed.perspective)
     ocr = cast("bool", parsed.ocr)
+    debug_directory = cast("Path | None", parsed.debug_dir)
     if dimensions_option is not None and confirm_length is not None:
         raise PocUsageError(_DIMENSIONS_ERROR)
     dimension_texts = (
@@ -142,6 +164,7 @@ def _parse_options(argv: Sequence[str]) -> PocOptions:
         detect_shapes=detect_shapes,
         perspective=perspective,
         ocr=ocr,
+        debug_directory=debug_directory,
     )
 
 
@@ -288,13 +311,36 @@ def _pipeline_config(
             perspective_correction=perspective,
             ocr_enabled=ocr,
         )
+    if input_path.name == _LEGACY_SAMPLE_NAME:
+        return PipelineConfig(
+            detection=DetectionConfig(
+                minimum_line_length=70.0,
+                hough_threshold=25,
+                maximum_line_gap=28,
+                maximum_candidates=64,
+                border_margin_ratio=0.0,
+                detect_closed_shapes=detect_shapes,
+            ),
+            normalization=NormalizationConfig(
+                horizontal_angle_tolerance_degrees=7.0,
+                vertical_angle_tolerance_degrees=7.0,
+                endpoint_snap_distance=45.0,
+                line_merge_tolerance=45.0,
+                minimum_line_length=60.0,
+                keep_largest_connected_component=True,
+            ),
+            source_region=(500, 680, 550, 1150),
+            perspective_correction=perspective,
+            ocr_enabled=ocr,
+        )
     defaults = PipelineConfig.from_detection_defaults()
+    detection = replace(
+        defaults.detection,
+        detect_closed_shapes=detect_shapes,
+    )
     return replace(
         defaults,
-        detection=replace(
-            defaults.detection,
-            detect_closed_shapes=detect_shapes,
-        ),
+        detection=detection,
         perspective_correction=perspective,
         ocr_enabled=ocr,
     )
@@ -305,6 +351,7 @@ def run(options: PocOptions) -> PocSummary:
     options.output_directory.mkdir(parents=True, exist_ok=True)
     image_path = options.output_directory / "sample_hand_drawing.png"
     preview_path = options.output_directory / "sample_preview.png"
+    foreground_path = options.output_directory / "sample_foreground.png"
     dxf_path = options.output_directory / "sample_drawing.dxf"
     summary_path = options.output_directory / "sample_summary.json"
     if options.input_path is None:
@@ -319,6 +366,14 @@ def run(options: PocOptions) -> PocSummary:
         perspective=options.perspective,
         ocr=options.ocr,
     )
+    config = replace(
+        config,
+        preprocessing=replace(
+            config.preprocessing,
+            enabled=config.preprocessing.enabled or options.debug_directory is not None,
+        ),
+        preprocessing_debug_directory=options.debug_directory,
+    )
     analysis = analyze_image(image_path, config)
     if options.dimension_texts is not None:
         analysis = _add_sample_dimensions(analysis, options.dimension_texts)
@@ -330,8 +385,25 @@ def run(options: PocOptions) -> PocSummary:
             document,
             PreviewConfig(width=1200, height=900),
         ).save(preview_path)
-    _ = export_dxf(document, dxf_path, allow_unresolved=True)
-    validation = validate_dxf(dxf_path)
+        render_foreground_overlay(analysis).save(foreground_path)
+    export_blocked = (
+        document.analysis_status in _BLOCKED_ANALYSIS_STATUSES or not document.entities
+    )
+    if export_blocked:
+        dxf_path.unlink(missing_ok=True)
+        export_status = (
+            "BLOCKED_NO_GEOMETRY"
+            if not document.entities
+            else "BLOCKED_ANALYSIS_UNCERTAIN"
+        )
+        dxf_entities = 0
+        dxf_types: tuple[tuple[str, int], ...] = ()
+    else:
+        _ = export_dxf(document, dxf_path, allow_unresolved=True)
+        validation = validate_dxf(dxf_path)
+        export_status = "EXPORTED"
+        dxf_entities = validation.total_entities
+        dxf_types = validation.entity_counts
     summary = PocSummary(
         image=str(image_path),
         dimension_texts=tuple(dimension.raw_text for dimension in analysis.dimensions),
@@ -343,8 +415,8 @@ def run(options: PocOptions) -> PocSummary:
             if isinstance(entity, LineEntity)
         ),
         scale_mm_per_source_unit=document.scale_mm_per_source_unit,
-        dxf_entities=validation.total_entities,
-        dxf_types=validation.entity_counts,
+        dxf_entities=dxf_entities,
+        dxf_types=dxf_types,
         warnings=tuple(warning.code.value for warning in document.warnings),
         entity_types=tuple(entity.entity_type.value for entity in document.entities),
         source_region=analysis.source_region,
@@ -355,6 +427,12 @@ def run(options: PocOptions) -> PocSummary:
         ),
         ocr_candidates=len(analysis.text_candidates),
         perspective_corrected=analysis.perspective_transform is not None,
+        analysis_status=analysis.status.value,
+        export_status=export_status,
+        selected_preprocessing_variant=analysis.selected_preprocessing_variant,
+        preprocessing_reports=tuple(
+            asdict(report) for report in analysis.preprocessing_reports
+        ),
     )
     _ = summary_path.write_text(
         json.dumps(asdict(summary), ensure_ascii=False, indent=2),
@@ -374,7 +452,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "[--confirm-length MM] "
                     "[--output-dir DIR] [--no-preview] "
                     "[--auto-region] [--detect-shapes] "
-                    "[--perspective] [--ocr]"
+                    "[--perspective] [--ocr] [--debug-dir DIR]"
                 ),
             ),
         )
@@ -384,7 +462,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     except PocUsageError as error:
         print(str(error), file=sys.stderr)
         return 2
-    summary = run(options)
+    try:
+        summary = run(options)
+    except ImageReadError as error:
+        print(
+            json.dumps(
+                {
+                    "analysis_status": "DOCUMENT_NOT_FOUND",
+                    "warnings": ["DOCUMENT_NOT_FOUND"],
+                    "image": str(error.path),
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 1
     print(json.dumps(asdict(summary), ensure_ascii=False, indent=2))
     return 0
 

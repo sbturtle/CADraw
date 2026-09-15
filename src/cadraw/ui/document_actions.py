@@ -4,9 +4,19 @@ from collections.abc import Callable
 from pathlib import Path
 
 from cadraw.export import export_dxf, validate_dxf
-from cadraw.models import CadDocument
+from cadraw.models import AnalysisStatus, CadDocument
 
 type CaptionSetter = Callable[[str], None]
+
+_BLOCKED_STATUSES = frozenset(
+    {
+        AnalysisStatus.NO_GEOMETRY_DETECTED,
+        AnalysisStatus.VERY_LOW_CONFIDENCE,
+        AnalysisStatus.TOO_MUCH_NOISE,
+        AnalysisStatus.DOCUMENT_NOT_FOUND,
+        AnalysisStatus.PREPROCESSING_UNCERTAIN,
+    },
+)
 
 
 def calculation_caption(document: CadDocument) -> str:
@@ -26,6 +36,14 @@ def save_document(
     """Export and validate a document while updating the UI caption."""
     if document is None:
         set_caption("먼저 손도면 사진을 불러오세요.")
+        return False
+    if document.analysis_status in _BLOCKED_STATUSES:
+        status_label = f"({document.analysis_status.value})"
+        caption = "DXF 저장 보류: 분석 상태를 확인해 주세요 "
+        set_caption(caption + status_label + ".")
+        return False
+    if not document.entities:
+        set_caption("DXF 저장 보류: 도면 geometry가 없습니다.")
         return False
     try:
         summary = export_dxf(document, output_path)

@@ -13,7 +13,10 @@ from cadraw.arbitration import (
     CandidateArbitrationConfig,
     arbitrate_line_candidates,
 )
-from cadraw.grid_filter import filter_periodic_grid_candidates
+from cadraw.grid_filter import (
+    filter_periodic_grid_candidates,
+    inspect_periodic_grid_shapes,
+)
 from cadraw.models import (
     CircleCandidate,
     EntityId,
@@ -112,6 +115,17 @@ class PreprocessedImage:
     edges: GrayImage
     width: int
     height: int
+
+
+@dataclass(frozen=True, slots=True)
+class ShapeDetectionEvidence:
+    """Closed-shape candidates plus periodic-grid rejection evidence."""
+
+    candidates: tuple[ShapeCandidate, ...]
+    grid_detected: bool = False
+    grid_candidate_count: int = 0
+    grid_like_count: int = 0
+    candidate_limit_reached: bool = False
 
 
 def load_grayscale_image(path: Path) -> GrayImage:
@@ -1154,13 +1168,13 @@ def classify_shape_holes(
     )
 
 
-def detect_shape_candidates(
+def detect_shape_candidates_with_evidence(
     image: GrayImage,
     config: DetectionConfig,
-) -> tuple[ShapeCandidate, ...]:
-    """Detect closed rectangles and circular marks from a grayscale image."""
+) -> ShapeDetectionEvidence:
+    """Detect closed shapes while reporting periodic-grid rejection evidence."""
     if not config.detect_closed_shapes:
-        return ()
+        return ShapeDetectionEvidence(())
     prepared = preprocess_image(image, config)
     threshold = config.shape_threshold
     if threshold is None:
@@ -1211,9 +1225,28 @@ def detect_shape_candidates(
         if any(_shape_duplicate(existing, candidate) for existing in unique):
             continue
         unique.append(candidate)
-        if len(unique) >= config.maximum_shape_candidates:
-            break
-    classified = classify_shape_holes(tuple(unique))
-    return tuple(
-        _with_shape_id(candidate, index) for index, candidate in enumerate(classified)
+    grid_evidence = inspect_periodic_grid_shapes(
+        tuple(unique),
+        prepared.width,
+        prepared.height,
+        config.arbitration.grid,
     )
+    classified = classify_shape_holes(grid_evidence.candidates)
+    limited = classified[: config.maximum_shape_candidates]
+    return ShapeDetectionEvidence(
+        candidates=tuple(
+            _with_shape_id(candidate, index) for index, candidate in enumerate(limited)
+        ),
+        grid_detected=grid_evidence.grid_detected,
+        grid_candidate_count=grid_evidence.removed_count,
+        grid_like_count=grid_evidence.grid_like_count,
+        candidate_limit_reached=len(classified) > config.maximum_shape_candidates,
+    )
+
+
+def detect_shape_candidates(
+    image: GrayImage,
+    config: DetectionConfig,
+) -> tuple[ShapeCandidate, ...]:
+    """Detect closed rectangles and circular marks from a grayscale image."""
+    return detect_shape_candidates_with_evidence(image, config).candidates

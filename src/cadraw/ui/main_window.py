@@ -11,6 +11,7 @@ from cadraw.calculator import calculate_document
 from cadraw.detection import ImageReadError
 from cadraw.dimensions import confirm_dimension_text
 from cadraw.models import (
+    AnalysisStatus,
     CadDocument,
     Dimension,
     DimensionId,
@@ -18,6 +19,7 @@ from cadraw.models import (
     DimensionStatus,
     DrawingAnalysis,
     EntityId,
+    WarningCode,
 )
 from cadraw.pipeline import PipelineConfig
 from cadraw.preview import PreviewConfig, PreviewMode, render_preview
@@ -28,16 +30,37 @@ from cadraw.ui.line_edit_controller import (
     LineEditCallbacks,
     LineEditController,
 )
-from cadraw.ui.source_rendering import refresh_source_view
+from cadraw.ui.source_rendering import (
+    pixmap_from_png,
+    refresh_source_view,
+    render_foreground_pixmap,
+)
 from cadraw.ui.verification_labels import (
     selected_dimension_label,
     selected_entity_info,
 )
-from cadraw.ui.workbench_view import WorkbenchView
+from cadraw.ui.workbench_view import SourceViewMode, WorkbenchView
 from cadraw.vision import MockVisionAnalyzer, VisionAnalyzer
 
 _MIN_MERGE_SELECTION = 2
 _MIN_DELETE_SELECTION = 1
+_STATUS_CAPTIONS: dict[AnalysisStatus, str] = {
+    AnalysisStatus.NO_GEOMETRY_DETECTED: (
+        "도면 선을 충분히 인식하지 못했습니다. 다른 전처리 방식을 시도해 주세요."
+    ),
+    AnalysisStatus.VERY_LOW_CONFIDENCE: (
+        "도면 후보의 신뢰도가 낮습니다. 결과를 확인해 주세요."
+    ),
+    AnalysisStatus.TOO_MUCH_NOISE: (
+        "배경 잡음이 많습니다. 전처리 결과를 바꿔 확인해 주세요."
+    ),
+    AnalysisStatus.DOCUMENT_NOT_FOUND: (
+        "종이 영역을 찾지 못해 원본 좌표로 처리했습니다. 결과를 확인해 주세요."
+    ),
+    AnalysisStatus.PREPROCESSING_UNCERTAIN: (
+        "전처리 후보가 불확실합니다. 가장 잘 보이는 방식을 선택해 주세요."
+    ),
+}
 
 
 class MainWindow(QMainWindow):
@@ -56,6 +79,10 @@ class MainWindow(QMainWindow):
         self._analysis: DrawingAnalysis | None = None
         self._document: CadDocument | None = None
         self._source_pixmap: QPixmap | None = None
+        self._foreground_pixmap: QPixmap | None = None
+        self._source_mode: SourceViewMode = SourceViewMode.ORIGINAL
+        self._image_path: Path | None = None
+        self._preprocessed_pixmaps: dict[str, QPixmap] = {}
         self._selected_dimension_id: DimensionId | None = None
         self._preview_mode: PreviewMode = PreviewMode.CAD
         self._view: WorkbenchView = WorkbenchView(self)
@@ -126,6 +153,98 @@ class MainWindow(QMainWindow):
         _ = self._view.source_line_drawn.connect(
             self._line_edit_controller.install_drawn_line,
         )
+        _ = self._view.source_mode_changed.connect(
+            self._on_source_mode_changed,
+        )
+        _ = self._view.preprocessing_mode_changed.connect(
+            self._on_preprocessing_mode_changed,
+        )
+
+    def _on_source_mode_changed(self, mode: str) -> None:
+        """Switch between the original photo and geometry-only source view."""
+        self._source_mode = SourceViewMode(mode)
+        self._refresh_source_pixmap()
+
+    def _on_preprocessing_mode_changed(self, variant: str) -> None:
+        """Re-run local detection with the reviewer's chosen variant."""
+        if self._image_path is None:
+            return
+        try:
+            if isinstance(self._analyzer, MockVisionAnalyzer):
+                analysis = self._analyzer.analyze(
+                    self._image_path,
+                    preprocessing_variant=variant,
+                )
+            else:
+                analysis = self._analyzer.analyze(self._image_path)
+        except ImageReadError as error:
+            self._view.set_caption(str(error))
+            return
+        installed = self._install_analysis(analysis)
+        self._source_mode = SourceViewMode.PREPROCESSED
+        self._view.set_source_mode(SourceViewMode.PREPROCESSED)
+        self._view.set_preprocessing_mode(variant)
+        self._refresh_source_pixmap()
+        self._refresh_dimension_table()
+        self._recalculate()
+        self._view.set_caption(
+            self._analysis_caption(
+                installed,
+                prefix=f"전처리 {variant} 적용 · ",
+            ),
+        )
+        self._view.set_main_actions_enabled(
+            recalculate=True,
+            save=self._can_save(installed),
+        )
+
+    def _install_analysis(self, analysis: DrawingAnalysis) -> DrawingAnalysis:
+        """Install analysis and prepare its review-only source surfaces."""
+        installed = replace(
+            analysis,
+            dimensions=manual_dimensions(
+                analysis.entities,
+                analysis.dimensions,
+            ),
+        )
+        self._analysis = installed
+        self._foreground_pixmap = None
+        self._preprocessed_pixmaps = {
+            preview.variant: pixmap_from_png(preview.image_png)
+            for preview in installed.preprocessing_previews
+        }
+        self._view.set_preprocessing_previews(
+            installed.preprocessing_previews,
+        )
+        return installed
+
+    @staticmethod
+    def _can_save(analysis: DrawingAnalysis) -> bool:
+        """Allow export only for a non-empty ready analysis."""
+        return analysis.status is AnalysisStatus.READY and bool(analysis.entities)
+
+    @staticmethod
+    def _analysis_caption(
+        analysis: DrawingAnalysis,
+        *,
+        prefix: str = "",
+    ) -> str:
+        """Describe uncertainty without hiding the selectable recovery path."""
+        if analysis.status is not AnalysisStatus.READY:
+            return prefix + _STATUS_CAPTIONS[analysis.status]
+        if any(
+            warning.code is WarningCode.DOCUMENT_NOT_FOUND
+            for warning in analysis.warnings
+        ):
+            return (
+                prefix
+                + "종이 영역을 찾지 못해 전체 사진으로 분석했습니다. "
+                + f"선 {len(analysis.entities)}개를 확인해 주세요."
+            )
+        return (
+            prefix
+            + f"선 {len(analysis.entities)}개를 찾았습니다. 치수를 확인해 주세요."
+        )
 
     def load_path(self, image_path: Path) -> bool:
         """Load and analyze one image through the production path."""
@@ -134,35 +253,32 @@ class MainWindow(QMainWindow):
         except ImageReadError as error:
             self._view.set_caption(str(error))
             return False
+        self._image_path = image_path
         self._selected_dimension_id = None
         self._view.set_redraw_checked(False)
-        self._analysis = replace(
-            analysis,
-            dimensions=manual_dimensions(
-                analysis.entities,
-                analysis.dimensions,
-            ),
-        )
+        self._source_mode = SourceViewMode.ORIGINAL
+        self._view.set_source_mode(SourceViewMode.ORIGINAL)
         self._source_pixmap = QPixmap(str(image_path))
+        installed = self._install_analysis(analysis)
         self._refresh_source_pixmap()
-        self._view.set_main_actions_enabled(recalculate=True, save=True)
+        self._view.set_main_actions_enabled(
+            recalculate=True,
+            save=self._can_save(installed),
+        )
         self._refresh_dimension_table()
         self._recalculate()
         pending_angle_count = sum(
             dimension.kind is DimensionKind.ANGLE
             and dimension.status is DimensionStatus.UNSET
-            for dimension in self._analysis.dimensions
+            for dimension in installed.dimensions
         )
         angle_prompt = (
             f" 대각선 각도 {pending_angle_count}개는 입력 후 승인해 주세요."
             if pending_angle_count
             else ""
         )
-        load_caption = (
-            f"선 {len(self._analysis.entities)}개를 찾았습니다. 치수를 확인해 주세요."
-        )
         self._view.set_caption(
-            f"{load_caption}{angle_prompt}",
+            f"{self._analysis_caption(installed)}{angle_prompt}",
         )
         return True
 
@@ -172,7 +288,28 @@ class MainWindow(QMainWindow):
 
     def _refresh_source_pixmap(self) -> None:
         """Fit the source image and update its selected-line overlay."""
-        refresh_source_view(self._view, self._source_pixmap, self._analysis)
+        pixmap = self._source_pixmap
+        if self._source_mode is SourceViewMode.FOREGROUND:
+            if (
+                self._foreground_pixmap is None
+                and self._source_pixmap is not None
+                and not self._source_pixmap.isNull()
+                and self._analysis is not None
+            ):
+                self._foreground_pixmap = render_foreground_pixmap(self._analysis)
+            pixmap = self._foreground_pixmap
+        elif (
+            self._source_mode is SourceViewMode.PREPROCESSED
+            and self._analysis is not None
+            and self._analysis.selected_preprocessing_variant is not None
+        ):
+            pixmap = self._preprocessed_pixmaps.get(
+                self._analysis.selected_preprocessing_variant,
+            )
+        self._view.set_source_drawing_enabled(
+            self._source_mode is not SourceViewMode.PREPROCESSED,
+        )
+        refresh_source_view(self._view, pixmap, self._analysis)
 
     def _refresh_dimension_table(self) -> None:
         """Render analysis dimensions while retaining stable row selection."""
@@ -377,6 +514,11 @@ class MainWindow(QMainWindow):
             ),
         )
         self._selected_dimension_id = selected_dimension_id
+        self._foreground_pixmap = None
+        self._preprocessed_pixmaps = {
+            preview.variant: pixmap_from_png(preview.image_png)
+            for preview in self._analysis.preprocessing_previews
+        }
         self._refresh_dimension_table()
         self._recalculate()
         self._refresh_source_pixmap()

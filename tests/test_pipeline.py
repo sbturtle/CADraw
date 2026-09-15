@@ -7,11 +7,13 @@ from PIL import Image
 
 from cadraw.detection import DetectionConfig
 from cadraw.models import (
+    AnalysisStatus,
     CircleEntity,
     DimensionKind,
     LineEntity,
     PolylineEntity,
     TextCandidate,
+    WarningCode,
 )
 from cadraw.normalization import NormalizationConfig
 from cadraw.pipeline import PipelineConfig, analyze_image
@@ -27,6 +29,97 @@ class _FakeOcrBackend:
                 confidence=0.9,
             ),
         )
+
+
+def test_blank_photo_reports_no_geometry_instead_of_success(tmp_path: Path) -> None:
+    # Given a blank source image
+    image_path = tmp_path / "blank.png"
+    Image.fromarray(np.full((240, 320), 255, dtype=np.uint8)).save(image_path)
+
+    # When the robust pipeline analyzes it
+    analysis = analyze_image(image_path, PipelineConfig.from_detection_defaults())
+
+    # Then the failure is explicit and machine-readable
+    assert analysis.status is AnalysisStatus.NO_GEOMETRY_DETECTED
+    assert any(
+        warning.code is WarningCode.NO_GEOMETRY_DETECTED
+        for warning in analysis.warnings
+    )
+    assert any(
+        warning.code is WarningCode.DOCUMENT_NOT_FOUND for warning in analysis.warnings
+    )
+
+
+def test_low_score_photo_exposes_uncertainty_and_explicit_variant_warning(
+    tmp_path: Path,
+) -> None:
+    # Given a deliberately sparse one-stroke source
+    image = np.full((240, 320), 255, dtype=np.uint8)
+    _ = cv2.line(image, (40, 50), (280, 50), 0, 5)
+    image_path = tmp_path / "sparse.png"
+    Image.fromarray(image).save(image_path)
+    config = PipelineConfig.from_detection_defaults()
+
+    # When automatic selection is uncertain
+    automatic = analyze_image(image_path, config)
+
+    # Then it falls back and asks for a human preprocessing choice
+    assert automatic.status is AnalysisStatus.PREPROCESSING_UNCERTAIN
+    assert automatic.selected_preprocessing_variant is None
+    assert any(
+        warning.code is WarningCode.PREPROCESSING_UNCERTAIN
+        for warning in automatic.warnings
+    )
+
+    # When a reviewer explicitly selects one visible variant
+    chosen = analyze_image(
+        image_path,
+        config,
+        preprocessing_variant="grayscale_adaptive",
+    )
+
+    # Then detection is not silent, even if confidence remains low
+    assert chosen.selected_preprocessing_variant == "grayscale_adaptive"
+    assert any(
+        warning.code is WarningCode.VERY_LOW_CONFIDENCE for warning in chosen.warnings
+    )
+
+
+def test_grid_dominated_shapes_are_not_reported_as_ready(
+    tmp_path: Path,
+) -> None:
+    # Given many regularly spaced grid cells and one dark profile
+    image = np.full((720, 720), 255, dtype=np.uint8)
+    for x in range(20, 680, 34):
+        for y in range(20, 680, 34):
+            _ = cv2.rectangle(image, (x, y), (x + 30, y + 30), 160, 1)
+    _ = cv2.rectangle(image, (160, 160), (560, 560), 0, 7)
+    image_path = tmp_path / "grid-profile.png"
+    Image.fromarray(image).save(image_path)
+    config = replace(
+        PipelineConfig.from_detection_defaults(),
+        perspective_correction=False,
+        preprocessing=replace(
+            PipelineConfig.from_detection_defaults().preprocessing,
+            enabled=False,
+        ),
+        detection=DetectionConfig(
+            detect_closed_shapes=True,
+            minimum_shape_area=800.0,
+            minimum_shape_span=30.0,
+            maximum_shape_candidates=64,
+            border_margin_ratio=0.0,
+        ),
+    )
+
+    # When the production analysis pipeline processes the page
+    analysis = analyze_image(image_path, config)
+
+    # Then a grid-dominated shape result is explicitly blocked
+    assert analysis.status is AnalysisStatus.TOO_MUCH_NOISE
+    assert "GRAPH_PAPER_DETECTED" in tuple(
+        warning.code.value for warning in analysis.warnings
+    )
 
 
 def test_analysis_keeps_missing_dimensions_explicit(tmp_path: Path) -> None:

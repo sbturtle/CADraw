@@ -1,7 +1,20 @@
 from PIL import Image
 
-from cadraw.models import CadDocument, EntityId, LineEntity, Orientation, Point
-from cadraw.preview import PreviewConfig, preview_mapper, render_preview
+from cadraw.models import (
+    CadDocument,
+    DetectedEntity,
+    DrawingAnalysis,
+    EntityId,
+    LineEntity,
+    Orientation,
+    Point,
+)
+from cadraw.preview import (
+    PreviewConfig,
+    preview_mapper,
+    render_foreground_overlay,
+    render_preview,
+)
 from cadraw.preview_selection import PreviewSelectionWindow, select_preview_entities
 
 
@@ -33,6 +46,43 @@ def _selection_document() -> CadDocument:
         warnings=(),
         scale_mm_per_source_unit=1.0,
     )
+
+
+def test_foreground_overlay_keeps_only_source_geometry_on_transparent_canvas() -> None:
+    # Given accepted source-space geometry and unrelated source pixels
+    line = LineEntity(
+        entity_id=EntityId("line_1"),
+        raw_start=Point(10.0, 20.0),
+        raw_end=Point(90.0, 20.0),
+        start=Point(10.0, 20.0),
+        end=Point(90.0, 20.0),
+        orientation=Orientation.HORIZONTAL,
+        confidence=0.95,
+    )
+    analysis = DrawingAnalysis(
+        unit="mm",
+        image_size=(100, 60),
+        entities=(line,),
+        dimensions=(),
+        connections=(),
+        warnings=(),
+        detected_entities=(
+            DetectedEntity(
+                entity_id=line.entity_id,
+                geometry=line,
+                confidence=line.confidence,
+            ),
+        ),
+    )
+
+    # When the explicit foreground overlay is rendered
+    image = render_foreground_overlay(analysis)
+
+    # Then only the accepted stroke is opaque and the background is removed
+    assert image.mode == "RGBA"
+    alpha = image.getchannel("A")
+    assert alpha.getpixel((5, 5)) == 0
+    assert alpha.getpixel((50, 20)) == 255
 
 
 def test_preview_renders_geometry_inside_requested_frame() -> None:

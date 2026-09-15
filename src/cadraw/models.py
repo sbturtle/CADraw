@@ -91,6 +91,24 @@ class WarningCode(StrEnum):
     IMAGE_READ_FAILED = "IMAGE_READ_FAILED"
     PERSPECTIVE_NOT_FOUND = "PERSPECTIVE_NOT_FOUND"
     OCR_UNAVAILABLE = "OCR_UNAVAILABLE"
+    NO_GEOMETRY_DETECTED = "NO_GEOMETRY_DETECTED"
+    VERY_LOW_CONFIDENCE = "VERY_LOW_CONFIDENCE"
+    TOO_MUCH_NOISE = "TOO_MUCH_NOISE"
+    DOCUMENT_NOT_FOUND = "DOCUMENT_NOT_FOUND"
+    PREPROCESSING_UNCERTAIN = "PREPROCESSING_UNCERTAIN"
+    GRAPH_PAPER_DETECTED = "GRAPH_PAPER_DETECTED"
+    PERSPECTIVE_REJECTED = "PERSPECTIVE_REJECTED"
+
+
+class AnalysisStatus(StrEnum):
+    """Top-level state that prevents uncertain detection being silent."""
+
+    READY = "READY"
+    NO_GEOMETRY_DETECTED = "NO_GEOMETRY_DETECTED"
+    VERY_LOW_CONFIDENCE = "VERY_LOW_CONFIDENCE"
+    TOO_MUCH_NOISE = "TOO_MUCH_NOISE"
+    DOCUMENT_NOT_FOUND = "DOCUMENT_NOT_FOUND"
+    PREPROCESSING_UNCERTAIN = "PREPROCESSING_UNCERTAIN"
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,12 +306,38 @@ class TextCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class PreprocessingReport:
+    """Explainable evaluation metadata for one preprocessing variant."""
+
+    variant: str
+    score: float
+    meaningful_line_count: int
+    average_line_length: float
+    connected_endpoint_ratio: float
+    geometry_coverage: float
+    duplicate_line_ratio: float
+    short_noise_ratio: float
+    component_quality: float
+    processing_time_ms: float
+    selected: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class PreprocessingPreview:
+    """Small encoded preview kept separate from geometry semantics."""
+
+    variant: str
+    image_png: bytes
+
+
+@dataclass(frozen=True, slots=True)
 class PerspectiveTransform:
     """Perspective metadata needed to trace rectified geometry to the photo."""
 
     source_quad: tuple[Point, Point, Point, Point]
     target_size: tuple[int, int]
     inverse_matrix: tuple[float, ...]
+    confidence: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,6 +354,10 @@ class DrawingAnalysis:
     source_region: tuple[int, int, int, int] | None = None
     text_candidates: tuple[TextCandidate, ...] = ()
     perspective_transform: PerspectiveTransform | None = None
+    status: AnalysisStatus = AnalysisStatus.READY
+    preprocessing_reports: tuple[PreprocessingReport, ...] = ()
+    preprocessing_previews: tuple[PreprocessingPreview, ...] = ()
+    selected_preprocessing_variant: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,3 +370,4 @@ class CadDocument:
     warnings: tuple[AnalysisWarning, ...]
     scale_mm_per_source_unit: float | None
     cad_entities: tuple[CadEntity, ...] = ()
+    analysis_status: AnalysisStatus = AnalysisStatus.READY

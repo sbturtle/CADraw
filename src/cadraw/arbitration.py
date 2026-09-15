@@ -3,9 +3,8 @@
 from dataclasses import dataclass, field
 from math import atan2, degrees
 
+from cadraw.grid_filter import GridFilterConfig
 from cadraw.models import LineCandidate, Point
-
-from .grid_filter import GridFilterConfig
 
 _HALF_TURN_DEGREES = 180.0
 

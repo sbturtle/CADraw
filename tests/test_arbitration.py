@@ -9,6 +9,7 @@ from cadraw.detection import (
     DetectionConfig,
     detect_line_candidates,
     detect_shape_candidates,
+    detect_shape_candidates_with_evidence,
 )
 from cadraw.models import (
     EntityId,
@@ -125,3 +126,31 @@ def test_nested_rectangles_are_retained_and_inner_shape_is_a_hole() -> None:
     )
     assert len(rectangles) == 2
     assert sum(candidate.role is GeometryRole.HOLE for candidate in rectangles) == 1
+
+
+def test_periodic_shape_grid_is_reported_before_shape_budget() -> None:
+    # Given many regularly spaced paper-grid cells and one dark profile
+    image = np.full((720, 720), 255, dtype=np.uint8)
+    for x in range(20, 680, 34):
+        for y in range(20, 680, 34):
+            _ = cv2.rectangle(image, (x, y), (x + 30, y + 30), 160, 1)
+    _ = cv2.rectangle(image, (160, 160), (560, 560), 0, 7)
+
+    # When closed-shape detection applies the normal candidate budget
+    evidence = detect_shape_candidates_with_evidence(
+        image,
+        DetectionConfig(
+            detect_closed_shapes=True,
+            minimum_shape_area=800.0,
+            minimum_shape_span=30.0,
+            maximum_shape_candidates=64,
+            border_margin_ratio=0.0,
+        ),
+    )
+
+    # Then the candidates remain available for review with grid evidence
+    assert len(evidence.candidates) == 64
+    assert evidence.grid_detected is True
+    assert evidence.grid_candidate_count >= 12
+    assert isinstance(evidence.candidates[0], PolylineCandidate)
+    assert evidence.candidates[0].confidence > 0.8

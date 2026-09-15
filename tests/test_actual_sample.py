@@ -1,5 +1,7 @@
+from math import isfinite
 from pathlib import Path
 
+import pytest
 from scripts.run_poc import PocOptions, run
 
 from cadraw.detection import DetectionConfig
@@ -8,7 +10,29 @@ from cadraw.models import LineEntity
 from cadraw.normalization import NormalizationConfig
 from cadraw.pipeline import PipelineConfig, analyze_image
 
-_SAMPLE = Path(__file__).parents[1] / "sample" / "KakaoTalk_20260909_141552817.jpg"
+_PROJECT_ROOT = Path(__file__).parents[1]
+_SAMPLE = next(
+    path
+    for path in (
+        _PROJECT_ROOT / "sample" / "KakaoTalk_20260909_141552817.jpg",
+        _PROJECT_ROOT / "sample" / "1.jpg",
+    )
+    if path.exists()
+)
+_PURE_BACKGROUND_SAMPLE = _PROJECT_ROOT / "sample" / "pure_background" / "1.png"
+_REAL_SAMPLES = tuple(
+    sorted(
+        {
+            path
+            for directory in (
+                _PROJECT_ROOT / "samples" / "real",
+                _SAMPLE.parent,
+            )
+            for pattern in ("*.jpg", "*.jpeg", "*.JPG", "*.JPEG")
+            for path in directory.glob(pattern)
+        },
+    ),
+)
 
 
 def test_default_pipeline_keeps_the_structural_chain_from_camera_noise() -> None:
@@ -18,6 +42,72 @@ def test_default_pipeline_keeps_the_structural_chain_from_camera_noise() -> None
     # Then the application defaults keep the four-stroke structural chain
     assert len(analysis.entities) == 4
     assert len(analysis.connections) == 3
+
+
+def test_default_pipeline_records_deterministic_preprocessing_evidence() -> None:
+    # Given the supplied camera photograph
+    analysis = analyze_image(_SAMPLE, PipelineConfig.from_detection_defaults())
+
+    # Then all independent variants expose finite selection evidence
+    assert tuple(report.variant for report in analysis.preprocessing_reports) == (
+        "grayscale_adaptive",
+        "clahe_adaptive",
+        "shadow_removed_adaptive",
+        "blur_otsu",
+    )
+    assert analysis.selected_preprocessing_variant in {
+        report.variant for report in analysis.preprocessing_reports
+    }
+    assert all(
+        report.processing_time_ms >= 0.0 and report.score == report.score
+        for report in analysis.preprocessing_reports
+    )
+
+
+def test_perspective_is_rejected_when_unwarped_geometry_is_stronger() -> None:
+    # Given the clean first sample whose page warp loses structural strokes
+    config = PipelineConfig.from_detection_defaults()
+
+    # When automatic perspective correction compares both geometry streams
+    analysis = analyze_image(_PURE_BACKGROUND_SAMPLE, config)
+
+    # Then the source-coordinate analysis keeps the stronger unwarped result
+    assert analysis.perspective_transform is None
+    assert len(analysis.entities) == 4
+
+
+@pytest.mark.parametrize(
+    "sample_path",
+    _REAL_SAMPLES,
+)
+def test_all_real_samples_record_repeatable_preprocessing_evidence(
+    sample_path: Path,
+) -> None:
+    # Given each supplied real photograph
+    config = PipelineConfig.from_detection_defaults()
+
+    # When the deterministic preprocessing/detection pipeline runs twice
+    first = analyze_image(sample_path, config)
+    second = analyze_image(sample_path, config)
+
+    # Then selection/status/geometry are repeatable and timings are measurable
+    assert len(first.preprocessing_reports) == 4
+    assert first.selected_preprocessing_variant in {
+        report.variant for report in first.preprocessing_reports
+    }
+    assert all(
+        isfinite(report.processing_time_ms) and report.processing_time_ms >= 0.0
+        for report in first.preprocessing_reports
+    )
+    assert (
+        first.status,
+        first.selected_preprocessing_variant,
+        tuple(entity.entity_id for entity in first.entities),
+    ) == (
+        second.status,
+        second.selected_preprocessing_variant,
+        tuple(entity.entity_id for entity in second.entities),
+    )
 
 
 def test_supplied_hand_drawing_reduces_to_four_connected_strokes() -> None:

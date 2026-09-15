@@ -1,11 +1,12 @@
 """Native workbench composition for the CADraw main window."""
 
 from collections.abc import Callable
+from enum import StrEnum
 from typing import Final, final
 
 from PIL import Image
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QGroupBox,
@@ -18,7 +19,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cadraw.models import CadDocument, DimensionId, DrawingAnalysis, EntityId, Point
+from cadraw.models import (
+    CadDocument,
+    DimensionId,
+    DrawingAnalysis,
+    EntityId,
+    Point,
+    PreprocessingPreview,
+)
 from cadraw.preview import PreviewConfig, PreviewMode
 from cadraw.ui.preview_widget import PreviewWidget
 from cadraw.ui.source_image_widget import SourceImageLabel
@@ -31,6 +39,14 @@ _PREVIEW_SELECTION_HINT: Final = (
 )
 _SUBTITLE_TEXT = """선은 자동으로 정리하고, 실제 치수는 입력된 값만 사용합니다.
 모르는 값은 미확인 상태로 남습니다."""
+
+
+class SourceViewMode(StrEnum):
+    """Source surface modes that preserve the original photo as an option."""
+
+    ORIGINAL = "original"
+    FOREGROUND = "foreground"
+    PREPROCESSED = "preprocessed"
 
 
 @final
@@ -49,6 +65,8 @@ class WorkbenchView(QWidget):
     preview_selection_changed = Signal(tuple)
     dimension_apply_requested = Signal(int, str)
     preview_mode_changed = Signal(str)
+    source_mode_changed = Signal(str)
+    preprocessing_mode_changed = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """Initialize the empty workbench view."""
@@ -62,6 +80,9 @@ class WorkbenchView(QWidget):
         self._caption = QLabel(self)
         self._preview_info = QLabel(self)
         self._mode_combo = QComboBox(self)
+        self._source_mode_buttons: dict[SourceViewMode, QPushButton] = {}
+        self._preprocessing_buttons: dict[str, QPushButton] = {}
+        self._preprocessing_toolbar: QHBoxLayout | None = None
         self._rotate_left_button = QPushButton(self)
         self._rotate_right_button = QPushButton(self)
         self._zoom_out_button = QPushButton(self)
@@ -101,6 +122,60 @@ class WorkbenchView(QWidget):
         """Render the source image and selected raw line overlay."""
         self._source_label.set_source_pixmap(pixmap)
         self._source_label.set_selection_lines(selection_lines)
+
+    def set_source_mode(self, mode: SourceViewMode) -> None:
+        """Select a source surface without triggering a re-analysis."""
+        for candidate, button in self._source_mode_buttons.items():
+            button.setChecked(candidate is mode)
+
+    def set_preprocessing_previews(
+        self,
+        previews: tuple[PreprocessingPreview, ...],
+    ) -> None:
+        """Render exactly three compact preprocessing choices when available."""
+        for button in self._preprocessing_buttons.values():
+            button.deleteLater()
+        self._preprocessing_buttons = {}
+        labels = (
+            "1 표준 강화",
+            "2 CLAHE 강화",
+            "3 그림자 보정",
+        )
+        toolbar = self._preprocessing_toolbar
+        if toolbar is None:
+            return
+        for index, preview in enumerate(previews[:3]):
+            label = labels[index] if index < len(labels) else preview.variant
+            button = QPushButton(label, self)
+            button.setCheckable(True)
+            button.setObjectName(f"preprocessing_{index + 1}")
+            button.setToolTip("선이 가장 잘 보이는 결과를 선택하세요.")
+            thumbnail = QPixmap.fromImage(QImage.fromData(preview.image_png))
+            button.setIcon(
+                QIcon(
+                    thumbnail.scaled(
+                        96,
+                        64,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                    ),
+                ),
+            )
+            button.setIconSize(
+                thumbnail.size().scaled(96, 64, Qt.AspectRatioMode.KeepAspectRatio)
+            )
+            _ = button.clicked.connect(
+                lambda _checked=False, variant=preview.variant: (
+                    self.preprocessing_mode_changed.emit(variant)
+                ),
+            )
+            toolbar.addWidget(button)
+            self._preprocessing_buttons[preview.variant] = button
+        toolbar.addStretch()
+
+    def set_preprocessing_mode(self, variant: str) -> None:
+        """Keep the preprocessing choice synchronized after re-analysis."""
+        for candidate, button in self._preprocessing_buttons.items():
+            button.setChecked(candidate == variant)
 
     def set_preview_image(self, image: Image.Image) -> None:
         """Replace the normalized preview raster."""
@@ -249,6 +324,31 @@ class WorkbenchView(QWidget):
         """Create the source-image viewport."""
         group = QGroupBox("원본 손도면", self)
         layout = QVBoxLayout(group)
+        source_toolbar = QHBoxLayout()
+        source_toolbar.addWidget(QLabel("보기"))
+        source_modes = (
+            (SourceViewMode.ORIGINAL, "원본 사진"),
+            (SourceViewMode.FOREGROUND, "도면 강조"),
+            (SourceViewMode.PREPROCESSED, "선택 전처리"),
+        )
+        for mode, label in source_modes:
+            button = QPushButton(label, self)
+            button.setCheckable(True)
+            button.setObjectName(f"source_mode_{mode.value}")
+            _ = button.clicked.connect(
+                lambda _checked=False, selected=mode: self.source_mode_changed.emit(
+                    selected.value
+                ),
+            )
+            source_toolbar.addWidget(button)
+            self._source_mode_buttons[mode] = button
+        source_toolbar.addStretch()
+        layout.addLayout(source_toolbar)
+        preprocessing_toolbar = QHBoxLayout()
+        preprocessing_toolbar.addWidget(QLabel("인식 방식"))
+        self._preprocessing_toolbar = preprocessing_toolbar
+        preprocessing_toolbar.addStretch()
+        layout.addLayout(preprocessing_toolbar)
         self._source_label.setObjectName("source_image")
         layout.addWidget(self._source_label)
         return group

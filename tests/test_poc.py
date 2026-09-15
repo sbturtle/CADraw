@@ -25,6 +25,7 @@ def test_reproducible_poc_runner_writes_expected_artifacts(tmp_path: Path) -> No
     assert set(summary.orientations) == {"horizontal", "vertical", "diagonal"}
     assert (tmp_path / "sample_hand_drawing.png").exists()
     assert (tmp_path / "sample_preview.png").exists()
+    assert (tmp_path / "sample_foreground.png").exists()
     assert (tmp_path / "sample_drawing.dxf").exists()
     assert (tmp_path / "sample_summary.json").exists()
 
