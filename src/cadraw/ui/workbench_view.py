@@ -6,7 +6,7 @@ from typing import Final, final
 
 from PIL import Image
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QIcon, QImage, QPixmap
+from PySide6.QtGui import QIcon, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QGroupBox,
@@ -67,6 +67,8 @@ class WorkbenchView(QWidget):
     preview_mode_changed = Signal(str)
     source_mode_changed = Signal(str)
     preprocessing_mode_changed = Signal(str)
+    undo_requested = Signal()
+    redo_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """Initialize the empty workbench view."""
@@ -75,6 +77,8 @@ class WorkbenchView(QWidget):
         self._preview = PreviewWidget(self)
         self._verification = VerificationPanel(self)
         self._load_button: QPushButton = QPushButton(self)
+        self._undo_button: QPushButton = QPushButton(self)
+        self._redo_button: QPushButton = QPushButton(self)
         self._recalculate_button: QPushButton = QPushButton(self)
         self._save_button: QPushButton = QPushButton(self)
         self._caption = QLabel(self)
@@ -228,6 +232,11 @@ class WorkbenchView(QWidget):
         """Set the enabled state of line correction actions."""
         self._verification.set_line_actions_enabled(merge, delete, redraw)
 
+    def set_undo_redo_enabled(self, undo: bool, redo: bool) -> None:
+        """Set the enabled state of the history toolbar actions."""
+        _ = self._undo_button.setEnabled(undo)
+        _ = self._redo_button.setEnabled(redo)
+
     def set_redraw_checked(self, checked: bool) -> None:
         """Set the redraw toggle state."""
         self._verification.set_redraw_checked(checked)
@@ -309,6 +318,20 @@ class WorkbenchView(QWidget):
         self._load_button.setObjectName("primary")
         _ = self._load_button.clicked.connect(self.load_requested)
         toolbar.addWidget(self._load_button)
+        self._undo_button.setText("실행 취소")
+        self._undo_button.setObjectName("undo_edit")
+        self._undo_button.setToolTip("직전 치수·선 편집을 되돌립니다.")
+        self._undo_button.setShortcut(QKeySequence.StandardKey.Undo)
+        _ = self._undo_button.clicked.connect(self.undo_requested)
+        _ = self._undo_button.setEnabled(False)
+        toolbar.addWidget(self._undo_button)
+        self._redo_button.setText("다시 실행")
+        self._redo_button.setObjectName("redo_edit")
+        self._redo_button.setToolTip("되돌린 편집을 다시 적용합니다.")
+        self._redo_button.setShortcut(QKeySequence.StandardKey.Redo)
+        _ = self._redo_button.clicked.connect(self.redo_requested)
+        _ = self._redo_button.setEnabled(False)
+        toolbar.addWidget(self._redo_button)
         self._recalculate_button.setText("도면 다시 계산")
         _ = self._recalculate_button.clicked.connect(self.recalculate_requested)
         _ = self._recalculate_button.setEnabled(False)

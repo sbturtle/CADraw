@@ -587,6 +587,70 @@ def test_dimension_apply_button_and_preview_mode_toggle_are_available(
     assert mode_combo.currentText() == "검출 결과"
 
 
+def test_undo_redo_reverts_and_reapplies_a_dimension_edit(tmp_path: Path) -> None:
+    # Given a loaded drawing with an unconfirmed length row
+    _ = _application()
+    image_path = tmp_path / "sketch.png"
+    Image.fromarray(np.full((240, 320), 255, dtype=np.uint8)).save(image_path)
+    window = MainWindow(analyzer=_StaticAnalyzer(_two_line_analysis()))
+    assert window.load_path(image_path) is True
+    undo_button = window.findChild(QPushButton, "undo_edit")
+    redo_button = window.findChild(QPushButton, "redo_edit")
+    assert undo_button is not None
+    assert redo_button is not None
+    assert undo_button.isEnabled() is False
+
+    # When a physical length is confirmed
+    window.set_dimension_text(0, "100")
+    assert undo_button.isEnabled() is True
+    assert window.document is not None
+    assert window.document.scale_mm_per_source_unit is not None
+
+    # Then undo restores the prior unconfirmed state
+    undo_button.click()
+    assert window.document is not None
+    assert window.document.scale_mm_per_source_unit is None
+    assert redo_button.isEnabled() is True
+
+    # And redo reapplies the confirmed length
+    redo_button.click()
+    assert window.document is not None
+    assert window.document.scale_mm_per_source_unit is not None
+
+
+def test_undo_redo_reverts_a_line_merge(tmp_path: Path) -> None:
+    # Given two detected line rows merged into one canonical line
+    _ = _application()
+    image_path = tmp_path / "sketch.png"
+    Image.fromarray(np.full((240, 320), 255, dtype=np.uint8)).save(image_path)
+    window = MainWindow(analyzer=_StaticAnalyzer(_two_line_analysis()))
+    assert window.load_path(image_path) is True
+    table = window.findChild(QTableWidget, "dimension_table")
+    merge_button = window.findChild(QPushButton, "merge_lines")
+    undo_button = window.findChild(QPushButton, "undo_edit")
+    redo_button = window.findChild(QPushButton, "redo_edit")
+    assert table is not None
+    assert merge_button is not None
+    assert undo_button is not None
+    assert redo_button is not None
+    table.selectAll()
+    merge_button.click()
+    assert window.analysis is not None
+    assert len(window.analysis.entities) == 1
+
+    # When the merge is undone
+    undo_button.click()
+
+    # Then both original lines return
+    assert window.analysis is not None
+    assert len(window.analysis.entities) == 2
+
+    # And redo merges them again
+    redo_button.click()
+    assert window.analysis is not None
+    assert len(window.analysis.entities) == 1
+
+
 def test_line_edit_buttons_merge_selected_rows(tmp_path: Path) -> None:
     # Given two detected line rows and the real edit toolbar
     _ = _application()

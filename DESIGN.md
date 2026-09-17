@@ -162,4 +162,3 @@ Strategy: `mixed`, with warm borders for containment and a whisper shadow only o
 | Native Qt widgets are not a full screen-reader audit yet | `src/cadraw/ui/` | Phase 1 prioritizes the working conversion path; labels and tab order are explicit | Validate with Windows Narrator before installer release |
 | Zoom/pan is not in the first viewport | `src/cadraw/ui/preview_widget.py` | A clean fit-to-frame view is enough for the first PoC | Add user-driven zoom/pan in Phase 2 |
 | No real handwriting OCR in Phase 1 | `src/cadraw/vision.py` | Manual dimensions are safer than guessed fabrication values | Add an adapter and review states in Phase 3 |
-| No edit undo/redo history yet | `src/cadraw/line_editing.py` | The first correction slice prioritizes deterministic immutable edits | Add a command history before sustained editing sessions |

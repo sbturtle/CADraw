@@ -44,6 +44,7 @@ from cadraw.vision import MockVisionAnalyzer, VisionAnalyzer
 
 _MIN_MERGE_SELECTION = 2
 _MIN_DELETE_SELECTION = 1
+_MAX_UNDO_HISTORY = 50
 _STATUS_CAPTIONS: dict[AnalysisStatus, str] = {
     AnalysisStatus.NO_GEOMETRY_DETECTED: (
         "도면 선을 충분히 인식하지 못했습니다. 다른 전처리 방식을 시도해 주세요."
@@ -85,6 +86,8 @@ class MainWindow(QMainWindow):
         self._preprocessed_pixmaps: dict[str, QPixmap] = {}
         self._selected_dimension_id: DimensionId | None = None
         self._preview_mode: PreviewMode = PreviewMode.CAD
+        self._undo_stack: list[DrawingAnalysis] = []
+        self._redo_stack: list[DrawingAnalysis] = []
         self._view: WorkbenchView = WorkbenchView(self)
         self._dialog_actions: DialogActions = DialogActions(
             self,
@@ -159,6 +162,8 @@ class MainWindow(QMainWindow):
         _ = self._view.preprocessing_mode_changed.connect(
             self._on_preprocessing_mode_changed,
         )
+        _ = self._view.undo_requested.connect(self._undo)
+        _ = self._view.redo_requested.connect(self._redo)
 
     def _on_source_mode_changed(self, mode: str) -> None:
         """Switch between the original photo and geometry-only source view."""
@@ -216,6 +221,9 @@ class MainWindow(QMainWindow):
         self._view.set_preprocessing_previews(
             installed.preprocessing_previews,
         )
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        self._view.set_undo_redo_enabled(undo=False, redo=False)
         return installed
 
     @staticmethod
@@ -412,6 +420,7 @@ class MainWindow(QMainWindow):
             confirmed if dimension.dimension_id == dimension_id else dimension
             for dimension in self._analysis.dimensions
         )
+        self._push_undo_snapshot()
         self._analysis = replace(self._analysis, dimensions=dimensions)
         self._selected_dimension_id = dimension_id
         self._refresh_dimension_table()
@@ -499,6 +508,53 @@ class MainWindow(QMainWindow):
             has_analysis,
         )
 
+    def _push_undo_snapshot(self) -> None:
+        """Record the pre-edit analysis so it can be restored later."""
+        if self._analysis is not None:
+            self._undo_stack.append(self._analysis)
+            del self._undo_stack[:-_MAX_UNDO_HISTORY]
+        self._redo_stack.clear()
+        self._view.set_undo_redo_enabled(undo=bool(self._undo_stack), redo=False)
+
+    def _install_restored_analysis(
+        self,
+        analysis: DrawingAnalysis,
+        status: str,
+    ) -> None:
+        """Install a history snapshot without recording a new undo entry."""
+        self._analysis = analysis
+        self._selected_dimension_id = None
+        self._foreground_pixmap = None
+        self._preprocessed_pixmaps = {
+            preview.variant: pixmap_from_png(preview.image_png)
+            for preview in analysis.preprocessing_previews
+        }
+        self._refresh_dimension_table()
+        self._recalculate()
+        self._refresh_source_pixmap()
+        self._update_edit_buttons()
+        self._view.set_caption(status)
+        self._view.set_undo_redo_enabled(
+            undo=bool(self._undo_stack),
+            redo=bool(self._redo_stack),
+        )
+
+    def _undo(self) -> None:
+        """Restore the analysis captured before the most recent edit."""
+        if not self._undo_stack:
+            return
+        if self._analysis is not None:
+            self._redo_stack.append(self._analysis)
+        self._install_restored_analysis(self._undo_stack.pop(), "실행을 취소했습니다.")
+
+    def _redo(self) -> None:
+        """Reapply the edit most recently undone."""
+        if not self._redo_stack:
+            return
+        if self._analysis is not None:
+            self._undo_stack.append(self._analysis)
+        self._install_restored_analysis(self._redo_stack.pop(), "다시 실행했습니다.")
+
     def _apply_line_edit(
         self,
         analysis: DrawingAnalysis,
@@ -506,6 +562,7 @@ class MainWindow(QMainWindow):
         selected_dimension_id: DimensionId | None = None,
     ) -> None:
         """Install an edited analysis and rebuild dependent surfaces."""
+        self._push_undo_snapshot()
         self._analysis = replace(
             analysis,
             dimensions=manual_dimensions(
