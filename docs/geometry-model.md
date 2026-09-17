@@ -92,6 +92,12 @@ polyline stream은 export/preview 단계에서만 만들어집니다. 따라서 
 함께 제거하고 connections를 다시 계산합니다. 이미 확정된 값이 대상이면
 데이터 손실을 막기 위해 편집을 거부합니다.
 
+`MainWindow`는 선 편집(병합/삭제/다시 그리기)과 치수 확정 직전의
+`DrawingAnalysis`를 undo 스택에 보관합니다. 실행 취소/다시 실행은 저장된
+analysis를 그대로 재설치하며 `manual_dimensions`를 다시 계산하지 않아 기존
+행 식별자를 보존합니다. 새 사진 분석이나 전처리 방식 전환은 히스토리를
+초기화합니다.
+
 다시 그리기는 source-space의 두 raw endpoint를 받습니다. 선택 선이 하나면
 기존 `EntityId`와 dimension anchor를 유지한 채 geometry를 교체하고, 선택 선이
 없으면 충돌하지 않는 `manual_line_NNN`을 생성해 미확인 length row를 추가합니다.
@@ -126,3 +132,21 @@ polyline stream은 export/preview 단계에서만 만들어집니다. 따라서 
 통과한 값만 `Dimension`으로 변환합니다. OCR 치수는 `NEEDS_REVIEW`이고
 `target_entity_ids`가 비어 있어 사용자가 확인하기 전에는 DXF TEXT로 내보내지지
 않습니다.
+
+`association.suggest_dimension_target`은 파싱된 값이 있고 아직 대상이 없는
+치수에 한해, 텍스트 박스 중심과 물리적으로 같은 종류의 geometry(길이/각도는
+선, 지름은 원, 반지름은 원 또는 호) 중 가장 가까운 후보를 찾습니다. 가장
+가까운 후보가 너무 멀거나 두 번째 후보와 거리 차이가 충분하지 않으면(모호)
+아무 것도 연결하지 않습니다. 연결에 성공해도 `status`는 그대로 두고
+`source`만 `"ocr_suggested"`로 표시해, 이는 사람이 검토할 제안일 뿐 확정이
+아님을 유지합니다.
+
+## 부분 호(open arc)
+
+닫힌 사각형/원과 달리, 필렛이나 잘린 구멍처럼 완전히 닫히지 않은 원호는
+`detection._contour_arc_candidate`가 별도로 처리합니다. 면적 기준을 만족하는
+닫힌 도형이 되지 못한 윤곽에만 결정적 최소제곱 원 피팅(Kasa method)을
+시도하며, 잔차·각도 범위·반지름이 모두 임계값을 통과해야 `ArcCandidate` ->
+`ArcEntity`가 됩니다. `ArcEntity`도 `CircleEntity`와 같은 `role` 필드를 가지며
+외곽 닫힌 도형 안에 있으면 `HOLE`로 분류되어 preview 색상과 DXF `HOLE`
+레이어에 반영됩니다.

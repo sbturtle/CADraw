@@ -8,6 +8,7 @@ from typing import cast
 import numpy as np
 from PIL import Image
 
+from cadraw.association import suggest_dimension_target
 from cadraw.detection import (
     DetectionConfig,
     GrayImage,
@@ -20,10 +21,12 @@ from cadraw.detection import (
 from cadraw.models import (
     AnalysisStatus,
     AnalysisWarning,
+    ArcCandidate,
     ArcEntity,
     CircleCandidate,
     CircleEntity,
     DetectedEntity,
+    Dimension,
     DrawingAnalysis,
     GeometryEntity,
     LineCandidate,
@@ -44,7 +47,12 @@ from cadraw.normalization import (
     normalize_lines,
     select_largest_connected_component,
 )
-from cadraw.ocr import OcrBackend, discover_tesseract_backend, recognize_dimensions
+from cadraw.ocr import (
+    OcrBackend,
+    OcrResult,
+    discover_tesseract_backend,
+    recognize_dimensions,
+)
 from cadraw.perspective import (
     PageQuadConfig,
     detect_page_quadrilateral_scored,
@@ -338,6 +346,24 @@ def _shape_candidate_to_entity(candidate: ShapeCandidate) -> GeometryEntity:
                 entity_id,
                 center,
                 radius,
+                confidence,
+                role=role,
+            )
+        case ArcCandidate(
+            entity_id=entity_id,
+            center=center,
+            radius=radius,
+            start_angle_degrees=start_angle,
+            end_angle_degrees=end_angle,
+            confidence=confidence,
+            role=role,
+        ):
+            return ArcEntity(
+                entity_id,
+                center,
+                radius,
+                start_angle,
+                end_angle,
                 confidence,
                 role=role,
             )
@@ -677,6 +703,31 @@ def _prepare_analysis_frame(
     )
 
 
+def _suggest_ocr_dimension_targets(
+    ocr_result: OcrResult | None,
+    entities: tuple[GeometryEntity, ...],
+    offset: Point,
+    inverse_matrix: tuple[float, ...] | None,
+) -> tuple[Dimension, ...]:
+    """Pre-fill OCR dimension targets only when exactly one entity is near."""
+    if ocr_result is None:
+        return ()
+    if not ocr_result.dimensions:
+        return ocr_result.dimensions
+    restored_sources = tuple(
+        _restore_text_candidate(candidate, offset, inverse_matrix)
+        for candidate in ocr_result.dimension_sources
+    )
+    return tuple(
+        suggest_dimension_target(dimension, source.bounds, entities)
+        for dimension, source in zip(
+            ocr_result.dimensions,
+            restored_sources,
+            strict=True,
+        )
+    )
+
+
 def analyze_image(
     image_path: Path,
     config: PipelineConfig,
@@ -819,11 +870,17 @@ def analyze_image(
             for candidate in ocr_result.candidates
         )
     )
+    suggested_dimensions = _suggest_ocr_dimension_targets(
+        ocr_result,
+        entities,
+        offset,
+        inverse_matrix,
+    )
     return DrawingAnalysis(
         unit="mm",
         image_size=(image_shape[1], image_shape[0]),
         entities=entities,
-        dimensions=() if ocr_result is None else ocr_result.dimensions,
+        dimensions=suggested_dimensions,
         connections=build_connections(
             restored_lines,
             config.normalization.endpoint_snap_distance,

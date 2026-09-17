@@ -7,7 +7,7 @@ from cadraw.detection import (
     detect_line_candidates,
     detect_shape_candidates,
 )
-from cadraw.models import CircleCandidate, PolylineCandidate
+from cadraw.models import ArcCandidate, CircleCandidate, PolylineCandidate
 
 
 def test_opencv_detects_long_structural_strokes() -> None:
@@ -122,3 +122,53 @@ def test_shape_detector_returns_circle_and_closed_rectangle_candidates() -> None
         and len(candidate.points) == 4
         for candidate in candidates
     )
+
+
+def test_shape_detector_fits_a_partial_arc_stroke() -> None:
+    # Given a hand-drawn partial arc stroke, such as a fillet or a cut hole
+    image = np.full((360, 480), 255, dtype=np.uint8)
+    _ = cv2.ellipse(image, (200, 180), (60, 60), 0, 30, 300, 0, 5)
+
+    # When opt-in closed-shape detection runs
+    candidates = detect_shape_candidates(
+        image,
+        DetectionConfig(
+            detect_closed_shapes=True,
+            minimum_shape_area=500.0,
+            minimum_shape_radius=20.0,
+            maximum_shape_candidates=12,
+        ),
+    )
+
+    # Then the open stroke is fit as an arc rather than dropped or forced closed
+    arcs = tuple(
+        candidate for candidate in candidates if isinstance(candidate, ArcCandidate)
+    )
+    assert len(arcs) == 1
+    arc = arcs[0]
+    assert abs(arc.center.x - 200.0) < 3.0
+    assert abs(arc.center.y - 180.0) < 3.0
+    assert abs(arc.radius - 60.0) < 3.0
+    assert 50.0 < (arc.end_angle_degrees - arc.start_angle_degrees) < 320.0
+    assert not any(isinstance(candidate, CircleCandidate) for candidate in candidates)
+
+
+def test_shape_detector_does_not_fit_a_full_circle_as_an_arc() -> None:
+    # Given a complete circle stroke
+    image = np.full((360, 480), 255, dtype=np.uint8)
+    _ = cv2.circle(image, (200, 180), 60, 0, 5)
+
+    # When opt-in closed-shape detection runs
+    candidates = detect_shape_candidates(
+        image,
+        DetectionConfig(
+            detect_closed_shapes=True,
+            minimum_shape_area=500.0,
+            minimum_shape_radius=20.0,
+            maximum_shape_candidates=12,
+        ),
+    )
+
+    # Then the closed loop is a circle, never a partial-arc candidate
+    assert any(isinstance(candidate, CircleCandidate) for candidate in candidates)
+    assert not any(isinstance(candidate, ArcCandidate) for candidate in candidates)

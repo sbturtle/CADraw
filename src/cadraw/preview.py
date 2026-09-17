@@ -143,7 +143,7 @@ def _draw_entity(
     config: PreviewConfig,
 ) -> None:
     """Render one tagged geometry variant."""
-    is_hole = isinstance(entity, (PolylineEntity, CircleEntity)) and (
+    is_hole = isinstance(entity, (PolylineEntity, CircleEntity, ArcEntity)) and (
         entity.role is GeometryRole.HOLE
     )
     stroke = (
@@ -194,6 +194,11 @@ def _draw_entity(
         ):
             mapped_center = map_point(center)
             radius_px = radius * scale
+            draw_start, draw_end = (
+                (-end_angle, -start_angle)
+                if config.invert_y
+                else (start_angle, end_angle)
+            )
             draw.arc(
                 (
                     mapped_center[0] - radius_px,
@@ -201,8 +206,8 @@ def _draw_entity(
                     mapped_center[0] + radius_px,
                     mapped_center[1] + radius_px,
                 ),
-                start=start_angle,
-                end=end_angle,
+                start=draw_start,
+                end=draw_end,
                 fill=stroke,
                 width=line_width,
             )

@@ -198,7 +198,13 @@ def _add_geometry(modelspace: ModelspaceLike, entity: GeometryEntity) -> None:
                 radius,
                 start_angle,
                 end_angle,
-                dxfattribs={"layer": _GEOMETRY_LAYER},
+                dxfattribs={
+                    "layer": (
+                        _HOLE_LAYER
+                        if entity.role is GeometryRole.HOLE
+                        else _GEOMETRY_LAYER
+                    ),
+                },
             )
 
 

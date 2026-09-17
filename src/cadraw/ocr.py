@@ -43,6 +43,7 @@ class OcrResult:
     dimensions: tuple[Dimension, ...]
     available: bool
     backend_name: str | None = None
+    dimension_sources: tuple[TextCandidate, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +137,7 @@ def recognize_dimensions(
     except OcrUnavailableError:
         return OcrResult(candidates=(), dimensions=(), available=False)
     dimensions: list[Dimension] = []
+    dimension_sources: list[TextCandidate] = []
     for index, candidate in enumerate(candidates):
         dimension = parse_dimension_text(
             candidate.text,
@@ -143,9 +145,11 @@ def recognize_dimensions(
         )
         if dimension.parsed_value is not None:
             dimensions.append(dimension)
+            dimension_sources.append(candidate)
     return OcrResult(
         candidates=candidates,
         dimensions=tuple(dimensions),
         available=True,
         backend_name=type(backend).__name__,
+        dimension_sources=tuple(dimension_sources),
     )

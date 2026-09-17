@@ -9,6 +9,7 @@ from cadraw.models import (
     CadEntity,
     CadResolutionStatus,
     CircleEntity,
+    Dimension,
     DimensionKind,
     DimensionStatus,
     DrawingAnalysis,
@@ -139,6 +140,55 @@ def _append_constraint_warnings(
         )
 
 
+def _expected_circular_value(
+    dimension: Dimension,
+    target: CircleEntity | ArcEntity,
+    scale: float,
+) -> float:
+    """Return the physical value implied by scaled circle/arc geometry."""
+    diameter_factor = 2.0 if dimension.kind is DimensionKind.DIAMETER else 1.0
+    return target.radius * scale * diameter_factor
+
+
+def _append_circular_constraint_warnings(
+    analysis: DrawingAnalysis,
+    scale: float,
+    config: CalculatorConfig,
+    warnings: list[AnalysisWarning],
+) -> None:
+    """Compare confirmed diameter/radius dimensions to detected geometry."""
+    entities = {entity.entity_id: entity for entity in analysis.entities}
+    for dimension in analysis.dimensions:
+        if dimension.status is not DimensionStatus.CONFIRMED:
+            continue
+        if dimension.kind not in (DimensionKind.DIAMETER, DimensionKind.RADIUS):
+            continue
+        if dimension.parsed_value is None or len(dimension.target_entity_ids) != 1:
+            continue
+        target = entities.get(dimension.target_entity_ids[0])
+        if not isinstance(target, (CircleEntity, ArcEntity)):
+            continue
+        if dimension.kind is DimensionKind.DIAMETER and not isinstance(
+            target,
+            CircleEntity,
+        ):
+            continue
+        expected = _expected_circular_value(dimension, target, scale)
+        tolerance = max(
+            config.minimum_validation_tolerance_mm,
+            dimension.parsed_value * config.validation_tolerance_ratio,
+        )
+        if abs(expected - dimension.parsed_value) <= tolerance:
+            continue
+        warnings.append(
+            AnalysisWarning(
+                code=WarningCode.CONSTRAINT_MISMATCH,
+                message="확정 치수와 geometry 크기가 일치하지 않습니다.",
+                entity_ids=dimension.target_entity_ids,
+            ),
+        )
+
+
 def calculate_document(
     analysis: DrawingAnalysis,
     config: CalculatorConfig | None = None,
@@ -180,6 +230,7 @@ def calculate_document(
 
     scale = calibration
     _append_constraint_warnings(analysis, scale, effective_config, warnings)
+    _append_circular_constraint_warnings(analysis, scale, effective_config, warnings)
     return CadDocument(
         unit=analysis.unit,
         entities=tuple(entity.geometry for entity in cad_entities),

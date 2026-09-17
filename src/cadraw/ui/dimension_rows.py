@@ -1,21 +1,46 @@
 """Dimension-row construction helpers for the verification panel."""
 
 from cadraw.models import (
+    ArcEntity,
+    CircleEntity,
     Dimension,
     DimensionId,
     DimensionKind,
     DimensionStatus,
+    EntityId,
     GeometryEntity,
     LineEntity,
     Orientation,
 )
 
 
+def _circular_dimension(
+    entity: CircleEntity | ArcEntity,
+    kind: DimensionKind,
+    existing_by_key: dict[tuple[EntityId, DimensionKind], Dimension],
+) -> Dimension:
+    """Return a stable diameter/radius row for one circle or arc entity."""
+    suffix = "diameter" if kind is DimensionKind.DIAMETER else "radius"
+    return existing_by_key.get(
+        (entity.entity_id, kind),
+        Dimension(
+            dimension_id=DimensionId(f"manual_{entity.entity_id}_{suffix}"),
+            raw_text="",
+            kind=kind,
+            parsed_value=None,
+            unit="mm",
+            target_entity_ids=(entity.entity_id,),
+            confidence=0.0,
+            status=DimensionStatus.UNSET,
+        ),
+    )
+
+
 def manual_dimensions(
     entities: tuple[GeometryEntity, ...],
     existing_dimensions: tuple[Dimension, ...] = (),
 ) -> tuple[Dimension, ...]:
-    """Create stable length/angle rows without discarding confirmed values."""
+    """Create stable length/angle/diameter/radius rows for every entity."""
     existing_by_key = {
         (dimension.target_entity_ids[0], dimension.kind): dimension
         for dimension in existing_dimensions
@@ -23,6 +48,24 @@ def manual_dimensions(
     }
     dimensions: list[Dimension] = []
     for entity in entities:
+        if isinstance(entity, CircleEntity):
+            dimensions.append(
+                _circular_dimension(
+                    entity,
+                    DimensionKind.DIAMETER,
+                    existing_by_key,
+                ),
+            )
+            continue
+        if isinstance(entity, ArcEntity):
+            dimensions.append(
+                _circular_dimension(
+                    entity,
+                    DimensionKind.RADIUS,
+                    existing_by_key,
+                ),
+            )
+            continue
         if not isinstance(entity, LineEntity):
             continue
         length_key = (entity.entity_id, DimensionKind.LENGTH)

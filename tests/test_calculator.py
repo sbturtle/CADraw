@@ -168,3 +168,83 @@ def test_confirmed_line_scale_preserves_non_line_cad_scaling() -> None:
     assert isinstance(circle, CircleEntity)
     assert circle.center == Point(10.0, 20.0)
     assert circle.radius == 5.0
+
+
+def _line_and_circle_analysis(diameter_dimension: Dimension) -> DrawingAnalysis:
+    """Build a scaled line plus one circle with a confirmed diameter row."""
+    return DrawingAnalysis(
+        unit="mm",
+        image_size=(160, 80),
+        entities=(
+            _line(),
+            CircleEntity(
+                entity_id=EntityId("circle_1"),
+                center=Point(20.0, 40.0),
+                radius=10.0,
+                confidence=1.0,
+            ),
+        ),
+        dimensions=(
+            Dimension(
+                dimension_id=DimensionId("dim_1"),
+                raw_text="50",
+                kind=DimensionKind.LENGTH,
+                parsed_value=50.0,
+                unit="mm",
+                target_entity_ids=(EntityId("line_1"),),
+                confidence=1.0,
+                status=DimensionStatus.CONFIRMED,
+            ),
+            diameter_dimension,
+        ),
+        connections=(),
+        warnings=(),
+    )
+
+
+def test_matching_confirmed_diameter_raises_no_mismatch_warning() -> None:
+    # Given a confirmed diameter that agrees with the scaled circle geometry
+    analysis = _line_and_circle_analysis(
+        Dimension(
+            dimension_id=DimensionId("dim_2"),
+            raw_text="10",
+            kind=DimensionKind.DIAMETER,
+            parsed_value=10.0,
+            unit="mm",
+            target_entity_ids=(EntityId("circle_1"),),
+            confidence=1.0,
+            status=DimensionStatus.CONFIRMED,
+        ),
+    )
+
+    # When the calculator validates the confirmed values
+    document = calculate_document(analysis)
+
+    # Then no mismatch is reported for the agreeing diameter
+    assert not any(
+        warning.code.value == "CONSTRAINT_MISMATCH" for warning in document.warnings
+    )
+
+
+def test_conflicting_confirmed_diameter_is_reported() -> None:
+    # Given a confirmed diameter that disagrees with the scaled circle geometry
+    analysis = _line_and_circle_analysis(
+        Dimension(
+            dimension_id=DimensionId("dim_2"),
+            raw_text="40",
+            kind=DimensionKind.DIAMETER,
+            parsed_value=40.0,
+            unit="mm",
+            target_entity_ids=(EntityId("circle_1"),),
+            confidence=1.0,
+            status=DimensionStatus.CONFIRMED,
+        ),
+    )
+
+    # When the calculator validates the confirmed values
+    document = calculate_document(analysis)
+
+    # Then the disagreement is surfaced instead of silently accepted
+    assert any(
+        warning.code.value == "CONSTRAINT_MISMATCH" for warning in document.warnings
+    )

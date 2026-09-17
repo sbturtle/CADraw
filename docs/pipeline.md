@@ -74,8 +74,12 @@ polyline 조립은 proximity connection을 다시 사용하지 않습니다. bra
 찾지 못한 경우에는 `PERSPECTIVE_NOT_FOUND`와 `DOCUMENT_NOT_FOUND`를 남깁니다.
 
 `--ocr`는 설치된 Tesseract TSV 결과를 `TextCandidate`로 보존하고, 기존
-`parse_dimension_text`를 거친 값만 `NEEDS_REVIEW` 치수로 추가합니다. 대상
-geometry는 자동 연결하지 않으므로 검토 전 DXF TEXT가 생성되지 않습니다.
+`parse_dimension_text`를 거친 값만 `NEEDS_REVIEW` 치수로 추가합니다.
+`association.suggest_dimension_target`이 텍스트 상자와 같은 물리적 종류의
+geometry 중 유일하게 가까운 후보가 있을 때만 `target_entity_ids`를 채우며,
+`status`는 `NEEDS_REVIEW`로 유지하고 `source`만 `ocr_suggested`로 남깁니다.
+후보가 없거나 두 후보가 비슷하게 가까우면 대상을 비워 두므로, 검토 전 DXF
+TEXT가 생성되지 않는다는 원칙은 그대로입니다.
 
 그래프 용지, 인쇄 표, 손글씨가 섞인 사진에서는 후보가 남을 수 있으므로
 preview와 DXF를 확인한 뒤 치수를 수동으로 확정해야 합니다. 닫힌 형상
@@ -84,6 +88,12 @@ preview와 DXF를 확인한 뒤 치수를 수동으로 확정해야 합니다. �
 이 상태에서는 후보를 삭제하지 않고 원본 좌표와 entity id를 보존하지만,
 DXF 저장은 보류합니다. 외곽 닫힌 형상 안에 포함된 작은 형상은 `HOLE`
 역할로 분류하고 DXF `HOLE` 레이어에 씁니다.
+
+완전히 닫힌 사각형/원 윤곽이 되지 못한 모따기·필렛·잘린 구멍 스트로크는
+`detection._contour_arc_candidate`가 결정적 최소제곱 원 피팅으로 처리합니다.
+점 개수, 피팅 잔차, 각도 범위(`50°`~`320°`)가 모두 임계값을 통과해야
+`ArcEntity`가 되며, 완전한 원이나 잡음 곡선은 대상이 아닙니다. `ArcEntity`도
+`CircleEntity`와 같은 `HOLE` 분류·색상·DXF 레이어 규칙을 공유합니다.
 
 ## 사진 전처리와 검토 선택
 
@@ -143,7 +153,8 @@ geometry 비교에서 개선이 없으면 `PERSPECTIVE_REJECTED`를 남깁니다
 
 - Phase 2: 연결 line의 수동 length/angle reconstruction과 CAD-space export.
 - Phase 3: 구조화된 Pydantic 경계 페이로드를 사용하는 비전/OCR 어댑터.
-- Phase 4: 페이지 경계가 없는 사진의 원근 추정, 원/홀/호(arc) 특화.
+- Phase 4: 페이지 경계가 없는 사진의 원근 추정. 원/홀/부분 호(arc) 검출은
+  1차로 반영되었으며, 자재 가장자리에 걸친 반원 등은 후속 과제로 남습니다.
 - Phase 5: 확인 신뢰도 임계값과 소스 영역 강조.
 - Phase 6: 실제 현장 이미지와 임계값 튜닝.
 - Phase 7: Windows 설치 파일과 설정/API 키 저장.

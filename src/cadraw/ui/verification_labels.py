@@ -1,8 +1,10 @@
 """Human-readable labels for verification rows."""
 
 from cadraw.models import (
+    ArcEntity,
     CadDocument,
     CadResolutionStatus,
+    CircleEntity,
     Dimension,
     DimensionKind,
     DimensionStatus,
@@ -29,6 +31,13 @@ _STATUS_LABELS = {
 }
 
 
+def _circular_label(target: CircleEntity | ArcEntity, prefix: str) -> str:
+    """Return a workshop-facing shape and measurement label."""
+    if isinstance(target, CircleEntity):
+        return f"{prefix} · 지름 로컬 {2.0 * target.radius:g}"
+    return f"{prefix} · 반지름 로컬 {target.radius:g}"
+
+
 def dimension_label(
     analysis: DrawingAnalysis | None,
     dimension: Dimension,
@@ -47,6 +56,9 @@ def dimension_label(
         if dimension.kind is DimensionKind.ANGLE:
             return f"선 {row + 1} · {orientation} · 각도"
         return f"선 {row + 1} · {orientation} · 로컬 {target.length:g}"
+    if isinstance(target, (CircleEntity, ArcEntity)):
+        shape = "원" if isinstance(target, CircleEntity) else "호"
+        return _circular_label(target, f"{shape} {row + 1}")
     return f"항목 {row + 1} · geometry"
 
 
@@ -74,6 +86,10 @@ def selected_dimension_label(
         if dimension.kind is DimensionKind.ANGLE:
             return f"선 · {orientation} · 각도"
         return f"선 · {orientation} · 로컬 {target.length:g}"
+    if isinstance(target, (CircleEntity, ArcEntity)):
+        return _circular_label(
+            target, "원" if isinstance(target, CircleEntity) else "호"
+        )
     return "geometry"
 
 

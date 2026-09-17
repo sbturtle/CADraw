@@ -163,7 +163,20 @@ class CircleCandidate:
     role: GeometryRole = GeometryRole.STRUCTURE
 
 
-type ShapeCandidate = PolylineCandidate | CircleCandidate
+@dataclass(frozen=True, slots=True)
+class ArcCandidate:
+    """A partial-circle candidate emitted by image processing."""
+
+    entity_id: EntityId
+    center: Point
+    radius: float
+    start_angle_degrees: float
+    end_angle_degrees: float
+    confidence: float
+    role: GeometryRole = GeometryRole.STRUCTURE
+
+
+type ShapeCandidate = PolylineCandidate | CircleCandidate | ArcCandidate
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +237,7 @@ class ArcEntity:
     end_angle_degrees: float
     confidence: float
     entity_type: EntityType = EntityType.ARC
+    role: GeometryRole = GeometryRole.STRUCTURE
 
 
 type GeometryEntity = LineEntity | PolylineEntity | CircleEntity | ArcEntity

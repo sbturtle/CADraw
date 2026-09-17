@@ -1,7 +1,7 @@
 """OpenCV image preparation and deterministic line candidate detection."""
 
 from dataclasses import dataclass, field
-from math import atan2, degrees, hypot, pi
+from math import atan2, degrees, hypot, isfinite, pi, sqrt
 from pathlib import Path
 from typing import cast, final, override
 
@@ -18,6 +18,7 @@ from cadraw.grid_filter import (
     inspect_periodic_grid_shapes,
 )
 from cadraw.models import (
+    ArcCandidate,
     CircleCandidate,
     EntityId,
     GeometryRole,
@@ -39,6 +40,13 @@ _MIN_RECTANGULARITY = 0.35
 _MIN_DUPLICATE_SHAPE_EXTENT_RATIO = 0.55
 _AXIS_TOLERANCE_DEGREES = 5.0
 _MIN_SELECTED_CANDIDATES = 3
+_MIN_LSTSQ_RANK = 3
+_MIN_ARC_FIT_POINTS = 24
+_ARC_RESIDUAL_PIXEL_FLOOR = 2.5
+_ARC_RESIDUAL_TO_RADIUS_RATIO = 0.08
+_MIN_ARC_SPAN_DEGREES = 50.0
+_MAX_ARC_SPAN_DEGREES = 320.0
+_MAX_ARC_TO_BOX_RADIUS_RATIO = 3.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -924,7 +932,13 @@ def _shape_bounds(
 ) -> tuple[float, float, float, float]:
     """Return the axis-aligned bounds of one closed-shape candidate."""
     match candidate:
-        case CircleCandidate(center=center, radius=radius):
+        case (
+            CircleCandidate(center=center, radius=radius)
+            | ArcCandidate(
+                center=center,
+                radius=radius,
+            )
+        ):
             return (
                 center.x - radius,
                 center.y - radius,
@@ -951,7 +965,8 @@ def _shape_duplicate(
     second: ShapeCandidate,
 ) -> bool:
     """Check whether nested Canny contours describe one physical shape."""
-    if isinstance(first, CircleCandidate) and isinstance(second, CircleCandidate):
+    circular = (CircleCandidate, ArcCandidate)
+    if isinstance(first, circular) and isinstance(second, circular):
         radius_ratio = min(first.radius, second.radius) / max(
             first.radius,
             second.radius,
@@ -998,80 +1013,189 @@ def _shape_duplicate(
     )
 
 
+def _closed_contour_candidate(
+    contour: NDArray[np.int32],
+    config: DetectionConfig,
+    area: float,
+    perimeter: float,
+    box_size: tuple[int, int],
+) -> tuple[float, ShapeCandidate] | None:
+    """Parse a sufficiently filled contour into a rectangle or circle."""
+    box_width, box_height = box_size
+    approx = cv2.approxPolyDP(contour, 0.035 * perimeter, closed=True)
+    circularity = 4.0 * pi * area / (perimeter * perimeter)
+    aspect_ratio = min(box_width, box_height) / max(box_width, box_height)
+    is_circle = (
+        len(approx) >= _MIN_CIRCLE_APPROX_POINTS
+        and circularity >= _MIN_CIRCLE_CIRCULARITY
+        and aspect_ratio >= _MIN_CIRCLE_ASPECT_RATIO
+    )
+    if is_circle:
+        (center_x, center_y), radius = cv2.minEnclosingCircle(contour)
+        if radius >= config.minimum_shape_radius:
+            return (
+                area,
+                CircleCandidate(
+                    entity_id=EntityId("shape_raw_pending"),
+                    center=Point(float(center_x), float(center_y)),
+                    radius=float(radius),
+                    confidence=min(0.99, max(_MIN_DUPLICATE_RADIUS_RATIO, circularity)),
+                ),
+            )
+        return None
+    if len(approx) == _RECTANGLE_APPROX_POINTS and cv2.isContourConvex(approx):
+        rectangularity = area / max(1.0, float(box_width * box_height))
+        if rectangularity >= _MIN_RECTANGULARITY:
+            approx_array = cast("NDArray[np.int32]", approx)
+            points = tuple(
+                Point(
+                    cast("float", approx_array[index, 0, 0]),
+                    cast("float", approx_array[index, 0, 1]),
+                )
+                for index in range(len(approx_array))
+            )
+            return (
+                area,
+                PolylineCandidate(
+                    entity_id=EntityId("shape_raw_pending"),
+                    points=points,
+                    closed=True,
+                    confidence=min(
+                        0.99,
+                        max(_MIN_DUPLICATE_RADIUS_RATIO, rectangularity),
+                    ),
+                ),
+            )
+    return None
+
+
+def _fit_circle_to_points(points: NDArray[np.float64]) -> tuple[Point, float] | None:
+    """Fit a circle to a point cloud with the deterministic Kasa method."""
+    x = points[:, 0]
+    y = points[:, 1]
+    design = np.column_stack((x, y, np.ones_like(x)))
+    target = -((x * x) + (y * y))
+    solution, _residuals, rank, _singular_values = np.linalg.lstsq(
+        design,
+        target,
+        rcond=None,
+    )
+    if int(rank.item()) < _MIN_LSTSQ_RANK:
+        return None
+    linear_x = float(cast("float", solution[0]))
+    linear_y = float(cast("float", solution[1]))
+    constant = float(cast("float", solution[2]))
+    center_x = -linear_x / 2.0
+    center_y = -linear_y / 2.0
+    radius_squared = ((linear_x * linear_x) + (linear_y * linear_y)) / 4.0 - constant
+    if not isfinite(radius_squared) or radius_squared <= 0.0:
+        return None
+    return Point(center_x, center_y), sqrt(radius_squared)
+
+
+def _arc_angular_span(
+    points: NDArray[np.float64],
+    center: Point,
+) -> tuple[float, float]:
+    """Return the start angle and covered span of a contour's fitted arc."""
+    angles = np.mod(
+        np.degrees(np.arctan2(points[:, 1] - center.y, points[:, 0] - center.x)),
+        360.0,
+    )
+    ordered = np.sort(angles)
+    gaps = np.diff(ordered)
+    first_angle = float(cast("float", ordered[0]))
+    last_angle = float(cast("float", ordered[-1]))
+    wrap_gap = 360.0 - last_angle + first_angle
+    all_gaps = np.append(gaps, wrap_gap)
+    largest_gap_index = int(np.argmax(all_gaps).item())
+    largest_gap = float(cast("float", all_gaps[largest_gap_index]))
+    span = 360.0 - largest_gap
+    start_angle = (
+        first_angle
+        if largest_gap_index == len(ordered) - 1
+        else float(cast("float", ordered[largest_gap_index + 1]))
+    )
+    return start_angle, span
+
+
+def _contour_arc_candidate(
+    contour: NDArray[np.int32],
+    config: DetectionConfig,
+    box_size: tuple[int, int],
+) -> tuple[float, ShapeCandidate] | None:
+    """Fit an open circular arc to a contour that is not a filled shape."""
+    box_width, box_height = box_size
+    points = contour.reshape(-1, 2).astype(np.float64)
+    if len(points) < _MIN_ARC_FIT_POINTS:
+        return None
+    fit = _fit_circle_to_points(points)
+    if fit is None:
+        return None
+    center, radius = fit
+    if (
+        radius < config.minimum_shape_radius
+        or radius > _MAX_ARC_TO_BOX_RADIUS_RATIO * max(box_width, box_height)
+    ):
+        return None
+    distances = np.hypot(points[:, 0] - center.x, points[:, 1] - center.y)
+    residual = sqrt(float(np.mean((distances - radius) ** 2)))
+    if residual > max(
+        _ARC_RESIDUAL_PIXEL_FLOOR, radius * _ARC_RESIDUAL_TO_RADIUS_RATIO
+    ):
+        return None
+    start_angle, span = _arc_angular_span(points, center)
+    if span < _MIN_ARC_SPAN_DEGREES or span > _MAX_ARC_SPAN_DEGREES:
+        return None
+    confidence = min(0.95, max(0.5, 1.0 - residual / max(1.0, radius)))
+    area_proxy = radius * radius * span
+    return (
+        area_proxy,
+        ArcCandidate(
+            entity_id=EntityId("shape_raw_pending"),
+            center=center,
+            radius=radius,
+            start_angle_degrees=start_angle,
+            end_angle_degrees=start_angle + span,
+            confidence=confidence,
+        ),
+    )
+
+
 def _contour_shape_candidate(
     contour: NDArray[np.int32],
     config: DetectionConfig,
     width: int,
     height: int,
 ) -> tuple[float, ShapeCandidate] | None:
-    """Parse one contour into a rectangle or circle candidate."""
+    """Parse one contour into a rectangle, circle, or open-arc candidate."""
     area = cv2.contourArea(contour)
     perimeter = cv2.arcLength(contour, closed=True)
-    candidate: tuple[float, ShapeCandidate] | None = None
-    if area >= config.minimum_shape_area and perimeter > 0.0:
-        x, y, box_width, box_height = cv2.boundingRect(contour)
-        valid_bounds = (
-            x > 1
-            and y > 1
-            and x + box_width < width - 1
-            and y + box_height < height - 1
-            and min(box_width, box_height) >= config.minimum_shape_span
-            and box_width <= width * 0.7
-            and box_height <= height * 0.7
+    if perimeter <= 0.0:
+        return None
+    x, y, box_width, box_height = cv2.boundingRect(contour)
+    valid_bounds = (
+        x > 1
+        and y > 1
+        and x + box_width < width - 1
+        and y + box_height < height - 1
+        and min(box_width, box_height) >= config.minimum_shape_span
+        and box_width <= width * 0.7
+        and box_height <= height * 0.7
+    )
+    if not valid_bounds:
+        return None
+    if area >= config.minimum_shape_area:
+        closed_candidate = _closed_contour_candidate(
+            contour,
+            config,
+            area,
+            perimeter,
+            (box_width, box_height),
         )
-        if valid_bounds:
-            approx = cv2.approxPolyDP(contour, 0.035 * perimeter, closed=True)
-            circularity = 4.0 * pi * area / (perimeter * perimeter)
-            aspect_ratio = min(box_width, box_height) / max(box_width, box_height)
-            is_circle = (
-                len(approx) >= _MIN_CIRCLE_APPROX_POINTS
-                and circularity >= _MIN_CIRCLE_CIRCULARITY
-                and aspect_ratio >= _MIN_CIRCLE_ASPECT_RATIO
-            )
-            if is_circle:
-                (center_x, center_y), radius = cv2.minEnclosingCircle(contour)
-                if radius >= config.minimum_shape_radius:
-                    candidate = (
-                        area,
-                        CircleCandidate(
-                            entity_id=EntityId("shape_raw_pending"),
-                            center=Point(float(center_x), float(center_y)),
-                            radius=float(radius),
-                            confidence=min(
-                                0.99,
-                                max(_MIN_DUPLICATE_RADIUS_RATIO, circularity),
-                            ),
-                        ),
-                    )
-            elif len(approx) == _RECTANGLE_APPROX_POINTS and cv2.isContourConvex(
-                approx
-            ):
-                rectangularity = area / max(
-                    1.0,
-                    float(box_width * box_height),
-                )
-                if rectangularity >= _MIN_RECTANGULARITY:
-                    approx_array = cast("NDArray[np.int32]", approx)
-                    points = tuple(
-                        Point(
-                            cast("float", approx_array[index, 0, 0]),
-                            cast("float", approx_array[index, 0, 1]),
-                        )
-                        for index in range(len(approx_array))
-                    )
-                    candidate = (
-                        area,
-                        PolylineCandidate(
-                            entity_id=EntityId("shape_raw_pending"),
-                            points=points,
-                            closed=True,
-                            confidence=min(
-                                0.99,
-                                max(_MIN_DUPLICATE_RADIUS_RATIO, rectangularity),
-                            ),
-                        ),
-                    )
-    return candidate
+        if closed_candidate is not None:
+            return closed_candidate
+    return _contour_arc_candidate(contour, config, (box_width, box_height))
 
 
 def _with_shape_id(candidate: ShapeCandidate, index: int) -> ShapeCandidate:
@@ -1083,6 +1207,22 @@ def _with_shape_id(candidate: ShapeCandidate, index: int) -> ShapeCandidate:
                 entity_id,
                 center,
                 radius,
+                confidence,
+                candidate.role,
+            )
+        case ArcCandidate(
+            center=center,
+            radius=radius,
+            start_angle_degrees=start_angle,
+            end_angle_degrees=end_angle,
+            confidence=confidence,
+        ):
+            return ArcCandidate(
+                entity_id,
+                center,
+                radius,
+                start_angle,
+                end_angle,
                 confidence,
                 candidate.role,
             )
@@ -1109,7 +1249,7 @@ def _shape_contains(parent: ShapeCandidate, child: ShapeCandidate) -> bool:
     parent_extent = max(parent_max_x - parent_min_x, parent_max_y - parent_min_y)
     if parent_extent < child_extent * 1.8:
         return False
-    if isinstance(parent, CircleCandidate):
+    if isinstance(parent, (CircleCandidate, ArcCandidate)):
         return (
             parent.center.distance_to(child_center) + child_extent / 2.0
             <= parent.radius * 0.95
@@ -1138,6 +1278,16 @@ def _with_shape_role(
             candidate.entity_id,
             candidate.center,
             candidate.radius,
+            candidate.confidence,
+            role,
+        )
+    if isinstance(candidate, ArcCandidate):
+        return ArcCandidate(
+            candidate.entity_id,
+            candidate.center,
+            candidate.radius,
+            candidate.start_angle_degrees,
+            candidate.end_angle_degrees,
             candidate.confidence,
             role,
         )

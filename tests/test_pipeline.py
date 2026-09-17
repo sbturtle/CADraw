@@ -10,6 +10,7 @@ from cadraw.models import (
     AnalysisStatus,
     CircleEntity,
     DimensionKind,
+    DimensionStatus,
     LineEntity,
     PolylineEntity,
     TextCandidate,
@@ -246,6 +247,95 @@ def test_pipeline_integrates_reviewable_ocr_dimensions(tmp_path: Path) -> None:
     )
     assert analysis.text_candidates[0].text == "150"
     assert analysis.text_candidates[0].bounds == (20.0, 20.0, 40.0, 16.0)
+
+
+class _AdjacentTextOcrBackend:
+    def recognize(self, image: np.ndarray) -> tuple[TextCandidate, ...]:
+        assert image.ndim == 2
+        return (
+            TextCandidate(
+                text="150",
+                bounds=(150.0, 30.0, 40.0, 16.0),
+                confidence=0.9,
+            ),
+        )
+
+
+class _AmbiguousTextOcrBackend:
+    def recognize(self, image: np.ndarray) -> tuple[TextCandidate, ...]:
+        assert image.ndim == 2
+        return (
+            TextCandidate(
+                text="150",
+                bounds=(150.0, 87.0, 40.0, 16.0),
+                confidence=0.9,
+            ),
+        )
+
+
+def _single_line_config() -> PipelineConfig:
+    """Return a deterministic config that skips preprocessing and perspective."""
+    defaults = PipelineConfig.from_detection_defaults()
+    return replace(
+        defaults,
+        perspective_correction=False,
+        preprocessing=replace(defaults.preprocessing, enabled=False),
+        ocr_enabled=True,
+    )
+
+
+def test_pipeline_suggests_an_unambiguous_ocr_dimension_target(
+    tmp_path: Path,
+) -> None:
+    # Given one detected line and an OCR label positioned right beside it
+    image = np.full((240, 320), 255, dtype=np.uint8)
+    _ = cv2.line(image, (40, 50), (280, 50), 0, 5)
+    image_path = tmp_path / "labeled-line.png"
+    Image.fromarray(image).save(image_path)
+
+    # When the production pipeline runs with OCR enabled
+    analysis = analyze_image(
+        image_path, _single_line_config(), _AdjacentTextOcrBackend()
+    )
+
+    # Then the recognized length is pre-linked to the single nearby line
+    line_ids = {
+        entity.entity_id
+        for entity in analysis.entities
+        if isinstance(entity, LineEntity)
+    }
+    assert analysis.dimensions
+    dimension = analysis.dimensions[0]
+    assert dimension.target_entity_ids
+    assert dimension.target_entity_ids[0] in line_ids
+    assert dimension.source == "ocr_suggested"
+    assert dimension.status is DimensionStatus.NEEDS_REVIEW
+
+
+def test_pipeline_leaves_ambiguous_ocr_dimension_untargeted(
+    tmp_path: Path,
+) -> None:
+    # Given two parallel lines equally close to one OCR label
+    image = np.full((240, 320), 255, dtype=np.uint8)
+    _ = cv2.line(image, (40, 50), (280, 50), 0, 5)
+    _ = cv2.line(image, (40, 140), (280, 140), 0, 5)
+    image_path = tmp_path / "ambiguous-line.png"
+    Image.fromarray(image).save(image_path)
+
+    # When the production pipeline runs with OCR enabled
+    config = _single_line_config()
+    config = replace(
+        config,
+        normalization=replace(
+            config.normalization,
+            keep_largest_connected_component=False,
+        ),
+    )
+    analysis = analyze_image(image_path, config, _AmbiguousTextOcrBackend())
+
+    # Then no target is guessed between the two equally plausible lines
+    assert analysis.dimensions
+    assert analysis.dimensions[0].target_entity_ids == ()
 
 
 def test_pipeline_records_perspective_metadata(tmp_path: Path) -> None:
