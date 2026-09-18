@@ -18,7 +18,7 @@ uv run python scripts/render_sample_report.py
 | --- | --- | --- | --- | --- |
 | 1 | `blur_otsu` | `READY` | line 4 | LWPOLYLINE 1 |
 | 2 | `blur_otsu` | `READY` | arc 1, line 2, polyline 6 | LWPOLYLINE 3 |
-| 3 | `clahe_adaptive` | `TOO_MUCH_NOISE` | arc 1, circle 2, line 2, polyline 6 | LWPOLYLINE 10 |
+| 3 | `blur_otsu` | `READY` | line 9, polyline 2 | LWPOLYLINE 10 |
 | 4 | `clahe_adaptive` | `READY` | circle 1, line 3, polyline 3 | ARC 2, CIRCLE 2, LINE 2, LWPOLYLINE 1 |
 | 5 | `shadow_removed_adaptive` | `READY` | arc 1, circle 2, line 8, polyline 13 | ARC 24, CIRCLE 7, LINE 24, LWPOLYLINE 1 |
 | 6 | `clahe_adaptive` | `READY` | line 1, polyline 4 | LWPOLYLINE 10 |
@@ -48,11 +48,11 @@ uv run python scripts/render_sample_report.py
 
 ![샘플 3](sample-extraction/3.png)
 
-- 선택 variant: `clahe_adaptive`
-- 상태: `TOO_MUCH_NOISE`
-- 추출: arc 1, circle 2, line 2, polyline 6
+- 선택 variant: `blur_otsu`
+- 상태: `READY`
+- 추출: line 9, polyline 2
 - 레퍼런스: LWPOLYLINE 10
-- 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `UNKNOWN_DIMENSION`, `GRAPH_PAPER_DETECTED`
+- 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `UNKNOWN_DIMENSION`
 
 ## 샘플 4
 

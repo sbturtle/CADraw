@@ -66,6 +66,7 @@ from cadraw.preprocessing import (
     PreprocessingConfig,
     PreprocessingResult,
     PreprocessingVariant,
+    ScoreContext,
     preprocess_variants,
     score_candidates,
     write_debug_outputs,
@@ -441,7 +442,14 @@ def _evaluate_variants(
     preprocessing_config: PreprocessingConfig,
     normalization_config: NormalizationConfig,
 ) -> tuple[VariantEvaluation, ...]:
-    """Prepare and independently detect geometry for every variant."""
+    """Prepare and independently detect geometry for every variant.
+
+    Closed shapes are detected per variant only when the caller asked for
+    them, so the line-only path costs exactly what it did before. Where they
+    are wanted, how much paper structure a variant manufactured is the one
+    signal that separates a variant which recovered the drawing from one that
+    recovered the stationery.
+    """
     results = preprocess_variants(image, preprocessing_config)
     evaluations = []
     for result in results:
@@ -449,12 +457,21 @@ def _evaluate_variants(
             result.detection_image,
             detection_config,
         )
+        shapes = detect_shape_candidates_with_evidence(
+            result.detection_image,
+            detection_config,
+        )
         score = score_candidates(
             result.variant,
             candidates,
             result.mask,
-            detection_config.minimum_line_length,
-            normalization_config.endpoint_snap_distance,
+            ScoreContext(
+                minimum_line_length=detection_config.minimum_line_length,
+                endpoint_tolerance=normalization_config.endpoint_snap_distance,
+                paper_shape_count=(
+                    shapes.grid_candidate_count + shapes.table_candidate_count
+                ),
+            ),
         )
         evaluations.append((result, candidates, score))
     return tuple(evaluations)
@@ -541,6 +558,7 @@ def _select_preprocessing_stream(
             component_quality=score.component_quality,
             processing_time_ms=result.processing_time_ms,
             periodic_grid_ratio=score.periodic_grid_ratio,
+            paper_shape_count=score.paper_shape_count,
             selected=result is chosen[0],
         )
         for result, _, score in evaluations

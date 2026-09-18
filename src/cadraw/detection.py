@@ -1418,6 +1418,24 @@ def classify_shape_holes(
     )
 
 
+def _without_nested_duplicates(
+    candidates: tuple[ShapeCandidate, ...],
+) -> tuple[ShapeCandidate, ...]:
+    """Collapse the nested contour rings that one physical stroke produces.
+
+    This runs after paper structure has been proved away. Reconciling every
+    contour first would spend a quadratic comparison on ruling that is about
+    to be discarded: a ruled sheet yields around a thousand cell contours, and
+    none of them is a duplicate of another.
+    """
+    unique: list[ShapeCandidate] = []
+    for candidate in candidates:
+        if any(_shape_duplicate(existing, candidate) for existing in unique):
+            continue
+        unique.append(candidate)
+    return tuple(unique)
+
+
 def detect_shape_candidates_with_evidence(
     image: GrayImage,
     config: DetectionConfig,
@@ -1470,19 +1488,14 @@ def detect_shape_candidates_with_evidence(
             _shape_center(item[1]).x,
         ),
     )
-    unique: list[ShapeCandidate] = []
-    for _, candidate in candidates:
-        if any(_shape_duplicate(existing, candidate) for existing in unique):
-            continue
-        unique.append(candidate)
     grid_evidence = inspect_periodic_grid_shapes(
-        tuple(unique),
+        tuple(candidate for _, candidate in candidates),
         prepared.width,
         prepared.height,
         config.arbitration.grid,
     )
     table_evidence = inspect_printed_table_shapes(
-        grid_evidence.candidates,
+        _without_nested_duplicates(grid_evidence.candidates),
         prepared.width,
         prepared.height,
         config.printed_table,

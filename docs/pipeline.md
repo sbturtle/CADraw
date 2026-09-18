@@ -166,6 +166,7 @@ score =
   - .15 * duplicate_line_ratio
   - .25 * short_noise_ratio
   - .30 * periodic_grid_ratio
+  - .25 * paper_shape_ratio
 ```
 
 `meaningful_line_score`는 최소 선 길이보다 충분히 긴 선의 비율이고,
@@ -177,6 +178,15 @@ score =
 stroke가 빠지지 않게 하며, 그 다음 기준은 평균 선 길이보다 앞서
 `periodic_grid_ratio`입니다. 괘선은 페이지를 가로지르는 긴 후보를 만들므로
 그러지 않으면 동점이 바로 그 인공물로 결정됩니다.
+
+`paper_shape_ratio`는 해당 variant가 만든 닫힌 도형 중 종이 구조로 증명되어
+제거된 개수(격자 칸 + 표 칸)를 `min(1, max(0, paper - 12) / 120)`으로 환산한
+값입니다. 살아남은 도형 수가 아니라 증명된 종이 수를 세므로, 실제로 닫힌
+도형이 많은 도면은 불리해지지 않습니다. 허용치 12는 업무 양식의 머리글·푸터가
+모든 variant에서 몇 칸씩 잡히기 때문에 필요하며, 이 값이 선택을 좌우하면
+직선을 호로 잘못 맞추는 variant가 이깁니다. 같은 이유로 이 증거는 동점
+기준에는 넣지 않습니다. 도형 검출은 `detect_closed_shapes`가 켜졌을 때만
+variant마다 실행되어, 선 전용 경로의 비용은 그대로입니다.
 
 자동 선택 점수가 임계값보다 낮으면 원본 분석 stream으로 안전하게 fallback하고
 `PREPROCESSING_UNCERTAIN` 상태를 남깁니다. geometry가 없으면

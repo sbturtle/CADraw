@@ -335,6 +335,7 @@ class PreprocessingReport:
     component_quality: float
     processing_time_ms: float
     periodic_grid_ratio: float = 0.0
+    paper_shape_count: int = 0
     selected: bool = False
 
 

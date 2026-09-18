@@ -21,6 +21,8 @@ _MIN_ADAPTIVE_BLOCK_SIZE = 3
 _DUPLICATE_ANGLE_TOLERANCE = 5.0
 _DUPLICATE_LENGTH_RATIO = 0.70
 _MIN_COMPONENT_AREA = 9
+_PAPER_SHAPE_TOLERANCE = 12.0
+_PAPER_SHAPE_SATURATION = 120.0
 _DEFAULT_VARIANT_ORDER = (
     "grayscale_adaptive",
     "clahe_adaptive",
@@ -79,6 +81,27 @@ class PreprocessingResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ScoreContext:
+    """Detection thresholds and cross-stage evidence used when scoring.
+
+    `paper_shape_count` is how many closed shapes the variant produced that
+    were then proved to be paper structure — ruled cells and printed table
+    cells. It prices in the failure that every other signal rewards: a variant
+    that amplifies stationery gains long, well-connected, plentiful geometry.
+    Counting *proved paper* rather than surviving shapes leaves a drawing that
+    genuinely holds many closed shapes unpenalized.
+
+    A work-order form's own header and footer contribute a handful of cells on
+    every variant, so a tolerance keeps that from deciding anything; the term
+    only bites once a variant has manufactured a ruled sheet's worth of them.
+    """
+
+    minimum_line_length: float
+    endpoint_tolerance: float
+    paper_shape_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class CandidateScore:
     """Explainable score used to compare candidates from variants."""
 
@@ -92,6 +115,7 @@ class CandidateScore:
     short_noise_ratio: float
     component_quality: float
     periodic_grid_ratio: float
+    paper_shape_count: int
 
 
 def _odd_size(value: int, minimum: int = 3) -> int:
@@ -428,10 +452,12 @@ def score_candidates(
     variant: PreprocessingVariant,
     candidates: tuple[LineCandidate, ...],
     mask: GrayImage,
-    minimum_line_length: float,
-    endpoint_tolerance: float,
+    context: ScoreContext,
 ) -> CandidateScore:
     """Score candidate quality using geometry and connected-component signals."""
+    minimum_line_length = context.minimum_line_length
+    endpoint_tolerance = context.endpoint_tolerance
+    paper_shape_count = context.paper_shape_count
     lengths = tuple(
         candidate.start.distance_to(candidate.end) for candidate in candidates
     )
@@ -473,6 +499,10 @@ def score_candidates(
     connected = _endpoint_connectivity(candidates, endpoint_tolerance)
     duplicate = _duplicate_ratio(candidates, minimum_line_length)
     grid_ratio = periodic_grid_ratio(mask, candidates)
+    paper_ratio = min(
+        1.0,
+        max(0.0, paper_shape_count - _PAPER_SHAPE_TOLERANCE) / _PAPER_SHAPE_SATURATION,
+    )
     score = (
         0.35 * meaningful_score
         + 0.15 * average_score
@@ -482,6 +512,7 @@ def score_candidates(
         - 0.15 * duplicate
         - 0.25 * short_noise
         - 0.30 * grid_ratio
+        - 0.25 * paper_ratio
     )
     return CandidateScore(
         variant=variant,
@@ -494,4 +525,5 @@ def score_candidates(
         short_noise_ratio=short_noise,
         component_quality=component_quality,
         periodic_grid_ratio=grid_ratio,
+        paper_shape_count=paper_shape_count,
     )

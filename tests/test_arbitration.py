@@ -158,11 +158,22 @@ def test_proved_periodic_shape_grid_is_removed_with_its_evidence() -> None:
         ),
     )
 
-    # Then every proved cell is gone, counted, and the profile is what remains
+    # Then the cells are proved, counted, and none of them survives
     assert evidence.grid_detected is True
     assert evidence.grid_candidate_count >= 12
-    assert len(evidence.candidates) == (
-        len(unfiltered.candidates) - evidence.grid_candidate_count
+    assert len(evidence.candidates) < len(unfiltered.candidates)
+    assert all(
+        max(
+            max(point.x for point in candidate.points)
+            - min(point.x for point in candidate.points),
+            max(point.y for point in candidate.points)
+            - min(point.y for point in candidate.points),
+        )
+        > 100.0
+        for candidate in evidence.candidates
+        if isinstance(candidate, PolylineCandidate)
     )
+
+    # And the profile is what remains
     assert isinstance(evidence.candidates[0], PolylineCandidate)
     assert evidence.candidates[0].confidence > 0.8
