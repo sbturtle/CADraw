@@ -27,6 +27,10 @@ from cadraw.models import (
     PolylineCandidate,
     ShapeCandidate,
 )
+from cadraw.table_filter import (
+    TableFilterConfig,
+    inspect_printed_table_shapes,
+)
 
 GrayImage = NDArray[np.uint8]
 
@@ -52,6 +56,7 @@ _ARC_RESIDUAL_TO_RADIUS_RATIO = 0.08
 _MIN_ARC_SPAN_DEGREES = 50.0
 _MAX_ARC_SPAN_DEGREES = 320.0
 _MAX_ARC_TO_BOX_RADIUS_RATIO = 3.0
+_FRAME_RULE_AXIS_SLOPE = 0.09
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +113,8 @@ class DetectionConfig:
     canny_low_threshold: int = 50
     canny_high_threshold: int = 150
     border_margin_ratio: float = 0.08
+    frame_rule_margin_ratio: float = 0.22
+    frame_rule_span_ratio: float = 0.60
     detect_closed_shapes: bool = False
     minimum_shape_area: float = 800.0
     minimum_shape_span: float = 30.0
@@ -118,6 +125,7 @@ class DetectionConfig:
         default_factory=CandidateArbitrationConfig,
     )
     drawing_field: DrawingFieldConfig = field(default_factory=DrawingFieldConfig)
+    printed_table: TableFilterConfig = field(default_factory=TableFilterConfig)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +146,8 @@ class ShapeDetectionEvidence:
     grid_detected: bool = False
     grid_candidate_count: int = 0
     grid_like_count: int = 0
+    table_detected: bool = False
+    table_candidate_count: int = 0
     candidate_limit_reached: bool = False
 
 
@@ -209,6 +219,42 @@ def _is_border_candidate(
     on_top = start.y <= y_margin and end.y <= y_margin
     on_bottom = start.y >= height - y_margin and end.y >= height - y_margin
     return on_left or on_right or on_top or on_bottom
+
+
+def is_page_frame_rule(
+    start: Point,
+    end: Point,
+    width: int,
+    height: int,
+    config: DetectionConfig,
+) -> bool:
+    """Reject a printed frame rule that runs margin to margin along one edge.
+
+    Preprinted forms close their drawing field with a rule that crosses almost
+    the whole sheet just inside an edge, which the plain border test misses
+    because the rule sits a little further in than the page boundary. All three
+    conditions are required together: the candidate must be axis-aligned, cross
+    most of the sheet, and hug an edge. A stroke that merely sits low on the
+    page, or a long stroke through the middle of the drawing, keeps all of its
+    own geometry.
+    """
+    margin_x = width * config.frame_rule_margin_ratio
+    margin_y = height * config.frame_rule_margin_ratio
+    span_x = abs(end.x - start.x)
+    span_y = abs(end.y - start.y)
+    horizontal_rule = (
+        span_y <= span_x * _FRAME_RULE_AXIS_SLOPE
+        and span_x >= width * config.frame_rule_span_ratio
+        and (
+            max(start.y, end.y) <= margin_y or min(start.y, end.y) >= height - margin_y
+        )
+    )
+    vertical_rule = (
+        span_x <= span_y * _FRAME_RULE_AXIS_SLOPE
+        and span_y >= height * config.frame_rule_span_ratio
+        and (max(start.x, end.x) <= margin_x or min(start.x, end.x) >= width - margin_x)
+    )
+    return horizontal_rule or vertical_rule
 
 
 def _line_angle_degrees(candidate: LineCandidate) -> float:
@@ -1435,7 +1481,13 @@ def detect_shape_candidates_with_evidence(
         prepared.height,
         config.arbitration.grid,
     )
-    classified = classify_shape_holes(grid_evidence.candidates)
+    table_evidence = inspect_printed_table_shapes(
+        grid_evidence.candidates,
+        prepared.width,
+        prepared.height,
+        config.printed_table,
+    )
+    classified = classify_shape_holes(table_evidence.candidates)
     limited = classified[: config.maximum_shape_candidates]
     return ShapeDetectionEvidence(
         candidates=tuple(
@@ -1444,6 +1496,8 @@ def detect_shape_candidates_with_evidence(
         grid_detected=grid_evidence.grid_detected,
         grid_candidate_count=grid_evidence.removed_count,
         grid_like_count=grid_evidence.grid_like_count,
+        table_detected=table_evidence.table_detected,
+        table_candidate_count=table_evidence.removed_count,
         candidate_limit_reached=len(classified) > config.maximum_shape_candidates,
     )
 

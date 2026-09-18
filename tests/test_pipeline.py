@@ -394,3 +394,40 @@ def test_pipeline_retries_page_detection_inside_auto_region(
     # Then the page is rectified and the selected region remains provenance
     assert analysis.perspective_transform is not None
     assert analysis.source_region == (60, 40, 480, 320)
+
+
+def test_isolated_printed_frame_rule_is_dropped(tmp_path: Path) -> None:
+    # Given a form whose closing rule crosses the sheet below the drawing
+    image = np.full((900, 700), 252, dtype=np.uint8)
+    _ = cv2.line(image, (200, 300), (500, 300), 0, 5)
+    _ = cv2.line(image, (200, 300), (200, 600), 0, 5)
+    _ = cv2.line(image, (30, 800), (670, 800), 0, 2)
+    image_path = tmp_path / "framed.png"
+    Image.fromarray(image).save(image_path)
+
+    # When the production analysis pipeline runs
+    analysis = analyze_image(image_path, PipelineConfig.from_detection_defaults())
+
+    # Then the drawing's own strokes are kept and the rule is not
+    lines = [entity for entity in analysis.entities if isinstance(entity, LineEntity)]
+    assert lines
+    assert all(abs(entity.end.x - entity.start.x) < 600.0 for entity in lines)
+
+
+def test_a_page_spanning_stroke_joined_to_the_drawing_is_kept(
+    tmp_path: Path,
+) -> None:
+    # Given a part whose baseline runs the width of the sheet near its edge
+    image = np.full((900, 700), 252, dtype=np.uint8)
+    _ = cv2.line(image, (70, 800), (630, 800), 0, 5)
+    _ = cv2.line(image, (70, 800), (70, 480), 0, 5)
+    _ = cv2.line(image, (630, 800), (630, 480), 0, 5)
+    image_path = tmp_path / "wide-part.png"
+    Image.fromarray(image).save(image_path)
+
+    # When the production analysis pipeline runs
+    analysis = analyze_image(image_path, PipelineConfig.from_detection_defaults())
+
+    # Then the baseline survives, because it is joined to the rest of the part
+    lines = [entity for entity in analysis.entities if isinstance(entity, LineEntity)]
+    assert any(abs(entity.end.x - entity.start.x) > 500.0 for entity in lines)

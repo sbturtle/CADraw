@@ -16,6 +16,7 @@ from cadraw.detection import (
     automatic_source_region,
     detect_line_candidates,
     detect_shape_candidates_with_evidence,
+    is_page_frame_rule,
     load_grayscale_image,
 )
 from cadraw.models import (
@@ -721,6 +722,57 @@ def _prepare_analysis_frame(
     )
 
 
+def _is_isolated_line(
+    entity: LineEntity,
+    lines: tuple[LineEntity, ...],
+    snap_distance: float,
+) -> bool:
+    """Return whether no other line meets this one at an endpoint."""
+    return not any(
+        other is not entity
+        and any(
+            point.distance_to(other_point) <= snap_distance
+            for point in (entity.start, entity.end)
+            for other_point in (other.start, other.end)
+        )
+        for other in lines
+    )
+
+
+def _without_page_frame_rules(
+    lines: tuple[LineEntity, ...],
+    image: GrayImage,
+    detection_config: DetectionConfig,
+    snap_distance: float,
+) -> tuple[LineEntity, ...]:
+    """Drop printed frame rules that survived as normalized geometry.
+
+    Candidate-level rejection is not enough on its own: a form's closing rule
+    is often detected as two shorter collinear pieces, which near-collinear
+    merging then rejoins into one page-spanning line.
+
+    A rule is only dropped when it is also isolated. A drawn member that runs
+    the width of the sheet is joined to the rest of the outline, so requiring
+    isolation keeps the geometry of a part that fills its page while still
+    removing the form's own closing rule.
+    """
+    height, width = cast("tuple[int, int]", image.shape[:2])
+    return tuple(
+        entity
+        for entity in lines
+        if not (
+            is_page_frame_rule(
+                entity.start,
+                entity.end,
+                width,
+                height,
+                detection_config,
+            )
+            and _is_isolated_line(entity, lines, snap_distance)
+        )
+    )
+
+
 def _suggest_ocr_dimension_targets(
     ocr_result: OcrResult | None,
     entities: tuple[GeometryEntity, ...],
@@ -832,7 +884,12 @@ def analyze_image(
         if preprocessing_selection is None
         else preprocessing_selection.selected_variant
     )
-    lines = normalize_lines(candidates, config.normalization)
+    lines = _without_page_frame_rules(
+        normalize_lines(candidates, config.normalization),
+        analysis_image,
+        detection_config,
+        config.normalization.endpoint_snap_distance,
+    )
     if (
         config.normalization.keep_largest_connected_component
         and not detection_config.drawing_field.enabled
