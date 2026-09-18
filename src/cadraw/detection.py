@@ -37,6 +37,11 @@ _MIN_CIRCLE_CIRCULARITY = 0.68
 _MIN_CIRCLE_ASPECT_RATIO = 0.65
 _RECTANGLE_APPROX_POINTS = 4
 _MIN_RECTANGULARITY = 0.35
+_MAX_POLYGON_APPROX_POINTS = 24
+_MIN_POLYGON_SOLIDITY = 0.45
+_POLYGON_APPROX_PERIMETER_RATIO = 0.01
+_MIN_POLYGON_APPROX_EPSILON = 3.0
+_MAX_SHAPE_EXTENT_RATIO = 0.92
 _MIN_DUPLICATE_SHAPE_EXTENT_RATIO = 0.55
 _AXIS_TOLERANCE_DEGREES = 5.0
 _MIN_SELECTED_CANDIDATES = 3
@@ -1066,7 +1071,56 @@ def _closed_contour_candidate(
                     ),
                 ),
             )
-    return None
+    return _closed_polygon_candidate(contour, area, perimeter)
+
+
+def _closed_polygon_candidate(
+    contour: NDArray[np.int32],
+    area: float,
+    perimeter: float,
+) -> tuple[float, ShapeCandidate] | None:
+    """Parse a fabricated profile outline that is not a plain rectangle.
+
+    Cut plates are routinely T, L, or notched outlines, so restricting closed
+    geometry to four-point rectangles drops the part's main profile entirely.
+    Solidity against the convex hull separates such an outline from an open
+    scribble without assuming how many corners it has. The corner tolerance is
+    far finer than the rectangle test's, which would otherwise collapse a
+    notched profile into a triangle.
+    """
+    approx = cv2.approxPolyDP(
+        contour,
+        max(
+            _MIN_POLYGON_APPROX_EPSILON,
+            _POLYGON_APPROX_PERIMETER_RATIO * perimeter,
+        ),
+        closed=True,
+    )
+    if not _RECTANGLE_APPROX_POINTS <= len(approx) <= _MAX_POLYGON_APPROX_POINTS:
+        return None
+    hull_area = float(cv2.contourArea(cv2.convexHull(contour)))
+    if hull_area <= 0.0:
+        return None
+    solidity = area / hull_area
+    if solidity < _MIN_POLYGON_SOLIDITY:
+        return None
+    approx_array = cast("NDArray[np.int32]", approx)
+    points = tuple(
+        Point(
+            cast("float", approx_array[index, 0, 0]),
+            cast("float", approx_array[index, 0, 1]),
+        )
+        for index in range(len(approx_array))
+    )
+    return (
+        area,
+        PolylineCandidate(
+            entity_id=EntityId("shape_raw_pending"),
+            points=points,
+            closed=True,
+            confidence=min(0.95, max(_MIN_DUPLICATE_RADIUS_RATIO, solidity)),
+        ),
+    )
 
 
 def _fit_circle_to_points(points: NDArray[np.float64]) -> tuple[Point, float] | None:
@@ -1180,8 +1234,8 @@ def _contour_shape_candidate(
         and x + box_width < width - 1
         and y + box_height < height - 1
         and min(box_width, box_height) >= config.minimum_shape_span
-        and box_width <= width * 0.7
-        and box_height <= height * 0.7
+        and box_width <= width * _MAX_SHAPE_EXTENT_RATIO
+        and box_height <= height * _MAX_SHAPE_EXTENT_RATIO
     )
     if not valid_bounds:
         return None

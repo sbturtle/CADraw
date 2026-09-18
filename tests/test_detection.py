@@ -172,3 +172,54 @@ def test_shape_detector_does_not_fit_a_full_circle_as_an_arc() -> None:
     # Then the closed loop is a circle, never a partial-arc candidate
     assert any(isinstance(candidate, CircleCandidate) for candidate in candidates)
     assert not any(isinstance(candidate, ArcCandidate) for candidate in candidates)
+
+
+def test_notched_profile_outline_is_kept_as_a_closed_polygon() -> None:
+    # Given a T-shaped plate outline, which has more corners than a rectangle
+    image = np.full((360, 360), 255, dtype=np.uint8)
+    outline = np.array(
+        [
+            [140, 40],
+            [200, 40],
+            [200, 150],
+            [280, 150],
+            [280, 210],
+            [60, 210],
+            [60, 150],
+            [140, 150],
+        ],
+        dtype=np.int32,
+    )
+    _ = cv2.polylines(image, [outline], isClosed=True, color=0, thickness=4)
+
+    # When closed-shape detection runs
+    candidates = detect_shape_candidates(
+        image,
+        DetectionConfig(
+            detect_closed_shapes=True,
+            minimum_shape_area=800.0,
+            minimum_shape_span=30.0,
+            border_margin_ratio=0.0,
+        ),
+    )
+
+    # Then the profile survives as a closed polygon that keeps its notches
+    polygons = [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, PolylineCandidate) and candidate.closed
+    ]
+    assert polygons
+    profile = max(
+        polygons,
+        key=lambda candidate: (
+            max(point.x for point in candidate.points)
+            - min(point.x for point in candidate.points)
+        ),
+    )
+    assert len(profile.points) > 4
+    assert (
+        max(point.x for point in profile.points)
+        - min(point.x for point in profile.points)
+        >= 200
+    )

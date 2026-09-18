@@ -83,11 +83,13 @@ TEXT가 생성되지 않는다는 원칙은 그대로입니다.
 
 그래프 용지, 인쇄 표, 손글씨가 섞인 사진에서는 후보가 남을 수 있으므로
 preview와 DXF를 확인한 뒤 치수를 수동으로 확정해야 합니다. 닫힌 형상
-후보가 작은 정사각형의 반복 격자 패턴으로 판단되거나 선보다 과도하게
-많으면 `GRAPH_PAPER_DETECTED` 경고와 `TOO_MUCH_NOISE` 상태를 남깁니다.
-이 상태에서는 후보를 삭제하지 않고 원본 좌표와 entity id를 보존하지만,
-DXF 저장은 보류합니다. 외곽 닫힌 형상 안에 포함된 작은 형상은 `HOLE`
-역할로 분류하고 DXF `HOLE` 레이어에 씁니다.
+후보가 같은 크기 정사각형이 양축에서 한 주기로 반복되는 격자로 **증명되면**
+그 칸들을 후보에서 제거하고, `GRAPH_PAPER_DETECTED` 경고에 제거 개수를
+보고합니다. 증명된 격자는 더 이상 분석을 막지 않습니다. 반대로 증명되지
+않은 채 형상이 선보다 과도하게 많기만 하면 후보를 그대로 보존한 상태로
+`TOO_MUCH_NOISE`를 남기고 DXF 저장을 보류해, 사람이 판단하게 합니다.
+외곽 닫힌 형상 안에 포함된 작은 형상은 `HOLE` 역할로 분류하고 DXF
+`HOLE` 레이어에 씁니다.
 
 완전히 닫힌 사각형/원 윤곽이 되지 못한 모따기·필렛·잘린 구멍 스트로크는
 `detection._contour_arc_candidate`가 결정적 최소제곱 원 피팅으로 처리합니다.
@@ -95,15 +97,38 @@ DXF 저장은 보류합니다. 외곽 닫힌 형상 안에 포함된 작은 형�
 `ArcEntity`가 되며, 완전한 원이나 잡음 곡선은 대상이 아닙니다. `ArcEntity`도
 `CircleEntity`와 같은 `HOLE` 분류·색상·DXF 레이어 규칙을 공유합니다.
 
+사각형도 원도 아닌 닫힌 윤곽은 `detection._closed_polygon_candidate`가 볼록
+껍질 대비 충실도로 판정해 닫힌 `PolylineCandidate`로 만듭니다. 모서리 개수를
+가정하지 않으므로 T·L·노치 프로파일이 살아남습니다. 코너 허용 오차는 사각형
+판정용(`둘레의 3.5%`)보다 훨씬 촘촘한 `둘레의 1%`를 따로 쓰는데, 거친 값을
+그대로 쓰면 노치 프로파일이 삼각형으로 뭉개집니다. 크기 게이트는 축당
+`0.92`로, 페이지 경계는 테두리 접촉 조건으로 이미 배제되므로 도면의 주
+외곽선이 크기만으로 탈락하지 않습니다.
+
 ## 사진 전처리와 검토 선택
 
-사진 분석은 원본 grayscale 배열과 원본 좌표를 보존한 채 네 가지 독립
+variant 평가 전에 `page_cleanup.clean_page`가 원본 grayscale에서 증명된 모눈
+괘선을 지웁니다. 괘선은 연필/펜보다 흐리므로 적응형 임계값이 이를 완전 강도
+스트로크로 승격시키는데, 그 결정을 variant 선택에 맡기지 않기 위해 입력
+단계에서 제거합니다. 제거 조건은 레일이 획보다 얇고, 기울기 보정 후 긴
+직선 열림을 통과하며, **양축 모두**에서 기본 주기의 정수배로 주기 패밀리가
+증명되는 것입니다. 한 방향만 규칙적인 반복은 도면 자체의 특징일 수 있어
+건드리지 않으므로, 격자 없는 길고 곧은 손그림 직선은 보존됩니다. 제거가
+일어나면 `PRINTED_RULING_REMOVED`가 주기와 가로·세로 레일 수를 보고합니다.
+
+사진 분석은 원본 grayscale 배열과 원본 좌표를 보존한 채 다섯 가지 독립
 variant를 평가합니다.
 
 1. grayscale + adaptive threshold
 2. CLAHE + adaptive threshold
 3. morphology background shadow removal + adaptive threshold
 4. blur + Otsu threshold
+5. 조명 평탄화 + 전역 Otsu threshold (`flattened_global`)
+
+`flattened_global`은 전역 절단으로 흐린 인쇄 배경을 잉크 판정 아래에 두어,
+국소 적응형 임계값이 구조적으로 할 수 없는 일을 합니다. 이 variant만은
+검출 입력으로 이진 잉크를 넘깁니다. 나머지는 enhanced grayscale을 넘기므로
+Canny가 흐린 괘선의 엣지를 다시 찾아내기 때문입니다.
 
 각 variant는 자체 enhanced raster에서 Hough geometry를 실행합니다. 선택 점수는
 의미 있는 선 수와 평균 길이, endpoint 연결성, geometry coverage,
@@ -123,14 +148,18 @@ score =
   + .10 * component_quality
   - .15 * duplicate_line_ratio
   - .25 * short_noise_ratio
+  - .30 * periodic_grid_ratio
 ```
 
 `meaningful_line_score`는 최소 선 길이보다 충분히 긴 선의 비율이고,
 `component_quality`는 foreground mask의 큰 연결 성분이 차지하는 비율입니다.
 따라서 반복 Hough segment나 짧은 배경 선이 많아지는 결과는 자동으로
-불리해집니다. 최고 composite score 차이가 `.05` 이내이면 긴 선의 수와
-짧은 잡음 역비율을 보조 기준으로 사용해 희미한 실제 stroke가 빠지지 않게
-합니다.
+불리해집니다. `periodic_grid_ratio`는 후보 중 증명된 주기 레일에 놓인 비율로,
+괘선을 증폭한 variant를 직접 감점합니다. 최고 composite score 차이가 `.05`
+이내이면 긴 선의 수와 짧은 잡음 역비율을 보조 기준으로 사용해 희미한 실제
+stroke가 빠지지 않게 하며, 그 다음 기준은 평균 선 길이보다 앞서
+`periodic_grid_ratio`입니다. 괘선은 페이지를 가로지르는 긴 후보를 만들므로
+그러지 않으면 동점이 바로 그 인공물로 결정됩니다.
 
 자동 선택 점수가 임계값보다 낮으면 원본 분석 stream으로 안전하게 fallback하고
 `PREPROCESSING_UNCERTAIN` 상태를 남깁니다. geometry가 없으면

@@ -8,6 +8,8 @@ CADraw는 범용 CAD 편집기가 아닙니다. 사진에서 선 후보를 찾�
 
 - JPG/PNG 이미지 열기
 - OpenCV grayscale, blur, Canny, probabilistic Hough line detection
+- 양축에서 증명된 모눈 괘선만 검출 이전에 제거(주기·레일 수 보고)
+- 조명 평탄화 + 전역 임계값 전처리 variant로 흐린 인쇄 배경 거부
 - 카메라 손그림 기본값의 후보 확장과 최대 연결 성분 필터
 - 수평/수직 snap, endpoint snap, near-collinear line merge
 - horizontal / vertical / diagonal 방향 분류
@@ -26,6 +28,7 @@ CADraw는 범용 CAD 편집기가 아닙니다. 사진에서 선 후보를 찾�
 - OCR 인식값과 가까운 geometry가 유일하면 확인 대상만 미리 채우는 제안(자동 확정 아님)
 - 원/호 전용 지름·반지름 확인 행과 확정값-실제 크기 불일치 경고
 - 닫힌 사각형/원 외에 모따기·필렛 등 부분 호(open arc) 검출
+- T·L·노치 등 모서리 개수를 가정하지 않는 일반 프로파일 폴리곤 검출
 - 첫 번째 확정 길이는 연결되지 않은 geometry의 preview fallback scale로만 사용
 - Pillow 기반 CAD preview
 - `LINE`, `LWPOLYLINE`, `CIRCLE`, `ARC`, `TEXT` 레이어 분리 DXF export
@@ -178,6 +181,13 @@ CADraw/
 - 부분 호 검출은 면적 기준을 만족하는 닫힌 도형이 되지 못한 윤곽에만
   최소제곱 원 피팅을 시도하며, 자재 가장자리에 걸쳐 잘린 반원처럼 여백
   규칙에 걸리는 경우는 아직 제외됩니다.
+- 모눈 괘선 제거는 양축에서 주기가 증명될 때만 동작합니다. 괘선이 연속
+  레일로 뽑히지 않을 만큼 흐리면 증명이 실패해 격자가 남습니다.
+- 인쇄된 양식 자체(제목 괘선, 머리글 표, 회사 푸터)는 제거하지 않습니다.
+  "길고 곧은 얇은 괘선"을 무조건 지우면 실제 사진에서 손그림 구조선이
+  같은 조건에 걸리므로, 주기성과 무관한 별도 증명이 필요합니다.
+- 전처리 variant 점수는 선 기반이어서 닫힌 도형 군집을 보지 못합니다.
+  흐린 모눈지에서는 적응형 variant가 선택될 수 있습니다.
 - rectangle/circle은 `--detect-shapes`에서 윤곽 후보로만 검출하며, 잡음이 많은
   사진에서는 사용자가 결과를 확인해야 합니다.
 - polyline 조립은 정확히 동일한 endpoint를 가진 열린 단일 경로에만 적용되며,
