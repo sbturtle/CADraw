@@ -21,6 +21,7 @@ CADraw는 범용 CAD 편집기가 아닙니다. 사진에서 선 후보를 찾�
 - image-space 검출 geometry와 CAD-space mm geometry의 명시적 분리
 - `DetectedEntity` → `CadEntity` stable ID relation과 resolved/unresolved state
 - 연결된 선의 확정 길이·각도 기반 anchor reconstruction
+- 원본 사진에서 도면 영역을 드래그로 지정해 양식 머리글·푸터를 제외
 - Preview 선 직접 선택, entity 정보, 검출 결과/CAD 결과 toggle
 - Preview Ctrl 다중 선택, 좌→우 window/우→좌 crossing 선택
 - 치수 행 선택 시 대응 선을 원본 사진과 CAD preview에서 highlight
@@ -199,7 +200,13 @@ CADraw/
 - 푸터의 회사 로고 블록은 표가 아니라 글리프 묶음이어서 타일링 증명에
   걸리지 않고 남습니다.
 - 허용치(표 12칸)와 포화값(120칸)은 제공된 양식에서 관측한 값이며, 머리글
-  칸이 훨씬 많은 양식에서는 불필요한 감점이 생길 수 있습니다.
+  칸이 훨씬 많은 양식에서는 불필요한 감점이 생길 수 있습니다. 도면 영역을
+  지정하면 이 판단들이 결과를 좌우하지 않습니다.
+- 도면 영역은 축 정렬 사각형만 지원하며, 지정하면 원근 보정을 끕니다.
+  사람이 가리킨 범위가 페이지 워프보다 우선합니다.
+- UI 기본값은 `detect_closed_shapes=False`이므로 앱에서는 닫힌 도형(프로파일·
+  구멍)이 검출되지 않습니다. `scripts/run_poc.py --detect-shapes`로만 확인할
+  수 있습니다.
 - rectangle/circle은 `--detect-shapes`에서 윤곽 후보로만 검출하며, 잡음이 많은
   사진에서는 사용자가 결과를 확인해야 합니다.
 - polyline 조립은 정확히 동일한 endpoint를 가진 열린 단일 경로에만 적용되며,

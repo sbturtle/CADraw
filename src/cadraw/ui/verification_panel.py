@@ -34,6 +34,8 @@ _DEFAULT_APPLY_TEXT: Final = "치수 적용"
 _ANGLE_APPLY_TEXT: Final = "각도 승인 후 다시 그리기"
 _GUIDANCE_TEXT = """선택된 선의 실제 길이를 직접 입력하세요.
 빈 값은 UNKNOWN으로 저장됩니다."""
+_REGION_TOOLTIP = """원본 이미지에서 도면이 있는 사각형 영역을 드래그해
+지정하면 양식의 머리글과 푸터를 분석에서 제외합니다."""
 
 
 @final
@@ -45,6 +47,8 @@ class VerificationPanel(QGroupBox):
     merge_requested = Signal()
     delete_requested = Signal()
     redraw_toggled = Signal(bool)
+    region_toggled = Signal(bool)
+    region_cleared = Signal()
     dimension_apply_requested = Signal(int, str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -56,6 +60,8 @@ class VerificationPanel(QGroupBox):
         self._merge_button = QPushButton("선 병합", self)
         self._delete_button = QPushButton("선 삭제", self)
         self._redraw_button = QPushButton("선 다시 그리기", self)
+        self._region_button = QPushButton("도면 영역 지정", self)
+        self._region_clear_button = QPushButton("영역 해제", self)
         self._apply_button = QPushButton("치수 적용", self)
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding,
@@ -174,6 +180,15 @@ class VerificationPanel(QGroupBox):
         _ = self._delete_button.setEnabled(delete)
         _ = self._redraw_button.setEnabled(redraw)
 
+    def set_region_checked(self, checked: bool) -> None:
+        """Set region-marking mode through the checkable button."""
+        _ = self._region_button.setChecked(checked)
+
+    def set_region_actions_enabled(self, mark: bool, clear: bool) -> None:
+        """Set region affordances from whether an image and region exist."""
+        _ = self._region_button.setEnabled(mark)
+        _ = self._region_clear_button.setEnabled(clear)
+
     def _on_selection_changed(self) -> None:
         """Refresh the apply affordance before publishing row selection."""
         dimension_id = self.selected_dimension_id
@@ -280,6 +295,16 @@ class VerificationPanel(QGroupBox):
         )
         _ = self._redraw_button.toggled.connect(self.redraw_toggled)
         edit_toolbar.addWidget(self._redraw_button)
+        self._region_button.setObjectName("mark_region")
+        self._region_button.setCheckable(True)
+        self._region_button.setToolTip(_REGION_TOOLTIP)
+        _ = self._region_button.toggled.connect(self.region_toggled)
+        edit_toolbar.addWidget(self._region_button)
+        self._region_clear_button.setObjectName("clear_region")
+        self._region_clear_button.setToolTip("지정한 도면 영역을 해제합니다.")
+        _ = self._region_clear_button.setEnabled(False)
+        _ = self._region_clear_button.clicked.connect(self.region_cleared)
+        edit_toolbar.addWidget(self._region_clear_button)
         self._apply_button.setObjectName("apply_dimension")
         self._apply_button.setToolTip(
             "선택한 치수 값을 검증하고 CAD geometry를 다시 계산합니다.",

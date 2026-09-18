@@ -45,6 +45,7 @@ from cadraw.vision import MockVisionAnalyzer, VisionAnalyzer
 _MIN_MERGE_SELECTION = 2
 _MIN_DELETE_SELECTION = 1
 _MAX_UNDO_HISTORY = 50
+_MINIMUM_REGION_SIZE = 40
 _STATUS_CAPTIONS: dict[AnalysisStatus, str] = {
     AnalysisStatus.NO_GEOMETRY_DETECTED: (
         "도면 선을 충분히 인식하지 못했습니다. 다른 전처리 방식을 시도해 주세요."
@@ -88,6 +89,8 @@ class MainWindow(QMainWindow):
         self._preview_mode: PreviewMode = PreviewMode.CAD
         self._undo_stack: list[DrawingAnalysis] = []
         self._redo_stack: list[DrawingAnalysis] = []
+        self._source_region: tuple[int, int, int, int] | None = None
+        self._preprocessing_variant: str | None = None
         self._view: WorkbenchView = WorkbenchView(self)
         self._dialog_actions: DialogActions = DialogActions(
             self,
@@ -162,6 +165,9 @@ class MainWindow(QMainWindow):
         _ = self._view.preprocessing_mode_changed.connect(
             self._on_preprocessing_mode_changed,
         )
+        _ = self._view.region_toggled.connect(self._on_region_toggled)
+        _ = self._view.region_cleared.connect(self._on_region_cleared)
+        _ = self._view.source_region_drawn.connect(self._on_source_region_drawn)
         _ = self._view.undo_requested.connect(self._undo)
         _ = self._view.redo_requested.connect(self._redo)
 
@@ -170,21 +176,123 @@ class MainWindow(QMainWindow):
         self._source_mode = SourceViewMode(mode)
         self._refresh_source_pixmap()
 
-    def _on_preprocessing_mode_changed(self, variant: str) -> None:
-        """Re-run local detection with the reviewer's chosen variant."""
-        if self._image_path is None:
-            return
+    def _analyze_current(self, variant: str | None) -> DrawingAnalysis | None:
+        """Re-run detection for the loaded image with the current settings.
+
+        The reviewer's drawing region and preprocessing choice both survive a
+        re-analysis triggered by the other, so neither silently discards the
+        other's work.
+        """
+        image_path = self._image_path
+        if image_path is None:
+            return None
         try:
             if isinstance(self._analyzer, MockVisionAnalyzer):
-                analysis = self._analyzer.analyze(
-                    self._image_path,
+                return self._analyzer.analyze(
+                    image_path,
                     preprocessing_variant=variant,
+                    source_region=self._source_region,
                 )
-            else:
-                analysis = self._analyzer.analyze(self._image_path)
+            return self._analyzer.analyze(image_path)
         except ImageReadError as error:
             self._view.set_caption(str(error))
+            return None
+
+    def _on_region_toggled(self, checked: bool) -> None:
+        """Arm or disarm marking the drawing region on the source photo."""
+        if checked:
+            self._view.set_redraw_checked(False)
+            self._view.set_source_mode(SourceViewMode.ORIGINAL)
+            self._source_mode = SourceViewMode.ORIGINAL
+            self._refresh_source_pixmap()
+        self._view.set_source_region_enabled(checked)
+        self._view.set_caption(
+            "원본 사진에서 도면이 있는 사각형 영역을 드래그하세요."
+            if checked
+            else "도면 영역 지정을 해제했습니다.",
+        )
+
+    def _on_source_region_drawn(
+        self,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+    ) -> None:
+        """Adopt a dragged drawing region and re-analyze inside it."""
+        region = self._clamped_region(x, y, width, height)
+        self._view.set_region_checked(False)
+        self._view.set_source_region_enabled(enabled=False)
+        if region is None:
+            self._view.set_caption(
+                "영역이 너무 작습니다. 도면을 감싸도록 다시 드래그하세요.",
+            )
             return
+        self._apply_source_region(region)
+
+    def _on_region_cleared(self) -> None:
+        """Drop the drawing region and analyze the whole sheet again."""
+        if self._source_region is None:
+            return
+        self._apply_source_region(None)
+
+    def _clamped_region(
+        self,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+    ) -> tuple[int, int, int, int] | None:
+        """Fit a dragged rectangle inside the image, or reject a stray click."""
+        pixmap = self._source_pixmap
+        if pixmap is None or pixmap.isNull():
+            return None
+        left = max(0, min(int(x), pixmap.width() - 1))
+        top = max(0, min(int(y), pixmap.height() - 1))
+        right = max(left, min(int(x + width), pixmap.width()))
+        bottom = max(top, min(int(y + height), pixmap.height()))
+        if right - left < _MINIMUM_REGION_SIZE or bottom - top < _MINIMUM_REGION_SIZE:
+            return None
+        return (left, top, right - left, bottom - top)
+
+    def _apply_source_region(
+        self,
+        region: tuple[int, int, int, int] | None,
+    ) -> None:
+        """Install a drawing region and re-run the analysis through it."""
+        previous = self._source_region
+        self._source_region = region
+        analysis = self._analyze_current(self._preprocessing_variant)
+        if analysis is None:
+            self._source_region = previous
+            return
+        self._view.set_source_region(region)
+        self._view.set_region_actions_enabled(mark=True, clear=region is not None)
+        installed = self._install_analysis(analysis)
+        self._refresh_source_pixmap()
+        self._refresh_dimension_table()
+        self._recalculate()
+        self._view.set_caption(
+            self._analysis_caption(
+                installed,
+                prefix=(
+                    "도면 영역 해제 · "
+                    if region is None
+                    else f"도면 영역 {region[2]}x{region[3]} 적용 · "
+                ),
+            ),
+        )
+        self._view.set_main_actions_enabled(
+            recalculate=True,
+            save=self._can_save(installed),
+        )
+
+    def _on_preprocessing_mode_changed(self, variant: str) -> None:
+        """Re-run local detection with the reviewer's chosen variant."""
+        analysis = self._analyze_current(variant)
+        if analysis is None:
+            return
+        self._preprocessing_variant = variant
         installed = self._install_analysis(analysis)
         self._source_mode = SourceViewMode.PREPROCESSED
         self._view.set_source_mode(SourceViewMode.PREPROCESSED)
@@ -263,7 +371,13 @@ class MainWindow(QMainWindow):
             return False
         self._image_path = image_path
         self._selected_dimension_id = None
+        self._source_region = None
+        self._preprocessing_variant = None
         self._view.set_redraw_checked(False)
+        self._view.set_region_checked(False)
+        self._view.set_source_region_enabled(enabled=False)
+        self._view.set_source_region(None)
+        self._view.set_region_actions_enabled(mark=True, clear=False)
         self._source_mode = SourceViewMode.ORIGINAL
         self._view.set_source_mode(SourceViewMode.ORIGINAL)
         self._source_pixmap = QPixmap(str(image_path))

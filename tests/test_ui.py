@@ -777,3 +777,171 @@ def test_line_edit_buttons_redraw_selected_rows_collapses_them_into_one(
     )
     assert table.rowCount() == 2
     assert "하나로 합쳐" in _status_label(window).text()
+
+
+def _form_like_sheet(tmp_path: Path) -> Path:
+    """Save a sheet whose printed header sits above a drawn rectangle."""
+    image = np.full((900, 700), 250, dtype=np.uint8)
+    for left in (40, 240, 440):
+        _ = cv2.rectangle(image, (left, 60), (left + 198, 110), 30, 2)
+    _ = cv2.rectangle(image, (180, 380), (520, 700), 0, 5)
+    image_path = tmp_path / "form-sheet.png"
+    Image.fromarray(image).save(image_path)
+    return image_path
+
+
+def _shown_window(tmp_path: Path) -> MainWindow:
+    """Load the form-like sheet into a laid-out window ready for dragging."""
+    window = MainWindow()
+    assert window.load_path(_form_like_sheet(tmp_path)) is True
+    window.resize(1100, 800)
+    window.show()
+    _application().processEvents()
+    return window
+
+
+def _widget_point(label: QLabel, x_fraction: float, y_fraction: float) -> QPoint:
+    """Return a widget point at a fraction across the fitted source pixmap."""
+    pixmap = label.pixmap()
+    assert pixmap is not None
+    assert not pixmap.isNull()
+    return QPoint(
+        (label.width() - pixmap.width()) // 2 + int(pixmap.width() * x_fraction),
+        (label.height() - pixmap.height()) // 2 + int(pixmap.height() * y_fraction),
+    )
+
+
+def _drag_region(
+    label: QLabel,
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> None:
+    """Drag a rectangle across the fitted source pixmap."""
+    QTest.mousePress(
+        label,
+        Qt.MouseButton.LeftButton,
+        pos=_widget_point(label, *start),
+    )
+    QTest.mouseRelease(
+        label,
+        Qt.MouseButton.LeftButton,
+        pos=_widget_point(label, *end),
+    )
+
+
+def _mark_region(window: MainWindow) -> None:
+    """Arm region marking and drag around the lower part of the sheet."""
+    region_button = window.findChild(QPushButton, "mark_region")
+    source_label = window.findChild(QLabel, "source_image")
+    assert region_button is not None
+    assert source_label is not None
+    region_button.setChecked(True)
+    _drag_region(source_label, (0.1, 0.35), (0.85, 0.95))
+
+
+def test_marking_a_drawing_region_reanalyzes_inside_it(tmp_path: Path) -> None:
+    # Given a loaded sheet whose printed header sits outside the drawing
+    _ = _application()
+    window = _shown_window(tmp_path)
+
+    # When the reviewer marks the drawing region on the source photo
+    _mark_region(window)
+
+    # Then the analysis ran inside that region and reports it
+    analysis = window.analysis
+    assert analysis is not None
+    region = analysis.source_region
+    assert region is not None
+    assert 0.05 < region[1] / 900 < 0.45
+
+    # And the marking mode disarms itself after one rectangle
+    region_button = window.findChild(QPushButton, "mark_region")
+    assert region_button is not None
+    assert region_button.isChecked() is False
+
+    # And geometry stays in original photo coordinates below the region top
+    points = [
+        point
+        for entity in analysis.entities
+        if isinstance(entity, LineEntity)
+        for point in (entity.start, entity.end)
+    ]
+    assert points
+    assert min(point.y for point in points) >= float(region[1])
+
+
+def test_a_stray_click_does_not_become_a_drawing_region(tmp_path: Path) -> None:
+    # Given a loaded sheet with region marking armed
+    _ = _application()
+    window = _shown_window(tmp_path)
+    region_button = window.findChild(QPushButton, "mark_region")
+    source_label = window.findChild(QLabel, "source_image")
+    assert region_button is not None
+    assert source_label is not None
+    region_button.setChecked(True)
+
+    # When the drag is too small to enclose a drawing
+    _drag_region(source_label, (0.5, 0.5), (0.505, 0.505))
+
+    # Then nothing is adopted and the whole sheet is still analyzed
+    analysis = window.analysis
+    assert analysis is not None
+    assert analysis.source_region is None
+
+
+def test_clearing_the_region_returns_to_the_whole_sheet(tmp_path: Path) -> None:
+    # Given a reviewer who marked a region
+    _ = _application()
+    window = _shown_window(tmp_path)
+    _mark_region(window)
+    assert window.analysis is not None
+    assert window.analysis.source_region is not None
+
+    # When the region is cleared
+    clear_button = window.findChild(QPushButton, "clear_region")
+    assert clear_button is not None
+    assert clear_button.isEnabled() is True
+    clear_button.click()
+
+    # Then the full sheet is analyzed again
+    assert window.analysis is not None
+    assert window.analysis.source_region is None
+
+
+def test_a_marked_region_survives_a_preprocessing_choice(tmp_path: Path) -> None:
+    # Given a reviewer who marked a region
+    _ = _application()
+    window = _shown_window(tmp_path)
+    _mark_region(window)
+    assert window.analysis is not None
+    marked = window.analysis.source_region
+    assert marked is not None
+
+    # When they then pick a preprocessing variant
+    variant_button = window.findChild(QPushButton, "preprocessing_1")
+    assert variant_button is not None
+    variant_button.click()
+
+    # Then the region is still in force, so neither choice discards the other
+    assert window.analysis is not None
+    assert window.analysis.source_region == marked
+
+
+def test_loading_another_image_drops_the_previous_region(tmp_path: Path) -> None:
+    # Given a reviewer who marked a region on one sheet
+    _ = _application()
+    window = _shown_window(tmp_path)
+    _mark_region(window)
+    assert window.analysis is not None
+    assert window.analysis.source_region is not None
+
+    # When a different photograph is loaded
+    image = np.full((240, 320), 255, dtype=np.uint8)
+    _ = cv2.line(image, (40, 50), (280, 50), 0, 5)
+    second = tmp_path / "other-sketch.png"
+    Image.fromarray(image).save(second)
+    assert window.load_path(second) is True
+
+    # Then the region does not leak onto the new image
+    assert window.analysis is not None
+    assert window.analysis.source_region is None

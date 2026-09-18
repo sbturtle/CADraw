@@ -1,8 +1,9 @@
 """Interactive source-image surface for selection and manual line drawing."""
 
+from enum import StrEnum
 from typing import Final, final, override
 
-from PySide6.QtCore import QLineF, QPoint, QRect, Qt, Signal
+from PySide6.QtCore import QLineF, QPoint, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import QMouseEvent, QPainter, QPen, QPixmap, QResizeEvent
 from PySide6.QtWidgets import QLabel, QWidget
 
@@ -10,8 +11,19 @@ from cadraw.models import Point
 
 _SELECTION_COLOR: Final = "#D97757"
 _SELECTION_WIDTH: Final = 6
+_REGION_COLOR: Final = "#1468C8"
+_REGION_WIDTH: Final = 3
 
 type SourceLine = tuple[Point, Point]
+type SourceRegion = tuple[float, float, float, float]
+
+
+class SourceDragMode(StrEnum):
+    """What a drag on the source image is currently for."""
+
+    NONE = "none"
+    LINE = "line"
+    REGION = "region"
 
 
 @final
@@ -19,13 +31,15 @@ class SourceImageLabel(QLabel):
     """Fit a source image and emit source-space drag lines when enabled."""
 
     line_drawn = Signal(float, float, float, float)
+    region_drawn = Signal(float, float, float, float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """Initialize a passive source image surface."""
         super().__init__(parent)
         self._source_pixmap: QPixmap | None = None
         self._selection_lines: tuple[SourceLine, ...] = ()
-        self._drawing_enabled = False
+        self._region: SourceRegion | None = None
+        self._drag_mode = SourceDragMode.NONE
         self._draw_start: Point | None = None
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setWordWrap(True)
@@ -42,13 +56,27 @@ class SourceImageLabel(QLabel):
         self._selection_lines = lines
         self._refresh_display()
 
-    def set_drawing_enabled(self, enabled: bool) -> None:
-        """Toggle source drag input for manual line replacement or addition."""
-        self._drawing_enabled = enabled
+    def set_region(self, region: SourceRegion | None) -> None:
+        """Replace the drawing region a reviewer marked, in source coordinates."""
+        self._region = region
+        self._refresh_display()
+
+    def set_drag_mode(self, mode: SourceDragMode) -> None:
+        """Choose what the next drag on the source image produces.
+
+        One mode at a time, so marking a region cannot also redraw a line.
+        """
+        self._drag_mode = mode
         self._draw_start = None
         self.setCursor(
-            Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor,
+            Qt.CursorShape.ArrowCursor
+            if mode is SourceDragMode.NONE
+            else Qt.CursorShape.CrossCursor,
         )
+
+    def set_drawing_enabled(self, enabled: bool) -> None:
+        """Toggle source drag input for manual line replacement or addition."""
+        self.set_drag_mode(SourceDragMode.LINE if enabled else SourceDragMode.NONE)
 
     def _refresh_display(self) -> None:
         """Fit the image and paint the current selection overlay."""
@@ -82,6 +110,19 @@ class SourceImageLabel(QLabel):
                     start.y * y_scale,
                     end.x * x_scale,
                     end.y * y_scale,
+                ),
+            )
+        region = self._region
+        if region is not None:
+            region_pen = QPen(_REGION_COLOR)
+            _ = region_pen.setWidth(_REGION_WIDTH)
+            _ = painter.setPen(region_pen)
+            _ = painter.drawRect(
+                QRectF(
+                    region[0] * x_scale,
+                    region[1] * y_scale,
+                    region[2] * x_scale,
+                    region[3] * y_scale,
                 ),
             )
         _ = painter.end()
@@ -120,8 +161,11 @@ class SourceImageLabel(QLabel):
 
     @override
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        """Start a source-space line when redraw mode is active."""
-        if not self._drawing_enabled or event.button() is not Qt.MouseButton.LeftButton:
+        """Start a source-space drag when a drag mode is active."""
+        if (
+            self._drag_mode is SourceDragMode.NONE
+            or event.button() is not Qt.MouseButton.LeftButton
+        ):
             super().mousePressEvent(event)
             return
         self._draw_start = self._source_point(event.position().toPoint())
@@ -129,16 +173,31 @@ class SourceImageLabel(QLabel):
 
     @override
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        """Finish a source-space line and emit its raw endpoints."""
-        if not self._drawing_enabled or event.button() is not Qt.MouseButton.LeftButton:
+        """Finish a source-space drag and emit it in original coordinates."""
+        if (
+            self._drag_mode is SourceDragMode.NONE
+            or event.button() is not Qt.MouseButton.LeftButton
+        ):
             super().mouseReleaseEvent(event)
             return
         start = self._draw_start
         self._draw_start = None
         end = self._source_point(event.position().toPoint())
         if start is not None and end is not None:
-            self.line_drawn.emit(start.x, start.y, end.x, end.y)
+            self._emit_drag(start, end)
         event.accept()
+
+    def _emit_drag(self, start: Point, end: Point) -> None:
+        """Emit one completed drag according to the active mode."""
+        if self._drag_mode is SourceDragMode.REGION:
+            self.region_drawn.emit(
+                min(start.x, end.x),
+                min(start.y, end.y),
+                abs(end.x - start.x),
+                abs(end.y - start.y),
+            )
+            return
+        self.line_drawn.emit(start.x, start.y, end.x, end.y)
 
     @override
     def resizeEvent(self, event: QResizeEvent) -> None:

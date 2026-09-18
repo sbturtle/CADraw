@@ -1,6 +1,6 @@
 """Provider-neutral vision boundary for local and future AI analyzers."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -26,10 +26,26 @@ class MockVisionAnalyzer:
         self,
         image_path: Path,
         preprocessing_variant: str | None = None,
+        source_region: tuple[int, int, int, int] | None = None,
     ) -> DrawingAnalysis:
-        """Run OpenCV detection without a network provider or guessed text."""
+        """Run OpenCV detection without a network provider or guessed text.
+
+        A `source_region` supplied here is a reviewer pointing at the drawing,
+        so it also switches page-warp detection off. Otherwise a successful
+        warp would take precedence over the crop and quietly analyze the whole
+        sheet again, which is the opposite of what the reviewer just asked for.
+        """
+        config = (
+            self.config
+            if source_region is None
+            else replace(
+                self.config,
+                source_region=source_region,
+                perspective_correction=False,
+            )
+        )
         return analyze_image(
             image_path,
-            self.config,
+            config,
             preprocessing_variant=preprocessing_variant,
         )

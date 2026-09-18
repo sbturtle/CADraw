@@ -29,7 +29,7 @@ from cadraw.models import (
 )
 from cadraw.preview import PreviewConfig, PreviewMode
 from cadraw.ui.preview_widget import PreviewWidget
-from cadraw.ui.source_image_widget import SourceImageLabel
+from cadraw.ui.source_image_widget import SourceDragMode, SourceImageLabel
 from cadraw.ui.verification_panel import VerificationPanel
 
 _SOURCE_STRETCH: Final = 5
@@ -61,7 +61,10 @@ class WorkbenchView(QWidget):
     merge_requested = Signal()
     delete_requested = Signal()
     redraw_toggled = Signal(bool)
+    region_toggled = Signal(bool)
+    region_cleared = Signal()
     source_line_drawn = Signal(float, float, float, float)
+    source_region_drawn = Signal(float, float, float, float)
     preview_selection_changed = Signal(tuple)
     dimension_apply_requested = Signal(int, str)
     preview_mode_changed = Signal(str)
@@ -245,6 +248,26 @@ class WorkbenchView(QWidget):
         """Toggle source-image drag input for the redraw action."""
         self._source_label.set_drawing_enabled(enabled)
 
+    def set_source_region_enabled(self, enabled: bool) -> None:
+        """Toggle source-image drag input for marking the drawing region."""
+        self._source_label.set_drag_mode(
+            SourceDragMode.REGION if enabled else SourceDragMode.NONE,
+        )
+
+    def set_source_region(
+        self, region: tuple[float, float, float, float] | None
+    ) -> None:
+        """Show the drawing region a reviewer marked on the source image."""
+        self._source_label.set_region(region)
+
+    def set_region_checked(self, checked: bool) -> None:
+        """Set the region-marking toggle state."""
+        self._verification.set_region_checked(checked)
+
+    def set_region_actions_enabled(self, mark: bool, clear: bool) -> None:
+        """Set the region affordances on the verification panel."""
+        self._verification.set_region_actions_enabled(mark, clear)
+
     def set_caption(self, text: str) -> None:
         """Display user-facing operation status."""
         self._caption.setText(text)
@@ -292,7 +315,10 @@ class WorkbenchView(QWidget):
         _ = self._verification.merge_requested.connect(self.merge_requested)
         _ = self._verification.delete_requested.connect(self.delete_requested)
         _ = self._verification.redraw_toggled.connect(self.redraw_toggled)
+        _ = self._verification.region_toggled.connect(self.region_toggled)
+        _ = self._verification.region_cleared.connect(self.region_cleared)
         _ = self._source_label.line_drawn.connect(self.source_line_drawn)
+        _ = self._source_label.region_drawn.connect(self.source_region_drawn)
         _ = self._preview.selection_changed.connect(
             self.preview_selection_changed,
         )
