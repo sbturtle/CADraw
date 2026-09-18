@@ -4,6 +4,7 @@ from cadraw.calculator import calculate_document
 from cadraw.export import export_dxf, validate_dxf
 from cadraw.models import (
     CadResolutionStatus,
+    CircleEntity,
     Dimension,
     DimensionId,
     DimensionKind,
@@ -13,6 +14,8 @@ from cadraw.models import (
     LineEntity,
     Orientation,
     Point,
+    PolylineEntity,
+    WarningCode,
 )
 from cadraw.normalization import build_connections
 
@@ -218,3 +221,182 @@ def test_reconstructed_l_shape_round_trips_exact_segment_lengths(
 
     # Then DXF segment lengths are the entered millimetres, not source pixels
     assert validation.polyline_segment_lengths == ((100.0, 300.0),)
+
+
+def _confirmed_dimension(
+    entity_id: str,
+    kind: DimensionKind,
+    value: float,
+) -> Dimension:
+    """Build one confirmed dimension attached to a single entity."""
+    return Dimension(
+        dimension_id=DimensionId(f"{entity_id}_{kind.value}"),
+        raw_text=f"{value:g}",
+        kind=kind,
+        parsed_value=value,
+        unit="mm",
+        target_entity_ids=(EntityId(entity_id),),
+        confidence=1.0,
+        status=DimensionStatus.CONFIRMED,
+    )
+
+
+def _profile(entity_id: str) -> PolylineEntity:
+    """Build a closed outline traced 400 by 200 in source pixels."""
+    return PolylineEntity(
+        entity_id=EntityId(entity_id),
+        points=(
+            Point(100.0, 100.0),
+            Point(500.0, 100.0),
+            Point(500.0, 300.0),
+            Point(100.0, 300.0),
+        ),
+        closed=True,
+        confidence=0.9,
+    )
+
+
+def _shape_analysis(
+    entities: tuple[LineEntity | PolylineEntity | CircleEntity, ...],
+    dimensions: tuple[Dimension, ...],
+) -> DrawingAnalysis:
+    """Build a minimal analysis around explicit entities and dimensions."""
+    return DrawingAnalysis(
+        unit="mm",
+        image_size=(800, 600),
+        entities=entities,
+        dimensions=dimensions,
+        connections=(),
+        warnings=(),
+    )
+
+
+def test_a_shape_nobody_confirmed_is_not_treated_as_measured() -> None:
+    # Given a confirmed line length and a hole nobody gave a size
+    line = _line(
+        "line_a",
+        Point(100.0, 500.0),
+        Point(500.0, 500.0),
+        Orientation.HORIZONTAL,
+    )
+    hole = CircleEntity(
+        entity_id=EntityId("hole"),
+        center=Point(300.0, 200.0),
+        radius=50.0,
+        confidence=0.9,
+    )
+    analysis = _shape_analysis(
+        (line, hole),
+        (_confirmed_dimension("line_a", DimensionKind.LENGTH, 800.0),),
+    )
+
+    # When the document is calculated
+    document = calculate_document(analysis)
+
+    # Then the hole stays unresolved, so the sheet's scale is not its size
+    states = {entity.entity_id: entity.status for entity in document.cad_entities}
+    assert states[EntityId("line_a")] is CadResolutionStatus.RESOLVED
+    assert states[EntityId("hole")] is CadResolutionStatus.UNRESOLVED
+
+
+def test_a_confirmed_hole_diameter_resolves_that_hole(tmp_path: Path) -> None:
+    # Given a drilled hole whose diameter a reviewer confirmed
+    hole = CircleEntity(
+        entity_id=EntityId("hole"),
+        center=Point(300.0, 200.0),
+        radius=50.0,
+        confidence=0.9,
+    )
+    analysis = _shape_analysis(
+        (hole,),
+        (_confirmed_dimension("hole", DimensionKind.DIAMETER, 40.0),),
+    )
+
+    # When the document is calculated and exported
+    document = calculate_document(analysis)
+    export_path = tmp_path / "hole.dxf"
+    _ = export_dxf(document, export_path)
+
+    # Then that one value both calibrates and sizes it
+    assert document.scale_mm_per_source_unit is not None
+    assert document.cad_entities[0].status is CadResolutionStatus.RESOLVED
+    assert validate_dxf(export_path).count("CIRCLE") == 1
+
+
+def test_both_confirmed_extents_size_a_profile_on_each_axis() -> None:
+    # Given a 400x200 traced outline confirmed as a 600 by 140 part
+    profile = _profile("plate")
+    analysis = _shape_analysis(
+        (profile,),
+        (
+            _confirmed_dimension("plate", DimensionKind.WIDTH, 600.0),
+            _confirmed_dimension("plate", DimensionKind.HEIGHT, 140.0),
+        ),
+    )
+
+    # When the document is calculated
+    document = calculate_document(analysis)
+
+    # Then the outline comes out at exactly the confirmed overall size
+    geometry = document.cad_entities[0].geometry
+    assert isinstance(geometry, PolylineEntity)
+    assert geometry.width == 600.0
+    assert geometry.height == 140.0
+
+
+def test_one_confirmed_extent_keeps_the_traced_proportions() -> None:
+    # Given only the overall width of a 400x200 traced outline
+    profile = _profile("plate")
+    analysis = _shape_analysis(
+        (profile,),
+        (_confirmed_dimension("plate", DimensionKind.WIDTH, 800.0),),
+    )
+
+    # When the document is calculated
+    document = calculate_document(analysis)
+
+    # Then the height follows the same factor rather than being invented
+    geometry = document.cad_entities[0].geometry
+    assert isinstance(geometry, PolylineEntity)
+    assert geometry.width == 800.0
+    assert geometry.height == 400.0
+
+
+def test_stretching_a_profile_to_fit_is_reported() -> None:
+    # Given extents that disagree with the traced proportions
+    profile = _profile("plate")
+    analysis = _shape_analysis(
+        (profile,),
+        (
+            _confirmed_dimension("plate", DimensionKind.WIDTH, 600.0),
+            _confirmed_dimension("plate", DimensionKind.HEIGHT, 140.0),
+        ),
+    )
+
+    # When the document is calculated
+    document = calculate_document(analysis)
+
+    # Then the reviewer is told the inside of the outline is stretched
+    assert any(
+        warning.code is WarningCode.CONSTRAINT_MISMATCH for warning in document.warnings
+    )
+
+
+def test_matching_extents_are_not_reported_as_stretched() -> None:
+    # Given extents that agree with the traced 2:1 proportions
+    profile = _profile("plate")
+    analysis = _shape_analysis(
+        (profile,),
+        (
+            _confirmed_dimension("plate", DimensionKind.WIDTH, 800.0),
+            _confirmed_dimension("plate", DimensionKind.HEIGHT, 400.0),
+        ),
+    )
+
+    # When the document is calculated
+    document = calculate_document(analysis)
+
+    # Then nothing is flagged, because no stretching was needed
+    assert not any(
+        warning.code is WarningCode.CONSTRAINT_MISMATCH for warning in document.warnings
+    )

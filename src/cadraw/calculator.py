@@ -1,19 +1,17 @@
 """Deterministic calibration, validation, and coordinate transformation."""
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from cadraw.models import (
     AnalysisWarning,
     ArcEntity,
     CadDocument,
-    CadEntity,
     CadResolutionStatus,
     CircleEntity,
     Dimension,
     DimensionKind,
     DimensionStatus,
     DrawingAnalysis,
-    GeometryEntity,
     LineEntity,
     PolylineEntity,
     WarningCode,
@@ -27,38 +25,6 @@ class CalculatorConfig:
 
     validation_tolerance_ratio: float = 0.02
     minimum_validation_tolerance_mm: float = 0.5
-
-
-def _scale_geometry(geometry: GeometryEntity, scale: float) -> GeometryEntity:
-    """Keep legacy non-line geometry in the calibrated CAD coordinate space."""
-    if isinstance(geometry, PolylineEntity):
-        return replace(
-            geometry,
-            points=tuple(point.scaled(scale) for point in geometry.points),
-        )
-    if isinstance(geometry, (CircleEntity, ArcEntity)):
-        return replace(
-            geometry,
-            center=geometry.center.scaled(scale),
-            radius=geometry.radius * scale,
-        )
-    return geometry
-
-
-def _scale_cad_entities(
-    entities: tuple[CadEntity, ...],
-    scale: float | None,
-) -> tuple[CadEntity, ...]:
-    """Apply the existing global fallback only to non-line geometry."""
-    if scale is None:
-        return entities
-    return tuple(
-        replace(
-            entity,
-            geometry=_scale_geometry(entity.geometry, scale),
-        )
-        for entity in entities
-    )
 
 
 def _has_warning(
@@ -189,45 +155,47 @@ def _append_circular_constraint_warnings(
         )
 
 
-def _append_profile_constraint_warnings(
+def _append_profile_aspect_warnings(
     analysis: DrawingAnalysis,
-    scale: float,
     config: CalculatorConfig,
     warnings: list[AnalysisWarning],
 ) -> None:
-    """Compare confirmed profile extents to the traced outline.
+    """Report an outline whose traced shape had to be stretched to fit.
 
-    An outline's two extents imply two scales whenever the traced shape's
-    aspect ratio differs from the real part, which it usually does by a little.
-    Reporting the disagreement leaves the reviewer to decide, rather than one
-    confirmed value silently overriding the other.
+    Both confirmed extents are honored, so the exported part comes out at the
+    width and height a person wrote down. What the reviewer still needs to know
+    is that the two values disagreed with the traced proportions, because every
+    notch and corner inside the outline is stretched by that difference.
     """
     entities = {entity.entity_id: entity for entity in analysis.entities}
-    for dimension in analysis.dimensions:
-        if dimension.status is not DimensionStatus.CONFIRMED:
+    for entity in entities.values():
+        if not isinstance(entity, PolylineEntity) or not entity.closed:
             continue
-        if dimension.kind not in (DimensionKind.WIDTH, DimensionKind.HEIGHT):
+        confirmed = {
+            dimension.kind: dimension
+            for dimension in analysis.dimensions
+            if dimension.status is DimensionStatus.CONFIRMED
+            and dimension.parsed_value is not None
+            and dimension.target_entity_ids == (entity.entity_id,)
+        }
+        width = confirmed.get(DimensionKind.WIDTH)
+        height = confirmed.get(DimensionKind.HEIGHT)
+        if width is None or height is None:
             continue
-        if dimension.parsed_value is None or len(dimension.target_entity_ids) != 1:
+        if entity.width <= 0.0 or entity.height <= 0.0:
             continue
-        target = entities.get(dimension.target_entity_ids[0])
-        if not isinstance(target, PolylineEntity):
+        x_factor = (width.parsed_value or 0.0) / entity.width
+        y_factor = (height.parsed_value or 0.0) / entity.height
+        if x_factor <= 0.0 or y_factor <= 0.0:
             continue
-        source_extent = (
-            target.width if dimension.kind is DimensionKind.WIDTH else target.height
-        )
-        expected = source_extent * scale
-        tolerance = max(
-            config.minimum_validation_tolerance_mm,
-            dimension.parsed_value * config.validation_tolerance_ratio,
-        )
-        if abs(expected - dimension.parsed_value) <= tolerance:
+        difference = abs(x_factor - y_factor) / max(x_factor, y_factor)
+        if difference <= config.validation_tolerance_ratio:
             continue
         warnings.append(
             AnalysisWarning(
                 code=WarningCode.CONSTRAINT_MISMATCH,
-                message="확정 치수와 프로파일 전체 크기가 일치하지 않습니다.",
-                entity_ids=dimension.target_entity_ids,
+                message=("확정한 폭과 높이가 그린 비율과 달라 내부 형상이 늘어납니다."),
+                entity_ids=(entity.entity_id,),
             ),
         )
 
@@ -241,7 +209,7 @@ def calculate_document(
     effective_config = config if config is not None else CalculatorConfig()
     reconstruction = reconstruct_geometry(analysis)
     calibration = reconstruction.scale_mm_per_source_unit
-    cad_entities = _scale_cad_entities(reconstruction.entities, calibration)
+    cad_entities = reconstruction.entities
     _append_dimension_warnings(analysis, warnings)
     if any(
         entity.status is CadResolutionStatus.UNKNOWN_ANGLE
@@ -274,7 +242,7 @@ def calculate_document(
     scale = calibration
     _append_constraint_warnings(analysis, scale, effective_config, warnings)
     _append_circular_constraint_warnings(analysis, scale, effective_config, warnings)
-    _append_profile_constraint_warnings(analysis, scale, effective_config, warnings)
+    _append_profile_aspect_warnings(analysis, effective_config, warnings)
     return CadDocument(
         unit=analysis.unit,
         entities=tuple(entity.geometry for entity in cad_entities),

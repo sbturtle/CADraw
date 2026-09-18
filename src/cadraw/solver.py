@@ -205,6 +205,135 @@ def _component_geometry(
     }
 
 
+_CONSTRAINT_KINDS = {
+    DimensionKind.LENGTH: ConstraintKind.LENGTH,
+    DimensionKind.WIDTH: ConstraintKind.WIDTH,
+    DimensionKind.HEIGHT: ConstraintKind.HEIGHT,
+    DimensionKind.ANGLE: ConstraintKind.ANGLE,
+    DimensionKind.DIAMETER: ConstraintKind.DIAMETER,
+    DimensionKind.RADIUS: ConstraintKind.RADIUS,
+    DimensionKind.UNKNOWN: ConstraintKind.LENGTH,
+}
+
+
+def _constraints(attached: tuple[Dimension, ...]) -> tuple[Constraint, ...]:
+    """Record the confirmed values behind one entity's CAD geometry."""
+    return tuple(
+        Constraint(
+            kind=_CONSTRAINT_KINDS[dimension.kind],
+            value=dimension.parsed_value,
+            target_entity_ids=dimension.target_entity_ids,
+            status=dimension.status,
+        )
+        for dimension in attached
+    )
+
+
+def _own_factors(
+    source: GeometryEntity,
+    dimensions: tuple[Dimension, ...],
+) -> tuple[float, float] | None:
+    """Return the x and y factors this entity's own confirmed sizes imply.
+
+    A sketch carries one overall size per part, not one for the sheet: the
+    reference drawings label four brackets `W=500 H=510`, `W=400 H=650` and so
+    on. So each outline is sized by its own confirmed extents, and a part whose
+    traced aspect ratio differs from the real one still comes out at the width
+    and height a person actually wrote down.
+    """
+    if isinstance(source, PolylineEntity) and source.closed:
+        width = _value(dimensions, source.entity_id, DimensionKind.WIDTH)
+        height = _value(dimensions, source.entity_id, DimensionKind.HEIGHT)
+        x_factor = width / source.width if width and source.width > 0.0 else None
+        y_factor = height / source.height if height and source.height > 0.0 else None
+        if x_factor is None and y_factor is None:
+            return None
+        return (x_factor or y_factor or 1.0, y_factor or x_factor or 1.0)
+    if isinstance(source, (CircleEntity, ArcEntity)) and source.radius > 0.0:
+        diameter = (
+            _value(dimensions, source.entity_id, DimensionKind.DIAMETER)
+            if isinstance(source, CircleEntity)
+            else None
+        )
+        radius = _value(dimensions, source.entity_id, DimensionKind.RADIUS)
+        confirmed_radius = (diameter / 2.0) if diameter else radius
+        if confirmed_radius:
+            factor = confirmed_radius / source.radius
+            return (factor, factor)
+    return None
+
+
+def _sized_non_line(
+    source: GeometryEntity,
+    factors: tuple[float, float],
+    scale: float | None,
+) -> GeometryEntity:
+    """Resize one entity by its own factors, keeping the sheet's layout."""
+    layout = scale if scale is not None else 1.0
+    if isinstance(source, PolylineEntity):
+        origin_x = min(point.x for point in source.points)
+        origin_y = min(point.y for point in source.points)
+        return replace(
+            source,
+            points=tuple(
+                Point(
+                    origin_x * layout + (point.x - origin_x) * factors[0],
+                    origin_y * layout + (point.y - origin_y) * factors[1],
+                )
+                for point in source.points
+            ),
+        )
+    if isinstance(source, (CircleEntity, ArcEntity)):
+        return replace(
+            source,
+            center=source.center.scaled(layout),
+            radius=source.radius * factors[0],
+        )
+    return source
+
+
+def _non_line_cad_entity(
+    source: GeometryEntity,
+    dimensions: tuple[Dimension, ...],
+    scale: float | None,
+) -> CadEntity:
+    """Resolve one closed shape from its own confirmed size, or leave it open.
+
+    A global scale taken from somewhere else on the sheet is a preview aid, not
+    a measurement of this shape. Treating it as one used to mark every detected
+    hole and outline `RESOLVED` the moment any one value was confirmed, which
+    exported sizes that came from the photograph's proportions rather than from
+    a person.
+    """
+    factors = _own_factors(source, dimensions)
+    resolved = factors is not None
+    geometry = (
+        _sized_non_line(source, factors, scale)
+        if factors is not None
+        else _scaled_for_preview(source, scale)
+    )
+    return CadEntity(
+        entity_id=source.entity_id,
+        source_entity_id=source.entity_id,
+        geometry=geometry,
+        constraints=_constraints(_confirmed(dimensions, source.entity_id)),
+        status=(
+            CadResolutionStatus.RESOLVED if resolved else CadResolutionStatus.UNRESOLVED
+        ),
+        inferred_for_preview=not resolved,
+    )
+
+
+def _scaled_for_preview(
+    source: GeometryEntity,
+    scale: float | None,
+) -> GeometryEntity:
+    """Place unconfirmed geometry for preview only, never for export."""
+    if scale is None:
+        return source
+    return _sized_non_line(source, (scale, scale), scale)
+
+
 def _cad_entity(
     source: GeometryEntity,
     geometry: GeometryEntity,
@@ -213,19 +342,7 @@ def _cad_entity(
 ) -> CadEntity:
     """Build one source-to-CAD relation and resolution state."""
     if not isinstance(source, LineEntity):
-        return CadEntity(
-            entity_id=source.entity_id,
-            source_entity_id=source.entity_id,
-            geometry=geometry,
-            constraints=(),
-            status=(
-                CadResolutionStatus.RESOLVED
-                if scale is not None
-                else CadResolutionStatus.UNRESOLVED
-            ),
-            inferred_for_preview=scale is not None,
-        )
-    attached = _confirmed(dimensions, source.entity_id)
+        return _non_line_cad_entity(source, dimensions, scale)
     has_length = _value(dimensions, source.entity_id, DimensionKind.LENGTH) is not None
     has_angle = _value(dimensions, source.entity_id, DimensionKind.ANGLE) is not None
     status = (
@@ -237,23 +354,7 @@ def _cad_entity(
         entity_id=source.entity_id,
         source_entity_id=source.entity_id,
         geometry=geometry,
-        constraints=tuple(
-            Constraint(
-                kind={
-                    DimensionKind.LENGTH: ConstraintKind.LENGTH,
-                    DimensionKind.WIDTH: ConstraintKind.WIDTH,
-                    DimensionKind.HEIGHT: ConstraintKind.HEIGHT,
-                    DimensionKind.ANGLE: ConstraintKind.ANGLE,
-                    DimensionKind.DIAMETER: ConstraintKind.DIAMETER,
-                    DimensionKind.RADIUS: ConstraintKind.RADIUS,
-                    DimensionKind.UNKNOWN: ConstraintKind.LENGTH,
-                }[dimension.kind],
-                value=dimension.parsed_value,
-                target_entity_ids=dimension.target_entity_ids,
-                status=dimension.status,
-            )
-            for dimension in attached
-        ),
+        constraints=_constraints(_confirmed(dimensions, source.entity_id)),
         status=status,
         inferred_for_preview=status is not CadResolutionStatus.RESOLVED,
     )
