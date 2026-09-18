@@ -106,13 +106,20 @@ class PipelineConfig:
 
     @classmethod
     def from_detection_defaults(cls) -> "PipelineConfig":
-        """Create camera-sketch defaults that favor structural line chains."""
+        """Create camera-sketch defaults that favor structural line chains.
+
+        Closed shapes are detected here because a cut plate's outline is the
+        part, not an extra. They were opt-in while ruled paper and printed
+        form furniture still reached the candidate list and outnumbered the
+        drawing; those are now proved away before detection.
+        """
         return cls(
             detection=DetectionConfig(
                 minimum_line_length=60.0,
                 hough_threshold=25,
                 maximum_line_gap=28,
                 maximum_candidates=64,
+                detect_closed_shapes=True,
             ),
             normalization=NormalizationConfig(
                 horizontal_angle_tolerance_degrees=7.0,

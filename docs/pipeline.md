@@ -63,8 +63,16 @@ polyline 조립은 proximity connection을 다시 사용하지 않습니다. bra
 
 `--auto-region`은 입력 이미지의 바깥 여백을 결정적으로 제외하고, 검출된
 좌표를 원본 이미지 좌표로 되돌립니다. 명시적인 `source_region`이 있으면
-항상 명시 설정이 우선합니다. `--detect-shapes`는 이 영역의 이진 윤곽에서
-닫힌 사각형은 `PolylineEntity`, 원은 `CircleEntity`로 추가합니다.
+항상 명시 설정이 우선합니다. 닫힌 윤곽에서 사각형·일반 프로파일은
+`PolylineEntity`, 원은 `CircleEntity`, 부분 호는 `ArcEntity`로 추가하며,
+`PipelineConfig.from_detection_defaults()`가 이를 켜므로 앱에서도 동작합니다.
+`scripts/run_poc.py`는 자체 설정을 만들어 `--detect-shapes`로 제어합니다.
+
+도형 크기 하한은 절대값과 비례값 중 큰 쪽입니다
+(`max(minimum_shape_span, min(width, height) * 0.02)`). 절대값만으로는
+해상도에 따라 의미가 달라져, 2560픽셀 높이 사진에서 30픽셀 표시는 손글씨
+획이지만 작은 픽스처에서는 도면입니다. 다만 닫힌 프로파일 폴리곤에는 확인
+행이 없어 `UNRESOLVED`로 남고 기본 DXF에서 제외됩니다.
 
 `--perspective`가 켜지면 전체 사진에서 페이지 사변형을 먼저 검출하고,
 실패하면 명시적/자동 `source_region` 안에서 한 번 더 찾습니다. 찾은 사변형은

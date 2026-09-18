@@ -223,3 +223,38 @@ def test_notched_profile_outline_is_kept_as_a_closed_polygon() -> None:
         - min(point.x for point in profile.points)
         >= 200
     )
+
+
+def _sheet_with_small_mark(width: int, height: int) -> np.ndarray:
+    """Draw one 30x42 closed mark, the size of a handwritten character."""
+    image = np.full((height, width), 255, dtype=np.uint8)
+    _ = cv2.rectangle(image, (200, 200), (230, 242), 0, 3)
+    return image
+
+
+def test_a_small_mark_is_a_shape_on_a_small_sheet() -> None:
+    # Given a mark that is large relative to a small fixture
+    image = _sheet_with_small_mark(480, 640)
+
+    # When closed-shape detection runs with the shipped floors
+    candidates = detect_shape_candidates(
+        image,
+        DetectionConfig(detect_closed_shapes=True, border_margin_ratio=0.0),
+    )
+
+    # Then it is kept, because for this sheet it is drawing-sized
+    assert candidates
+
+
+def test_the_same_mark_is_handwriting_on_a_photograph() -> None:
+    # Given the identical mark on a full-resolution photograph
+    image = _sheet_with_small_mark(1920, 2560)
+
+    # When closed-shape detection runs with the shipped floors
+    candidates = detect_shape_candidates(
+        image,
+        DetectionConfig(detect_closed_shapes=True, border_margin_ratio=0.0),
+    )
+
+    # Then the extent floor scales with the sheet and drops it
+    assert candidates == ()

@@ -19,13 +19,17 @@ from PySide6.QtWidgets import (
 )
 
 from cadraw.calculator import calculate_document
+from cadraw.export import validate_dxf
 from cadraw.models import (
     CadResolutionStatus,
+    CircleEntity,
+    DimensionKind,
     DrawingAnalysis,
     EntityId,
     LineEntity,
     Orientation,
     Point,
+    PolylineEntity,
 )
 from cadraw.normalization import build_connections
 from cadraw.preview import PreviewConfig, render_preview
@@ -945,3 +949,81 @@ def test_loading_another_image_drops_the_previous_region(tmp_path: Path) -> None
     # Then the region does not leak onto the new image
     assert window.analysis is not None
     assert window.analysis.source_region is None
+
+
+_T_PROFILE = np.array(
+    [
+        [280, 120],
+        [420, 120],
+        [420, 380],
+        [600, 380],
+        [600, 520],
+        [120, 520],
+        [120, 380],
+        [280, 380],
+    ],
+    dtype=np.int32,
+)
+
+
+def _plate_sheet(tmp_path: Path, *, with_hole: bool) -> Path:
+    """Save a T-shaped cut profile, optionally with one drilled hole."""
+    image = np.full((700, 720), 252, dtype=np.uint8)
+    _ = cv2.polylines(image, [_T_PROFILE], isClosed=True, color=0, thickness=6)
+    if with_hole:
+        _ = cv2.circle(image, (220, 450), 34, 0, 5)
+    image_path = tmp_path / ("plate-hole.png" if with_hole else "plate.png")
+    Image.fromarray(image).save(image_path)
+    return image_path
+
+
+def test_app_defaults_surface_profiles_and_holes(tmp_path: Path) -> None:
+    # Given a sheet holding a cut profile with a drilled hole inside it
+    _ = _application()
+    window = MainWindow()
+
+    # When the image is loaded through the shipped application defaults
+    assert window.load_path(_plate_sheet(tmp_path, with_hole=True)) is True
+
+    # Then the closed profile and the hole are both part of the analysis
+    analysis = window.analysis
+    assert analysis is not None
+    assert any(isinstance(entity, PolylineEntity) for entity in analysis.entities)
+    assert any(isinstance(entity, CircleEntity) for entity in analysis.entities)
+
+    # And the hole gets a diameter row to confirm
+    assert DimensionKind.DIAMETER in {
+        dimension.kind for dimension in analysis.dimensions
+    }
+
+    # But a closed profile still has no row of its own to confirm
+    polyline_ids = {
+        entity.entity_id
+        for entity in analysis.entities
+        if isinstance(entity, PolylineEntity)
+    }
+    assert polyline_ids
+    assert not any(
+        set(dimension.target_entity_ids) & polyline_ids
+        for dimension in analysis.dimensions
+    )
+
+
+def test_unconfirmed_profiles_stay_out_of_the_saved_drawing(
+    tmp_path: Path,
+) -> None:
+    # Given a loaded profile that nobody has given a physical size
+    _ = _application()
+    window = MainWindow()
+    assert window.load_path(_plate_sheet(tmp_path, with_hole=False)) is True
+    analysis = window.analysis
+    assert analysis is not None
+    assert any(isinstance(entity, PolylineEntity) for entity in analysis.entities)
+
+    # When the drawing is exported
+    export_path = tmp_path / "plate.dxf"
+    assert window.save_path(export_path) is True
+
+    # Then the unresolved profile is not written as CAD geometry
+    assert export_path.exists()
+    assert validate_dxf(export_path).count("LWPOLYLINE") == 0

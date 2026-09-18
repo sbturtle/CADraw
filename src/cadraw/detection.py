@@ -118,6 +118,7 @@ class DetectionConfig:
     detect_closed_shapes: bool = False
     minimum_shape_area: float = 800.0
     minimum_shape_span: float = 30.0
+    minimum_shape_span_ratio: float = 0.02
     minimum_shape_radius: float = 12.0
     maximum_shape_candidates: int = 64
     shape_threshold: int | None = None
@@ -1262,6 +1263,24 @@ def _contour_arc_candidate(
     )
 
 
+def _minimum_shape_span(
+    config: DetectionConfig,
+    width: int,
+    height: int,
+) -> float:
+    """Return the smallest extent a closed shape may have, in pixels.
+
+    The absolute floor alone is meaningless across resolutions: on a 2560-tall
+    photograph a thirty-pixel mark is a stroke of handwriting, while on a small
+    fixture it is the drawing. Scaling the floor with the shorter side keeps a
+    part's own features and drops marks that are tiny for the sheet they sit on.
+    """
+    return max(
+        config.minimum_shape_span,
+        min(width, height) * config.minimum_shape_span_ratio,
+    )
+
+
 def _contour_shape_candidate(
     contour: NDArray[np.int32],
     config: DetectionConfig,
@@ -1279,7 +1298,7 @@ def _contour_shape_candidate(
         and y > 1
         and x + box_width < width - 1
         and y + box_height < height - 1
-        and min(box_width, box_height) >= config.minimum_shape_span
+        and min(box_width, box_height) >= _minimum_shape_span(config, width, height)
         and box_width <= width * _MAX_SHAPE_EXTENT_RATIO
         and box_height <= height * _MAX_SHAPE_EXTENT_RATIO
     )
