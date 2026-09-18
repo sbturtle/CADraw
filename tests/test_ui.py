@@ -30,6 +30,7 @@ from cadraw.models import (
     Orientation,
     Point,
     PolylineEntity,
+    WarningCode,
 )
 from cadraw.normalization import build_connections
 from cadraw.preview import PreviewConfig, render_preview
@@ -996,17 +997,19 @@ def test_app_defaults_surface_profiles_and_holes(tmp_path: Path) -> None:
         dimension.kind for dimension in analysis.dimensions
     }
 
-    # But a closed profile still has no row of its own to confirm
+    # And the closed profile gets overall width and height rows of its own
     polyline_ids = {
         entity.entity_id
         for entity in analysis.entities
         if isinstance(entity, PolylineEntity)
     }
     assert polyline_ids
-    assert not any(
-        set(dimension.target_entity_ids) & polyline_ids
+    profile_kinds = {
+        dimension.kind
         for dimension in analysis.dimensions
-    )
+        if set(dimension.target_entity_ids) & polyline_ids
+    }
+    assert profile_kinds == {DimensionKind.WIDTH, DimensionKind.HEIGHT}
 
 
 def test_unconfirmed_profiles_stay_out_of_the_saved_drawing(
@@ -1027,3 +1030,74 @@ def test_unconfirmed_profiles_stay_out_of_the_saved_drawing(
     # Then the unresolved profile is not written as CAD geometry
     assert export_path.exists()
     assert validate_dxf(export_path).count("LWPOLYLINE") == 0
+
+
+def test_confirming_a_profile_extent_exports_it_in_millimetres(
+    tmp_path: Path,
+) -> None:
+    # Given a detected cut profile with no confirmed size yet
+    _ = _application()
+    window = MainWindow()
+    assert window.load_path(_plate_sheet(tmp_path, with_hole=False)) is True
+    analysis = window.analysis
+    assert analysis is not None
+    profile = next(
+        entity
+        for entity in analysis.entities
+        if isinstance(entity, PolylineEntity) and entity.closed
+    )
+    width_row = next(
+        row
+        for row, dimension in enumerate(analysis.dimensions)
+        if dimension.kind is DimensionKind.WIDTH
+        and dimension.target_entity_ids == (profile.entity_id,)
+    )
+
+    # When the reviewer confirms the profile's overall width
+    window.set_dimension_text(width_row, "960")
+
+    # Then that one value calibrates the drawing
+    document = window.document
+    assert document is not None
+    assert document.scale_mm_per_source_unit is not None
+
+    # And the profile is exported at the confirmed size
+    export_path = tmp_path / "confirmed-plate.dxf"
+    assert window.save_path(export_path) is True
+    validation = validate_dxf(export_path)
+    assert validation.count("LWPOLYLINE") == 1
+    points = validation.polyline_points[0]
+    exported_width = max(x for x, _ in points) - min(x for x, _ in points)
+    assert exported_width == pytest.approx(960.0, abs=1.0)
+
+
+def test_a_second_extent_that_disagrees_is_reported_not_applied(
+    tmp_path: Path,
+) -> None:
+    # Given a profile whose overall width the reviewer already confirmed
+    _ = _application()
+    window = MainWindow()
+    assert window.load_path(_plate_sheet(tmp_path, with_hole=False)) is True
+    analysis = window.analysis
+    assert analysis is not None
+    profile = next(
+        entity
+        for entity in analysis.entities
+        if isinstance(entity, PolylineEntity) and entity.closed
+    )
+    rows = {
+        dimension.kind: row
+        for row, dimension in enumerate(analysis.dimensions)
+        if dimension.target_entity_ids == (profile.entity_id,)
+    }
+    window.set_dimension_text(rows[DimensionKind.WIDTH], "960")
+
+    # When a height is confirmed that the traced outline does not support
+    window.set_dimension_text(rows[DimensionKind.HEIGHT], "50")
+
+    # Then the disagreement is reported instead of overriding the first value
+    document = window.document
+    assert document is not None
+    assert any(
+        warning.code is WarningCode.CONSTRAINT_MISMATCH for warning in document.warnings
+    )

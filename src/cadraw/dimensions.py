@@ -16,6 +16,14 @@ from cadraw.models import (
 _NUMBER = r"(?P<value>(?:\d+(?:[.,]\d*)?|[.,]\d+))"
 _MAX_DIMENSION_VALUE: Final = 1_000_000_000.0
 _MAX_ANGLE_DEGREES: Final = 180.0
+_SIZED_KINDS: Final = frozenset(
+    {
+        DimensionKind.WIDTH,
+        DimensionKind.HEIGHT,
+        DimensionKind.DIAMETER,
+        DimensionKind.RADIUS,
+    },
+)
 _VALUE_PATTERN = re.compile(
     rf"^\s*{_NUMBER}\s*(?P<unit>mm|㎜)?\s*$",
     re.IGNORECASE,
@@ -114,10 +122,24 @@ def associate_dimension(dimension: Dimension, entity_id: EntityId) -> Dimension:
 
 
 def confirm_dimension_text(dimension: Dimension, raw_text: str) -> Dimension:
-    """Replace a candidate with the exact text a user confirmed."""
+    """Replace a candidate with the exact text a user confirmed.
+
+    A row that already asks for a specific measurement keeps asking for it. A
+    bare number typed into a diameter or overall-width row is that
+    measurement, not a plain length, and treating it as one used to leave the
+    confirmed value attached to geometry that no validation or calibration
+    step would then look at. An explicit prefix still wins, since that is the
+    reviewer saying the row was the wrong one.
+    """
     parsed = parse_dimension_text(raw_text, dimension.dimension_id)
+    kind = (
+        dimension.kind
+        if parsed.kind is DimensionKind.LENGTH and dimension.kind in _SIZED_KINDS
+        else parsed.kind
+    )
     return replace(
         parsed,
+        kind=kind,
         target_entity_ids=dimension.target_entity_ids,
         confidence=1.0 if parsed.parsed_value is not None else parsed.confidence,
         status=(

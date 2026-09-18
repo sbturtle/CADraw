@@ -6,8 +6,10 @@ from dataclasses import dataclass, replace
 from math import cos, radians, sin
 
 from cadraw.models import (
+    ArcEntity,
     CadEntity,
     CadResolutionStatus,
+    CircleEntity,
     Constraint,
     ConstraintKind,
     Dimension,
@@ -19,6 +21,7 @@ from cadraw.models import (
     LineEntity,
     Orientation,
     Point,
+    PolylineEntity,
 )
 from cadraw.topology import connected_line_components
 
@@ -63,20 +66,64 @@ def _value(
     )
 
 
-def _first_scale(analysis: DrawingAnalysis) -> float | None:
-    """Find a legacy fallback scale from the first known line length."""
+def _source_extent(
+    target: GeometryEntity | None,
+    kind: DimensionKind,
+) -> float | None:
+    """Return the detected size a confirmed value of this kind describes."""
+    if isinstance(target, LineEntity) and kind is DimensionKind.LENGTH:
+        return target.length
+    if isinstance(target, PolylineEntity) and target.closed:
+        if kind is DimensionKind.WIDTH:
+            return target.width
+        if kind is DimensionKind.HEIGHT:
+            return target.height
+    if isinstance(target, CircleEntity) and kind is DimensionKind.DIAMETER:
+        return target.radius * 2.0
+    if isinstance(target, (CircleEntity, ArcEntity)) and kind is DimensionKind.RADIUS:
+        return target.radius
+    return None
+
+
+def _scale_from(
+    analysis: DrawingAnalysis,
+    kinds: tuple[DimensionKind, ...],
+) -> float | None:
+    """Derive a scale from the first confirmed value of the given kinds."""
     entities = {entity.entity_id: entity for entity in analysis.entities}
     for dimension in analysis.dimensions:
         if (
             dimension.status is not DimensionStatus.CONFIRMED
-            or dimension.kind is not DimensionKind.LENGTH
+            or dimension.kind not in kinds
             or dimension.parsed_value is None
             or len(dimension.target_entity_ids) != 1
         ):
             continue
-        target = entities.get(dimension.target_entity_ids[0])
-        if isinstance(target, LineEntity) and target.length > 0.0:
-            return dimension.parsed_value / target.length
+        extent = _source_extent(
+            entities.get(dimension.target_entity_ids[0]),
+            dimension.kind,
+        )
+        if extent is not None and extent > 0.0:
+            return dimension.parsed_value / extent
+    return None
+
+
+def _first_scale(analysis: DrawingAnalysis) -> float | None:
+    """Find the fallback scale from the first confirmed physical size.
+
+    Line lengths are consulted first so an existing drawing keeps the exact
+    scale it had. A sheet whose only confirmable feature is a cut outline or a
+    drilled hole could otherwise never be calibrated at all, which left the
+    profile and circle rows unable to produce CAD millimetres.
+    """
+    for kinds in (
+        (DimensionKind.LENGTH,),
+        (DimensionKind.WIDTH, DimensionKind.HEIGHT),
+        (DimensionKind.DIAMETER, DimensionKind.RADIUS),
+    ):
+        scale = _scale_from(analysis, kinds)
+        if scale is not None:
+            return scale
     return None
 
 
@@ -194,6 +241,8 @@ def _cad_entity(
             Constraint(
                 kind={
                     DimensionKind.LENGTH: ConstraintKind.LENGTH,
+                    DimensionKind.WIDTH: ConstraintKind.WIDTH,
+                    DimensionKind.HEIGHT: ConstraintKind.HEIGHT,
                     DimensionKind.ANGLE: ConstraintKind.ANGLE,
                     DimensionKind.DIAMETER: ConstraintKind.DIAMETER,
                     DimensionKind.RADIUS: ConstraintKind.RADIUS,

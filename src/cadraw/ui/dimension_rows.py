@@ -9,8 +9,8 @@ from cadraw.models import (
     DimensionStatus,
     EntityId,
     GeometryEntity,
-    LineEntity,
     Orientation,
+    PolylineEntity,
 )
 
 
@@ -21,6 +21,28 @@ def _circular_dimension(
 ) -> Dimension:
     """Return a stable diameter/radius row for one circle or arc entity."""
     suffix = "diameter" if kind is DimensionKind.DIAMETER else "radius"
+    return existing_by_key.get(
+        (entity.entity_id, kind),
+        Dimension(
+            dimension_id=DimensionId(f"manual_{entity.entity_id}_{suffix}"),
+            raw_text="",
+            kind=kind,
+            parsed_value=None,
+            unit="mm",
+            target_entity_ids=(entity.entity_id,),
+            confidence=0.0,
+            status=DimensionStatus.UNSET,
+        ),
+    )
+
+
+def _profile_dimension(
+    entity: PolylineEntity,
+    kind: DimensionKind,
+    existing_by_key: dict[tuple[EntityId, DimensionKind], Dimension],
+) -> Dimension:
+    """Return a stable overall-extent row for one closed profile outline."""
+    suffix = "width" if kind is DimensionKind.WIDTH else "height"
     return existing_by_key.get(
         (entity.entity_id, kind),
         Dimension(
@@ -66,7 +88,14 @@ def manual_dimensions(
                 ),
             )
             continue
-        if not isinstance(entity, LineEntity):
+        if isinstance(entity, PolylineEntity):
+            # A closed outline is dimensioned by its overall extents. An open
+            # chain is assembled from lines that already carry their own rows.
+            if entity.closed:
+                dimensions.extend(
+                    _profile_dimension(entity, kind, existing_by_key)
+                    for kind in (DimensionKind.WIDTH, DimensionKind.HEIGHT)
+                )
             continue
         length_key = (entity.entity_id, DimensionKind.LENGTH)
         dimensions.append(

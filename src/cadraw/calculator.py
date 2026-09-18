@@ -189,6 +189,49 @@ def _append_circular_constraint_warnings(
         )
 
 
+def _append_profile_constraint_warnings(
+    analysis: DrawingAnalysis,
+    scale: float,
+    config: CalculatorConfig,
+    warnings: list[AnalysisWarning],
+) -> None:
+    """Compare confirmed profile extents to the traced outline.
+
+    An outline's two extents imply two scales whenever the traced shape's
+    aspect ratio differs from the real part, which it usually does by a little.
+    Reporting the disagreement leaves the reviewer to decide, rather than one
+    confirmed value silently overriding the other.
+    """
+    entities = {entity.entity_id: entity for entity in analysis.entities}
+    for dimension in analysis.dimensions:
+        if dimension.status is not DimensionStatus.CONFIRMED:
+            continue
+        if dimension.kind not in (DimensionKind.WIDTH, DimensionKind.HEIGHT):
+            continue
+        if dimension.parsed_value is None or len(dimension.target_entity_ids) != 1:
+            continue
+        target = entities.get(dimension.target_entity_ids[0])
+        if not isinstance(target, PolylineEntity):
+            continue
+        source_extent = (
+            target.width if dimension.kind is DimensionKind.WIDTH else target.height
+        )
+        expected = source_extent * scale
+        tolerance = max(
+            config.minimum_validation_tolerance_mm,
+            dimension.parsed_value * config.validation_tolerance_ratio,
+        )
+        if abs(expected - dimension.parsed_value) <= tolerance:
+            continue
+        warnings.append(
+            AnalysisWarning(
+                code=WarningCode.CONSTRAINT_MISMATCH,
+                message="확정 치수와 프로파일 전체 크기가 일치하지 않습니다.",
+                entity_ids=dimension.target_entity_ids,
+            ),
+        )
+
+
 def calculate_document(
     analysis: DrawingAnalysis,
     config: CalculatorConfig | None = None,
@@ -231,6 +274,7 @@ def calculate_document(
     scale = calibration
     _append_constraint_warnings(analysis, scale, effective_config, warnings)
     _append_circular_constraint_warnings(analysis, scale, effective_config, warnings)
+    _append_profile_constraint_warnings(analysis, scale, effective_config, warnings)
     return CadDocument(
         unit=analysis.unit,
         entities=tuple(entity.geometry for entity in cad_entities),

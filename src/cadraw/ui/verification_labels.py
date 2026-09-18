@@ -12,6 +12,7 @@ from cadraw.models import (
     EntityId,
     LineEntity,
     Orientation,
+    PolylineEntity,
 )
 
 _ORIENTATION_LABELS = {
@@ -38,6 +39,17 @@ def _circular_label(target: CircleEntity | ArcEntity, prefix: str) -> str:
     return f"{prefix} · 반지름 로컬 {target.radius:g}"
 
 
+def _profile_label(
+    target: PolylineEntity,
+    dimension: Dimension,
+    prefix: str,
+) -> str:
+    """Return a workshop-facing overall-extent label for one profile."""
+    if dimension.kind is DimensionKind.WIDTH:
+        return f"{prefix} · 전체 폭 로컬 {target.width:g}"
+    return f"{prefix} · 전체 높이 로컬 {target.height:g}"
+
+
 def dimension_label(
     analysis: DrawingAnalysis | None,
     dimension: Dimension,
@@ -59,6 +71,8 @@ def dimension_label(
     if isinstance(target, (CircleEntity, ArcEntity)):
         shape = "원" if isinstance(target, CircleEntity) else "호"
         return _circular_label(target, f"{shape} {row + 1}")
+    if isinstance(target, PolylineEntity) and target.closed:
+        return _profile_label(target, dimension, f"프로파일 {row + 1}")
     return f"항목 {row + 1} · geometry"
 
 
@@ -90,6 +104,8 @@ def selected_dimension_label(
         return _circular_label(
             target, "원" if isinstance(target, CircleEntity) else "호"
         )
+    if isinstance(target, PolylineEntity) and target.closed:
+        return _profile_label(target, dimension, "프로파일")
     return "geometry"
 
 

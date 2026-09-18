@@ -17,7 +17,7 @@ CADraw는 범용 CAD 편집기가 아닙니다. 사진에서 선 후보를 찾�
 - horizontal / vertical / diagonal 방향 분류
 - 연결 관계와 낮은 신뢰도 경고를 갖는 typed intermediate representation
 - 정확히 연결된 unambiguous open chain을 순서 있는 `POLYLINE`으로 조립
-- 수동 치수 편집: 길이, `Ø` 직경, `R` 반지름, 각도
+- 수동 치수 편집: 길이, `Ø` 직경, `R` 반지름, 각도, 프로파일 전체 폭·높이
 - image-space 검출 geometry와 CAD-space mm geometry의 명시적 분리
 - `DetectedEntity` → `CadEntity` stable ID relation과 resolved/unresolved state
 - 연결된 선의 확정 길이·각도 기반 anchor reconstruction
@@ -33,7 +33,8 @@ CADraw는 범용 CAD 편집기가 아닙니다. 사진에서 선 후보를 찾�
 - 닫힌 사각형/원 외에 모따기·필렛 등 부분 호(open arc) 검출
 - T·L·노치 등 모서리 개수를 가정하지 않는 일반 프로파일 폴리곤 검출
 - 앱 기본값에서 닫힌 프로파일·구멍 검출(크기 하한은 해상도에 비례)
-- 첫 번째 확정 길이는 연결되지 않은 geometry의 preview fallback scale로만 사용
+- 확정된 선 길이·프로파일 전체 치수·지름 중 무엇이든 전역 보정 근거가 됨
+- 확인 행의 측정 종류가 입력 텍스트보다 우선(맨 숫자도 지름 행이면 지름)
 - Pillow 기반 CAD preview
 - `LINE`, `LWPOLYLINE`, `CIRCLE`, `ARC`, `TEXT` 레이어 분리 DXF export
 - DXF 재읽기 entity-count 및 실제 segment length validation
@@ -205,9 +206,13 @@ CADraw/
   지정하면 이 판단들이 결과를 좌우하지 않습니다.
 - 도면 영역은 축 정렬 사각형만 지원하며, 지정하면 원근 보정을 끕니다.
   사람이 가리킨 범위가 페이지 워프보다 우선합니다.
-- 닫힌 프로파일 폴리곤에는 확인 행이 없습니다. 원은 지름, 호는 반지름 행을
-  얻지만 프로파일은 preview에만 보이고 `UNRESOLVED`로 남아 DXF에 들어가지
-  않습니다. 전체 폭·높이 두 값이 필요해 `Dimension` 모델 변경이 선행됩니다.
+- 보정은 단일 전역 스케일입니다. 프로파일의 폭과 높이를 모두 확정해도 먼저
+  확정된 값이 스케일을 정하고 나머지는 `CONSTRAINT_MISMATCH`로 보고됩니다.
+  축별 비균등 스케일이나 닫힌 다각형 constraint solver는 없습니다.
+- 프로파일 전체 치수는 축 정렬 바운딩 박스 기준이므로, 기울어진 부품을 찍은
+  사진에서는 바운딩 폭이 실제 폭보다 큽니다.
+- `WIDTH`/`HEIGHT`는 손글씨에 표준 접두어가 없어 OCR에서 파싱되지 않으며
+  수동 행으로만 생성됩니다.
 - 닫힌 도형은 윤곽 후보이므로 잡음이 많은 사진에서는 사용자가 결과를
   확인해야 합니다. 도형 크기 하한은 이미지 짧은 변의 2%로 함께 계산되어
   고해상도 사진의 손글씨 획이 도형으로 잡히지 않습니다.

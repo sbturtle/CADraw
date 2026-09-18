@@ -36,9 +36,17 @@ class GeometryRole(StrEnum):
 
 
 class DimensionKind(StrEnum):
-    """Physical measurement kinds supported by the MVP."""
+    """Physical measurement kinds supported by the MVP.
+
+    A cut profile is dimensioned by its overall extents, the way the reference
+    drawings write `600 x 140`, so width and height are separate kinds. One
+    entity cannot hold two rows of the same kind, which is why an outline's two
+    extents cannot both be lengths.
+    """
 
     LENGTH = "length"
+    WIDTH = "width"
+    HEIGHT = "height"
     DIAMETER = "diameter"
     RADIUS = "radius"
     ANGLE = "angle"
@@ -63,6 +71,8 @@ class ConstraintKind(StrEnum):
     """Constraint families accepted by the deterministic geometry solver."""
 
     LENGTH = "length"
+    WIDTH = "width"
+    HEIGHT = "height"
     HORIZONTAL = "horizontal"
     VERTICAL = "vertical"
     ANGLE = "angle"
@@ -213,6 +223,24 @@ class PolylineEntity:
     confidence: float
     entity_type: EntityType = EntityType.POLYLINE
     role: GeometryRole = GeometryRole.STRUCTURE
+
+    @property
+    def width(self) -> float:
+        """Return the overall extent across the x axis."""
+        if not self.points:
+            return 0.0
+        return max(point.x for point in self.points) - min(
+            point.x for point in self.points
+        )
+
+    @property
+    def height(self) -> float:
+        """Return the overall extent across the y axis."""
+        if not self.points:
+            return 0.0
+        return max(point.y for point in self.points) - min(
+            point.y for point in self.points
+        )
 
 
 @dataclass(frozen=True, slots=True)
