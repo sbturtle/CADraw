@@ -1,6 +1,7 @@
 """Strict periodic-grid filtering for image-space candidates."""
 
 from dataclasses import dataclass
+from itertools import pairwise
 from math import atan2, degrees
 from statistics import median
 from typing import cast
@@ -18,6 +19,9 @@ type GrayImage = NDArray[np.uint8]
 
 _HALF_TURN_DEGREES = 180.0
 _RIGHT_ANGLE_DEGREES = 90.0
+_RAIL_MIN_COUNT = 4
+_RAIL_MULTIPLE_TOLERANCE = 0.22
+_RAIL_MIN_EXPLAINED_RATIO = 0.70
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +39,7 @@ class GridFilterConfig:
 
 @dataclass(frozen=True, slots=True)
 class ShapeGridFilterResult:
-    """Shape candidates plus evidence that a periodic grid was removed."""
+    """Retained shape candidates plus evidence for the grid cells removed."""
 
     candidates: tuple[ShapeCandidate, ...]
     grid_detected: bool = False
@@ -205,6 +209,90 @@ def filter_periodic_grid_candidates(
     return tuple(retained)
 
 
+def base_period_rails(
+    offsets: list[float],
+    band_width: float,
+) -> tuple[float, ...]:
+    """Return rails whose gaps are integer multiples of one base period.
+
+    Strokes drawn over ruled paper hide individual rails, so the strict
+    equal-spacing test used before removal cannot prove the grid that a
+    preprocessing variant amplified. Accepting integer multiples of the modal
+    gap tolerates those hidden rails without accepting irregular spacing.
+    """
+    clustered = _cluster_offsets(sorted(offsets), band_width)
+    if len(clustered) < _RAIL_MIN_COUNT:
+        return ()
+    gaps = [second - first for first, second in pairwise(clustered)]
+    base = float(median(gaps))
+    if base <= band_width:
+        return ()
+    explained = sum(
+        1
+        for gap in gaps
+        if round(gap / base) >= 1
+        and abs(gap / base - round(gap / base)) <= _RAIL_MULTIPLE_TOLERANCE
+    )
+    if explained / len(gaps) < _RAIL_MIN_EXPLAINED_RATIO:
+        return ()
+    return clustered
+
+
+def periodic_grid_ratio(
+    image: GrayImage,
+    candidates: tuple[LineCandidate, ...],
+    config: GridFilterConfig | None = None,
+) -> float:
+    """Return the share of candidates lying on a proved periodic paper grid.
+
+    Preprocessing that amplifies faint printed ruling produces many long,
+    well-connected candidates, which every other quality signal rewards. This
+    measures that failure directly so variant selection can price it in.
+    """
+    settings = config if config is not None else GridFilterConfig()
+    if not settings.enabled or not candidates:
+        return 0.0
+    height, width = cast("tuple[int, int]", image.shape[:2])
+    horizontal = base_period_rails(
+        [
+            (candidate.start.y + candidate.end.y) / 2.0
+            for candidate in candidates
+            if (
+                _line_length(candidate) >= width * settings.minimum_span_ratio
+                and _axis_delta(candidate, 0.0) <= settings.axis_tolerance_degrees
+            )
+        ],
+        settings.band_width,
+    )
+    vertical = base_period_rails(
+        [
+            (candidate.start.x + candidate.end.x) / 2.0
+            for candidate in candidates
+            if (
+                _line_length(candidate) >= height * settings.minimum_span_ratio
+                and _axis_delta(candidate, _RIGHT_ANGLE_DEGREES)
+                <= settings.axis_tolerance_degrees
+            )
+        ],
+        settings.band_width,
+    )
+    if not horizontal or not vertical:
+        return 0.0
+    on_grid = sum(
+        (
+            _matches_family(candidate, horizontal, horizontal=True, config=settings)
+            and _axis_delta(candidate, 0.0) <= settings.axis_tolerance_degrees
+        )
+        or (
+            _matches_family(candidate, vertical, horizontal=False, config=settings)
+            and _axis_delta(candidate, _RIGHT_ANGLE_DEGREES)
+            <= settings.axis_tolerance_degrees
+        )
+        for candidate in candidates
+    )
+    return on_grid / len(candidates)
+
+
 def _shape_bounds(
     candidate: PolylineCandidate,
 ) -> tuple[float, float, float, float]:
@@ -237,18 +325,17 @@ def _regular_shape_offsets(
     offsets: list[float],
     config: GridFilterConfig,
 ) -> tuple[float, ...]:
-    """Return regularly spaced centers from a candidate coordinate family."""
-    clustered = _cluster_offsets(sorted(offsets), config.band_width)
+    """Return regularly spaced centers from a candidate coordinate family.
+
+    Only a fraction of a ruled sheet's cells close into contours, so the run
+    of detected centers skips rows and columns. Integer multiples of the modal
+    gap accept those skips while still requiring one consistent period.
+    """
+    clustered = base_period_rails(offsets, config.band_width)
     if len(clustered) < config.minimum_family_count:
         return ()
     spacings = np.diff(np.asarray(clustered, dtype=np.float64))
-    if len(spacings) == 0:
-        return ()
-    mean_spacing = float(np.mean(spacings))
-    if mean_spacing <= config.band_width * 2.0:
-        return ()
-    spacing_cv = float(np.std(spacings) / mean_spacing)
-    if spacing_cv > config.spacing_cv_limit:
+    if float(np.median(spacings)) <= config.band_width * 2.0:
         return ()
     return clustered
 
@@ -336,8 +423,11 @@ def inspect_periodic_grid_shapes(
                         )
                         if len(grid_members) < minimum_family_members:
                             grid_members = ()
+    removed_ids = {id(member) for member in grid_members}
     return ShapeGridFilterResult(
-        candidates,
+        tuple(
+            candidate for candidate in candidates if id(candidate) not in removed_ids
+        ),
         grid_detected=bool(grid_members),
         removed_count=len(grid_members),
         grid_like_count=grid_like_count,

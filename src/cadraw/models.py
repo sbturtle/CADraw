@@ -98,6 +98,7 @@ class WarningCode(StrEnum):
     PREPROCESSING_UNCERTAIN = "PREPROCESSING_UNCERTAIN"
     GRAPH_PAPER_DETECTED = "GRAPH_PAPER_DETECTED"
     PERSPECTIVE_REJECTED = "PERSPECTIVE_REJECTED"
+    PRINTED_RULING_REMOVED = "PRINTED_RULING_REMOVED"
 
 
 class AnalysisStatus(StrEnum):
@@ -333,6 +334,7 @@ class PreprocessingReport:
     short_noise_ratio: float
     component_quality: float
     processing_time_ms: float
+    periodic_grid_ratio: float = 0.0
     selected: bool = False
 
 

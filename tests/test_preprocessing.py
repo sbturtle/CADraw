@@ -33,6 +33,7 @@ def test_preprocessing_variants_preserve_source_and_expose_dark_strokes() -> Non
         PreprocessingVariant.CLAHE_ADAPTIVE,
         PreprocessingVariant.SHADOW_REMOVED_ADAPTIVE,
         PreprocessingVariant.BLUR_OTSU,
+        PreprocessingVariant.FLATTENED_GLOBAL,
     )
     assert all(result.mask[120, 100] == 255 for result in results)
     assert all(result.mask[20, 20] == 0 for result in results)
@@ -52,3 +53,26 @@ def test_debug_outputs_are_opt_in_and_include_each_variant(tmp_path: Path) -> No
     for variant in PreprocessingVariant:
         assert (tmp_path / f"{variant.value}_enhanced.png").exists()
         assert (tmp_path / f"{variant.value}_mask.png").exists()
+
+
+def test_global_variant_refuses_faint_ruling_that_adaptive_amplifies() -> None:
+    # Given a dark stroke over faint periodic ruling on an unevenly lit page
+    image = np.full((320, 320), 248, dtype=np.uint8)
+    image[:, :] -= np.arange(320, dtype=np.uint8)[None, :] // 16
+    for offset in range(20, 300, 20):
+        image[offset, 10:310] = 208
+        image[10:310, offset] = 208
+    image[150:156, 40:280] = 40
+
+    # When every variant prepares the same page
+    masks = {
+        result.variant: result.mask
+        for result in preprocess_variants(image, PreprocessingConfig())
+    }
+
+    # Then the global variant keeps the stroke while dropping the ruling
+    global_mask = masks[PreprocessingVariant.FLATTENED_GLOBAL]
+    assert global_mask[152, 160] == 255
+    assert global_mask[100, 100] == 0
+    # And the adaptive variant it was added for promotes that same ruling
+    assert masks[PreprocessingVariant.GRAYSCALE_ADAPTIVE][100, 100] == 255

@@ -53,6 +53,7 @@ from cadraw.ocr import (
     discover_tesseract_backend,
     recognize_dimensions,
 )
+from cadraw.page_cleanup import PageCleanupConfig, clean_page
 from cadraw.perspective import (
     PageQuadConfig,
     detect_page_quadrilateral_scored,
@@ -99,6 +100,7 @@ class PipelineConfig:
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     preprocessing_debug_directory: Path | None = None
     page_quad: PageQuadConfig = field(default_factory=PageQuadConfig)
+    page_cleanup: PageCleanupConfig = field(default_factory=PageCleanupConfig)
 
     @classmethod
     def from_detection_defaults(cls) -> "PipelineConfig":
@@ -457,12 +459,20 @@ def _evaluate_variants(
     return tuple(evaluations)
 
 
-def _variant_selection_key(evaluation: VariantEvaluation) -> tuple[float, float, float]:
-    """Prefer meaningful low-noise geometry when composite scores are close."""
+def _variant_selection_key(
+    evaluation: VariantEvaluation,
+) -> tuple[float, float, float, float]:
+    """Prefer meaningful low-noise geometry when composite scores are close.
+
+    Printed ruling yields long, page-spanning candidates, so the grid share is
+    ranked ahead of average length to stop a tie being settled by the very
+    artifact the drawing needs removed.
+    """
     score = evaluation[2]
     meaningful_ratio = min(1.0, score.meaningful_line_count / 8.0)
     return (
         meaningful_ratio - 0.50 * score.short_noise_ratio,
+        -score.periodic_grid_ratio,
         score.average_line_length,
         score.score,
     )
@@ -529,6 +539,7 @@ def _select_preprocessing_stream(
             short_noise_ratio=score.short_noise_ratio,
             component_quality=score.component_quality,
             processing_time_ms=result.processing_time_ms,
+            periodic_grid_ratio=score.periodic_grid_ratio,
             selected=result is chosen[0],
         )
         for result, _, score in evaluations
@@ -634,14 +645,21 @@ def _add_analysis_quality_warnings(
             for entity in entities
             if isinstance(entity, (PolylineEntity, CircleEntity))
         )
+        removed = shape_evidence.grid_candidate_count
         warnings.append(
             AnalysisWarning(
                 code=WarningCode.GRAPH_PAPER_DETECTED,
-                message="규칙 격자 배경이 감지되어 닫힌 도형 후보를 검토해야 합니다.",
+                message=(
+                    f"규칙 격자 배경에서 칸 후보 {removed}개를 제외했습니다."
+                    if removed
+                    else "규칙 격자 배경이 감지되어 닫힌 도형 후보를 검토해야 합니다."
+                ),
                 entity_ids=shape_entity_ids,
             ),
         )
-        if entities:
+        # A proved grid has had its cells removed, so only an unproved
+        # shape swarm still needs the reviewer to arbitrate.
+        if entities and shape_dominated:
             status = AnalysisStatus.TOO_MUCH_NOISE
     return status
 
@@ -738,6 +756,20 @@ def analyze_image(
     source_image = load_grayscale_image(image_path)
     image_shape = cast("tuple[int, int]", source_image.shape[:2])
     warnings: list[AnalysisWarning] = []
+    cleanup = clean_page(source_image, config.page_cleanup)
+    if cleanup.applied:
+        source_image = cleanup.image
+        period = 0.0 if cleanup.grid_period is None else cleanup.grid_period
+        warnings.append(
+            AnalysisWarning(
+                code=WarningCode.PRINTED_RULING_REMOVED,
+                message=(
+                    f"모눈 주기 {period:.0f}px로 증명된 인쇄 괘선"
+                    f"(가로 {cleanup.horizontal_rule_count}, "
+                    f"세로 {cleanup.vertical_rule_count})을 제외했습니다."
+                ),
+            ),
+        )
     (
         analysis_image,
         source_region,

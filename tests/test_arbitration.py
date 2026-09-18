@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import cv2
 import numpy as np
 
@@ -128,29 +130,39 @@ def test_nested_rectangles_are_retained_and_inner_shape_is_a_hole() -> None:
     assert sum(candidate.role is GeometryRole.HOLE for candidate in rectangles) == 1
 
 
-def test_periodic_shape_grid_is_reported_before_shape_budget() -> None:
+def test_proved_periodic_shape_grid_is_removed_with_its_evidence() -> None:
     # Given many regularly spaced paper-grid cells and one dark profile
     image = np.full((720, 720), 255, dtype=np.uint8)
-    for x in range(20, 680, 34):
-        for y in range(20, 680, 34):
-            _ = cv2.rectangle(image, (x, y), (x + 30, y + 30), 160, 1)
+    for x in range(20, 690, 44):
+        for y in range(20, 690, 44):
+            _ = cv2.rectangle(image, (x, y), (x + 32, y + 32), 160, 1)
     _ = cv2.rectangle(image, (160, 160), (560, 560), 0, 7)
+    config = DetectionConfig(
+        detect_closed_shapes=True,
+        minimum_shape_area=800.0,
+        minimum_shape_span=30.0,
+        maximum_shape_candidates=4096,
+        border_margin_ratio=0.0,
+    )
 
-    # When closed-shape detection applies the normal candidate budget
-    evidence = detect_shape_candidates_with_evidence(
+    # When closed-shape detection runs with and without the grid proof
+    evidence = detect_shape_candidates_with_evidence(image, config)
+    unfiltered = detect_shape_candidates_with_evidence(
         image,
-        DetectionConfig(
-            detect_closed_shapes=True,
-            minimum_shape_area=800.0,
-            minimum_shape_span=30.0,
-            maximum_shape_candidates=64,
-            border_margin_ratio=0.0,
+        replace(
+            config,
+            arbitration=replace(
+                config.arbitration,
+                grid=replace(config.arbitration.grid, enabled=False),
+            ),
         ),
     )
 
-    # Then the candidates remain available for review with grid evidence
-    assert len(evidence.candidates) == 64
+    # Then every proved cell is gone, counted, and the profile is what remains
     assert evidence.grid_detected is True
     assert evidence.grid_candidate_count >= 12
+    assert len(evidence.candidates) == (
+        len(unfiltered.candidates) - evidence.grid_candidate_count
+    )
     assert isinstance(evidence.candidates[0], PolylineCandidate)
     assert evidence.candidates[0].confidence > 0.8

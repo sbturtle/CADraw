@@ -54,6 +54,7 @@ def test_default_pipeline_records_deterministic_preprocessing_evidence() -> None
         "clahe_adaptive",
         "shadow_removed_adaptive",
         "blur_otsu",
+        "flattened_global",
     )
     assert analysis.selected_preprocessing_variant in {
         report.variant for report in analysis.preprocessing_reports
@@ -91,7 +92,7 @@ def test_all_real_samples_record_repeatable_preprocessing_evidence(
     second = analyze_image(sample_path, config)
 
     # Then selection/status/geometry are repeatable and timings are measurable
-    assert len(first.preprocessing_reports) == 4
+    assert len(first.preprocessing_reports) == 5
     assert first.selected_preprocessing_variant in {
         report.variant for report in first.preprocessing_reports
     }

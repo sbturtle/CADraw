@@ -12,6 +12,7 @@ import numpy as np
 from numpy.typing import NDArray
 from PIL import Image
 
+from cadraw.grid_filter import periodic_grid_ratio
 from cadraw.models import LineCandidate, Point
 
 GrayImage = NDArray[np.uint8]
@@ -25,6 +26,7 @@ _DEFAULT_VARIANT_ORDER = (
     "clahe_adaptive",
     "shadow_removed_adaptive",
     "blur_otsu",
+    "flattened_global",
 )
 
 
@@ -35,6 +37,7 @@ class PreprocessingVariant(StrEnum):
     CLAHE_ADAPTIVE = "clahe_adaptive"
     SHADOW_REMOVED_ADAPTIVE = "shadow_removed_adaptive"
     BLUR_OTSU = "blur_otsu"
+    FLATTENED_GLOBAL = "flattened_global"
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +91,7 @@ class CandidateScore:
     duplicate_line_ratio: float
     short_noise_ratio: float
     component_quality: float
+    periodic_grid_ratio: float
 
 
 def _odd_size(value: int, minimum: int = 3) -> int:
@@ -119,11 +123,11 @@ def _contrast_stretch(image: GrayImage) -> GrayImage:
     return stretched
 
 
-def _shadow_removed(
+def _illumination_flattened(
     image: GrayImage,
     config: PreprocessingConfig,
 ) -> GrayImage:
-    """Normalize slow illumination changes with a morphology background."""
+    """Divide out slow illumination so absolute ink darkness stays comparable."""
     kernel_size = _scaled_kernel_size(image, config)
     kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE,
@@ -131,9 +135,34 @@ def _shadow_removed(
     )
     background = cv2.morphologyEx(image, cv2.MORPH_CLOSE, kernel)
     safe_background = np.maximum(background, 1).astype(np.uint8)
-    return _contrast_stretch(
-        np.asarray(cv2.divide(image, safe_background, scale=255), dtype=np.uint8),
+    return np.asarray(
+        cv2.divide(image, safe_background, scale=255),
+        dtype=np.uint8,
     )
+
+
+def _shadow_removed(
+    image: GrayImage,
+    config: PreprocessingConfig,
+) -> GrayImage:
+    """Normalize slow illumination changes with a morphology background."""
+    return _contrast_stretch(_illumination_flattened(image, config))
+
+
+def _global_mask(image: GrayImage) -> GrayImage:
+    """Threshold one illumination-flattened image on absolute ink darkness.
+
+    A global cut keeps faint printed backgrounds such as graph-paper ruling
+    below the ink decision, which any locally adaptive threshold would instead
+    promote to full-strength strokes.
+    """
+    _, threshold = cv2.threshold(
+        image,
+        0,
+        255,
+        cv2.THRESH_BINARY + cv2.THRESH_OTSU,
+    )
+    return np.asarray(cv2.bitwise_not(threshold), dtype=np.uint8)
 
 
 def _adaptive_mask(
@@ -196,6 +225,9 @@ def _prepare_variant(
     elif variant is PreprocessingVariant.SHADOW_REMOVED_ADAPTIVE:
         enhanced = _shadow_removed(image, config)
         mask = _adaptive_mask(enhanced, config)
+    elif variant is PreprocessingVariant.FLATTENED_GLOBAL:
+        enhanced = _illumination_flattened(image, config)
+        mask = _global_mask(enhanced)
     else:
         blur_size = _odd_size(config.blur_kernel_size)
         enhanced = np.asarray(
@@ -222,7 +254,11 @@ def preprocess_variant(
     source = np.ascontiguousarray(image.copy(), dtype=np.uint8)
     started = perf_counter()
     enhanced, mask = _prepare_variant(source, variant, selected_config)
-    detection_image = enhanced.copy()
+    detection_image = (
+        np.asarray(cv2.bitwise_not(mask), dtype=np.uint8)
+        if variant is PreprocessingVariant.FLATTENED_GLOBAL
+        else enhanced.copy()
+    )
     edges = np.asarray(
         cv2.Canny(detection_image, 50, 150),
         dtype=np.uint8,
@@ -436,6 +472,7 @@ def score_candidates(
     )
     connected = _endpoint_connectivity(candidates, endpoint_tolerance)
     duplicate = _duplicate_ratio(candidates, minimum_line_length)
+    grid_ratio = periodic_grid_ratio(mask, candidates)
     score = (
         0.35 * meaningful_score
         + 0.15 * average_score
@@ -444,6 +481,7 @@ def score_candidates(
         + 0.10 * component_quality
         - 0.15 * duplicate
         - 0.25 * short_noise
+        - 0.30 * grid_ratio
     )
     return CandidateScore(
         variant=variant,
@@ -455,4 +493,5 @@ def score_candidates(
         duplicate_line_ratio=duplicate,
         short_noise_ratio=short_noise,
         component_quality=component_quality,
+        periodic_grid_ratio=grid_ratio,
     )

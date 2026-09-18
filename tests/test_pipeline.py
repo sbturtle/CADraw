@@ -86,14 +86,14 @@ def test_low_score_photo_exposes_uncertainty_and_explicit_variant_warning(
     )
 
 
-def test_grid_dominated_shapes_are_not_reported_as_ready(
+def test_proved_paper_grid_is_removed_and_reported_instead_of_blocking(
     tmp_path: Path,
 ) -> None:
     # Given many regularly spaced grid cells and one dark profile
     image = np.full((720, 720), 255, dtype=np.uint8)
-    for x in range(20, 680, 34):
-        for y in range(20, 680, 34):
-            _ = cv2.rectangle(image, (x, y), (x + 30, y + 30), 160, 1)
+    for x in range(20, 690, 44):
+        for y in range(20, 690, 44):
+            _ = cv2.rectangle(image, (x, y), (x + 32, y + 32), 160, 1)
     _ = cv2.rectangle(image, (160, 160), (560, 560), 0, 7)
     image_path = tmp_path / "grid-profile.png"
     Image.fromarray(image).save(image_path)
@@ -116,10 +116,14 @@ def test_grid_dominated_shapes_are_not_reported_as_ready(
     # When the production analysis pipeline processes the page
     analysis = analyze_image(image_path, config)
 
-    # Then a grid-dominated shape result is explicitly blocked
-    assert analysis.status is AnalysisStatus.TOO_MUCH_NOISE
+    # Then the ruling is removed with evidence and the profile stays usable
     assert "GRAPH_PAPER_DETECTED" in tuple(
         warning.code.value for warning in analysis.warnings
+    )
+    assert analysis.status is AnalysisStatus.READY
+    assert any(
+        isinstance(entity, PolylineEntity) and entity.closed
+        for entity in analysis.entities
     )
 
 
