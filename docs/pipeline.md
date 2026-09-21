@@ -22,13 +22,19 @@
 13. 확정된 line length/angle을 `solver.py`가 사용해 첫 entity 시작점을
     `(0, 0)`으로 하는 CAD-space mm 좌표를 재구성합니다. 연결된 선은 공유
     endpoint를 유지하며, 명시 치수가 없는 선은 `UNRESOLVED`로 남습니다.
+    시트의 모든 entity(다른 선 성분, 프로파일, 원, 호)는 같은 anchor와 같은
+    y-up 프레임 하나로 배치되므로 사진에서의 상대 위치가 CAD에서도 유지됩니다
+    (ADR-0016). 선이 하나도 없는 시트는 전체 bounding box의 왼쪽 아래를 원점으로
+    삼습니다.
 14. angle이 없는 diagonal은 원본 방향을 preview에만 사용하고
     `UNKNOWN_ANGLE`과 `inferredForPreview`를 유지합니다.
 15. 대각선 angle을 입력하면 `각도 승인 후 다시 그리기`를 눌러 명시적으로
     재작성 권한을 승인한 뒤 CAD geometry를 다시 계산합니다. `180°`까지
     허용하며, 취소하면 기존 geometry를 유지합니다.
 16. 미리보기를 다시 계산합니다. `검출 결과`는 image-space, `CAD 결과`는
-    실제 입력 치수와 CAD y-up 표시를 사용해 원본 방향을 보존합니다.
+    실제 입력 치수와 CAD y-up 표시를 사용해 원본 방향을 보존합니다. 확정값이
+    하나도 없어 스케일이 없는 문서는 아직 image 좌표이므로 `CAD 결과`도 y를
+    뒤집지 않습니다.
 17. `ezdxf`가 CAD-space 기하를 `GEOMETRY`에, 확인된 치수 라벨을
     `DIMENSION`에, 보조 텍스트를 `TEXT`에 기록합니다.
 18. 내보내기 후 파일을 다시 읽어 엔티티 수, polyline vertex 순서, 각

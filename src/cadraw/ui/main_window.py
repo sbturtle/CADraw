@@ -700,11 +700,17 @@ class MainWindow(QMainWindow):
         """Render the current document with linked geometry selected."""
         if self._document is None or self._analysis is None:
             return
+        # CAD geometry is y-up only once a confirmed size gave it a frame;
+        # before that the document still holds image coordinates, and
+        # flipping those would show the sketch upside down.
         config = PreviewConfig(
             width=720,
             height=520,
             highlight_entity_ids=self._view.selected_entity_ids,
-            invert_y=self._preview_mode is PreviewMode.CAD,
+            invert_y=(
+                self._preview_mode is PreviewMode.CAD
+                and self._document.scale_mm_per_source_unit is not None
+            ),
         )
         preview_document = self._document
         if self._preview_mode is PreviewMode.DETECTED:

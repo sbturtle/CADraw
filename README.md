@@ -23,6 +23,7 @@ CADraw는 범용 CAD 편집기가 아닙니다. 사진에서 선 후보를 찾�
 - image-space 검출 geometry와 CAD-space mm geometry의 명시적 분리
 - `DetectedEntity` → `CadEntity` stable ID relation과 resolved/unresolved state
 - 연결된 선의 확정 길이·각도 기반 anchor reconstruction
+- 선·프로파일·원·호를 같은 y-up CAD 프레임 하나로 배치(사진의 상대 위치 유지)
 - 원본 사진에서 도면 영역을 드래그로 지정해 양식 머리글·푸터를 제외
 - Preview 선 직접 선택, entity 정보, 검출 결과/CAD 결과 toggle
 - Preview Ctrl 다중 선택, 좌→우 window/우→좌 crossing 선택

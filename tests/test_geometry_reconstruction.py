@@ -3,6 +3,7 @@ from pathlib import Path
 from cadraw.calculator import calculate_document
 from cadraw.export import export_dxf, validate_dxf
 from cadraw.models import (
+    ArcEntity,
     CadResolutionStatus,
     CircleEntity,
     Dimension,
@@ -257,7 +258,7 @@ def _profile(entity_id: str) -> PolylineEntity:
 
 
 def _shape_analysis(
-    entities: tuple[LineEntity | PolylineEntity | CircleEntity, ...],
+    entities: tuple[LineEntity | PolylineEntity | CircleEntity | ArcEntity, ...],
     dimensions: tuple[Dimension, ...],
 ) -> DrawingAnalysis:
     """Build a minimal analysis around explicit entities and dimensions."""
@@ -400,3 +401,123 @@ def test_matching_extents_are_not_reported_as_stretched() -> None:
     assert not any(
         warning.code is WarningCode.CONSTRAINT_MISMATCH for warning in document.warnings
     )
+
+
+def test_lines_and_shapes_share_one_cad_frame() -> None:
+    # Given a stem drawn as a line rising from the top edge of a traced outline
+    stem = _line(
+        "stem",
+        Point(300.0, 300.0),
+        Point(300.0, 100.0),
+        Orientation.VERTICAL,
+    )
+    outline = PolylineEntity(
+        entity_id=EntityId("bar"),
+        points=(
+            Point(100.0, 300.0),
+            Point(500.0, 300.0),
+            Point(500.0, 400.0),
+            Point(100.0, 400.0),
+        ),
+        closed=True,
+        confidence=0.9,
+    )
+    hole = CircleEntity(
+        entity_id=EntityId("hole"),
+        center=Point(400.0, 350.0),
+        radius=20.0,
+        confidence=0.9,
+    )
+    analysis = _shape_analysis(
+        (stem, outline, hole),
+        (
+            _confirmed_dimension("stem", DimensionKind.LENGTH, 100.0),
+            _confirmed_dimension("bar", DimensionKind.WIDTH, 200.0),
+        ),
+    )
+
+    # When the document is calculated
+    document = calculate_document(analysis)
+    geometry = {entity.entity_id: entity.geometry for entity in document.cad_entities}
+
+    # Then the stem rises from the origin, the bar hangs below it in the same
+    # y-up frame, and the hole sits inside the bar rather than mirrored above
+    cad_stem = geometry[EntityId("stem")]
+    cad_bar = geometry[EntityId("bar")]
+    cad_hole = geometry[EntityId("hole")]
+    assert isinstance(cad_stem, LineEntity)
+    assert isinstance(cad_bar, PolylineEntity)
+    assert isinstance(cad_hole, CircleEntity)
+    assert cad_stem.start == Point(0.0, 0.0)
+    assert cad_stem.end == Point(0.0, 100.0)
+    assert max(point.y for point in cad_bar.points) == 0.0
+    assert min(point.y for point in cad_bar.points) == -50.0
+    assert min(point.x for point in cad_bar.points) == -100.0
+    assert cad_bar.width == 200.0
+    assert cad_hole.center == Point(50.0, -25.0)
+
+
+def test_a_second_line_component_keeps_its_place_on_the_sheet() -> None:
+    # Given two separate parts drawn side by side
+    first = _line("a", Point(100.0, 500.0), Point(300.0, 500.0), Orientation.HORIZONTAL)
+    second = _line(
+        "b", Point(600.0, 200.0), Point(800.0, 200.0), Orientation.HORIZONTAL
+    )
+    analysis = _shape_analysis(
+        (first, second),
+        (_confirmed_dimension("a", DimensionKind.LENGTH, 100.0),),
+    )
+
+    # When the document is calculated
+    document = calculate_document(analysis)
+    geometry = {entity.entity_id: entity.geometry for entity in document.cad_entities}
+
+    # Then the second part is to the right and above the first, as photographed
+    cad_second = geometry[EntityId("b")]
+    assert isinstance(cad_second, LineEntity)
+    assert cad_second.start == Point(250.0, 150.0)
+    assert cad_second.end == Point(350.0, 150.0)
+
+
+def test_arc_sweep_is_mirrored_with_the_y_axis() -> None:
+    # Given an arc that sweeps from +x toward +y on the photograph (downward)
+    arc = ArcEntity(
+        entity_id=EntityId("fillet"),
+        center=Point(200.0, 200.0),
+        radius=50.0,
+        start_angle_degrees=0.0,
+        end_angle_degrees=90.0,
+        confidence=0.9,
+    )
+    analysis = _shape_analysis(
+        (arc,),
+        (_confirmed_dimension("fillet", DimensionKind.RADIUS, 25.0),),
+    )
+
+    # When the document is calculated
+    document = calculate_document(analysis)
+    geometry = document.cad_entities[0].geometry
+
+    # Then in the y-up CAD frame the same arc sweeps from 270 back to 360
+    assert isinstance(geometry, ArcEntity)
+    assert geometry.radius == 25.0
+    assert (geometry.start_angle_degrees, geometry.end_angle_degrees) == (270.0, 0.0)
+
+
+def test_a_sheet_without_lines_is_anchored_at_its_bottom_left() -> None:
+    # Given only a traced outline with one confirmed extent
+    profile = _profile("plate")
+    analysis = _shape_analysis(
+        (profile,),
+        (_confirmed_dimension("plate", DimensionKind.WIDTH, 800.0),),
+    )
+
+    # When the document is calculated
+    document = calculate_document(analysis)
+    geometry = document.cad_entities[0].geometry
+
+    # Then the outline fills the positive quadrant from the origin
+    assert isinstance(geometry, PolylineEntity)
+    assert min(point.x for point in geometry.points) == 0.0
+    assert min(point.y for point in geometry.points) == 0.0
+    assert max(point.y for point in geometry.points) == 400.0

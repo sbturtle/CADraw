@@ -34,6 +34,32 @@ class ReconstructionResult:
     scale_mm_per_source_unit: float | None
 
 
+_FULL_TURN_DEGREES = 360.0
+
+
+@dataclass(frozen=True, slots=True)
+class _Frame:
+    """The one mapping from image pixels to CAD millimetres for a document.
+
+    Every entity on a sheet, whatever its type, is placed through this same
+    mapping: the anchor becomes the CAD origin, x grows to the right, and y is
+    flipped so CAD y grows upward. Lines used to be anchored at the origin
+    with y flipped while shapes were placed at `pixel * scale` with image y
+    still pointing down, so a stem drawn as a line and the outline it belonged
+    to came out mirrored and displaced from each other.
+    """
+
+    anchor: Point
+    scale: float
+
+    def to_cad(self, point: Point) -> Point:
+        """Map one image-space point into the shared CAD frame."""
+        return Point(
+            (point.x - self.anchor.x) * self.scale,
+            (self.anchor.y - point.y) * self.scale,
+        )
+
+
 def _confirmed(
     dimensions: Iterable[Dimension],
     entity_id: EntityId,
@@ -156,24 +182,23 @@ def _line_vector(
 def _component_geometry(
     component: tuple[LineEntity, ...],
     dimensions: tuple[Dimension, ...],
-    scale: float | None,
-    component_index: int,
+    frame: _Frame,
 ) -> dict[EntityId, LineEntity]:
-    """Propagate CAD positions from the first line's start anchor."""
+    """Propagate CAD positions from the component root's start point.
+
+    The root is placed through the shared frame, so a second part on the
+    sheet lands where the photograph shows it relative to the first, in the
+    same y-up orientation that its own segment vectors use.
+    """
+    scale = frame.scale
     root = min(component, key=lambda line: line.entity_id)
     graph: dict[Point, list[tuple[int, Point]]] = {}
     for index, line in enumerate(component):
         graph.setdefault(line.start, []).append((index, line.end))
         graph.setdefault(line.end, []).append((index, line.start))
-    positions = {
-        root.start: (
-            Point(0.0, 0.0) if component_index == 0 else root.start.scaled(scale or 1.0)
-        ),
-    }
+    positions = {root.start: frame.to_cad(root.start)}
     root_length = _value(dimensions, root.entity_id, DimensionKind.LENGTH)
-    root_length = (
-        root_length if root_length is not None else root.length * (scale or 1.0)
-    )
+    root_length = root_length if root_length is not None else root.length * scale
     root_angle = _value(dimensions, root.entity_id, DimensionKind.ANGLE)
     positions[root.end] = positions[root.start].translated(
         *_line_vector(root, root_length, root_angle, reverse=False),
@@ -187,7 +212,7 @@ def _component_geometry(
             if line.entity_id in visited:
                 continue
             length = _value(dimensions, line.entity_id, DimensionKind.LENGTH)
-            length = length if length is not None else line.length * (scale or 1.0)
+            length = length if length is not None else line.length * scale
             angle = _value(dimensions, line.entity_id, DimensionKind.ANGLE)
             reverse = line.end == source_point
             positions[opposite_point] = positions[source_point].translated(
@@ -266,28 +291,43 @@ def _own_factors(
 def _sized_non_line(
     source: GeometryEntity,
     factors: tuple[float, float],
-    scale: float | None,
+    frame: _Frame,
 ) -> GeometryEntity:
-    """Resize one entity by its own factors, keeping the sheet's layout."""
-    layout = scale if scale is not None else 1.0
+    """Resize one entity by its own factors, placing it through the frame.
+
+    A polygon grows from its top-left corner, which the frame places, so the
+    sheet's layout follows the global scale while the size follows the
+    entity's own confirmed values. An arc's angles are mirrored with the y
+    axis: an arc that swept clockwise on the photograph sweeps
+    counter-clockwise in CAD, so its start and end swap and negate.
+    """
     if isinstance(source, PolylineEntity):
         origin_x = min(point.x for point in source.points)
         origin_y = min(point.y for point in source.points)
+        origin = frame.to_cad(Point(origin_x, origin_y))
         return replace(
             source,
             points=tuple(
                 Point(
-                    origin_x * layout + (point.x - origin_x) * factors[0],
-                    origin_y * layout + (point.y - origin_y) * factors[1],
+                    origin.x + (point.x - origin_x) * factors[0],
+                    origin.y - (point.y - origin_y) * factors[1],
                 )
                 for point in source.points
             ),
         )
-    if isinstance(source, (CircleEntity, ArcEntity)):
+    if isinstance(source, CircleEntity):
         return replace(
             source,
-            center=source.center.scaled(layout),
+            center=frame.to_cad(source.center),
             radius=source.radius * factors[0],
+        )
+    if isinstance(source, ArcEntity):
+        return replace(
+            source,
+            center=frame.to_cad(source.center),
+            radius=source.radius * factors[0],
+            start_angle_degrees=(-source.end_angle_degrees) % _FULL_TURN_DEGREES,
+            end_angle_degrees=(-source.start_angle_degrees) % _FULL_TURN_DEGREES,
         )
     return source
 
@@ -295,7 +335,7 @@ def _sized_non_line(
 def _non_line_cad_entity(
     source: GeometryEntity,
     dimensions: tuple[Dimension, ...],
-    scale: float | None,
+    frame: _Frame | None,
 ) -> CadEntity:
     """Resolve one closed shape from its own confirmed size, or leave it open.
 
@@ -308,9 +348,9 @@ def _non_line_cad_entity(
     factors = _own_factors(source, dimensions)
     resolved = factors is not None
     geometry = (
-        _sized_non_line(source, factors, scale)
-        if factors is not None
-        else _scaled_for_preview(source, scale)
+        _sized_non_line(source, factors, frame)
+        if factors is not None and frame is not None
+        else _scaled_for_preview(source, frame)
     )
     return CadEntity(
         entity_id=source.entity_id,
@@ -326,23 +366,23 @@ def _non_line_cad_entity(
 
 def _scaled_for_preview(
     source: GeometryEntity,
-    scale: float | None,
+    frame: _Frame | None,
 ) -> GeometryEntity:
     """Place unconfirmed geometry for preview only, never for export."""
-    if scale is None:
+    if frame is None:
         return source
-    return _sized_non_line(source, (scale, scale), scale)
+    return _sized_non_line(source, (frame.scale, frame.scale), frame)
 
 
 def _cad_entity(
     source: GeometryEntity,
     geometry: GeometryEntity,
     dimensions: tuple[Dimension, ...],
-    scale: float | None,
+    frame: _Frame | None,
 ) -> CadEntity:
     """Build one source-to-CAD relation and resolution state."""
     if not isinstance(source, LineEntity):
-        return _non_line_cad_entity(source, dimensions, scale)
+        return _non_line_cad_entity(source, dimensions, frame)
     has_length = _value(dimensions, source.entity_id, DimensionKind.LENGTH) is not None
     has_angle = _value(dimensions, source.entity_id, DimensionKind.ANGLE) is not None
     status = (
@@ -360,8 +400,46 @@ def _cad_entity(
     )
 
 
+def _entity_points(entity: GeometryEntity) -> tuple[Point, ...]:
+    """Return the points that bound one image-space entity."""
+    if isinstance(entity, LineEntity):
+        return (entity.start, entity.end)
+    if isinstance(entity, PolylineEntity):
+        return entity.points
+    return (
+        Point(entity.center.x - entity.radius, entity.center.y - entity.radius),
+        Point(entity.center.x + entity.radius, entity.center.y + entity.radius),
+    )
+
+
+def _frame_anchor(
+    analysis: DrawingAnalysis,
+    components: tuple[tuple[LineEntity, ...], ...],
+) -> Point:
+    """Choose the image point that becomes the CAD origin.
+
+    The first line component's root start keeps the origin every existing
+    line document had. A sheet with no lines is anchored at the bottom-left
+    of everything on it, so the drawing sits in the positive quadrant.
+    """
+    if components:
+        root = min(components[0], key=lambda line: line.entity_id)
+        return root.start
+    points = tuple(
+        point for entity in analysis.entities for point in _entity_points(entity)
+    )
+    if not points:
+        return Point(0.0, 0.0)
+    return Point(min(point.x for point in points), max(point.y for point in points))
+
+
 def reconstruct_geometry(analysis: DrawingAnalysis) -> ReconstructionResult:
-    """Reconstruct all detected geometry using explicit dimensions first."""
+    """Reconstruct all detected geometry using explicit dimensions first.
+
+    Without a confirmed size there is no CAD frame, and every entity stays in
+    image coordinates. With one, a single frame maps the whole sheet, so lines,
+    outlines, and holes keep the relative positions the photograph shows.
+    """
     scale = _first_scale(analysis)
     lines = tuple(
         entity for entity in analysis.entities if isinstance(entity, LineEntity)
@@ -369,20 +447,17 @@ def reconstruct_geometry(analysis: DrawingAnalysis) -> ReconstructionResult:
     if scale is None:
         return ReconstructionResult(
             entities=tuple(
-                _cad_entity(entity, entity, analysis.dimensions, scale)
+                _cad_entity(entity, entity, analysis.dimensions, None)
                 for entity in analysis.entities
             ),
             scale_mm_per_source_unit=None,
         )
+    components = connected_line_components(lines)
+    frame = _Frame(anchor=_frame_anchor(analysis, components), scale=scale)
     reconstructed: dict[EntityId, LineEntity] = {}
-    for index, component in enumerate(connected_line_components(lines)):
+    for component in components:
         reconstructed.update(
-            _component_geometry(
-                component,
-                analysis.dimensions,
-                scale,
-                index,
-            ),
+            _component_geometry(component, analysis.dimensions, frame),
         )
     return ReconstructionResult(
         entities=tuple(
@@ -390,7 +465,7 @@ def reconstruct_geometry(analysis: DrawingAnalysis) -> ReconstructionResult:
                 source,
                 reconstructed.get(source.entity_id, source),
                 analysis.dimensions,
-                scale,
+                frame,
             )
             for source in analysis.entities
         ),

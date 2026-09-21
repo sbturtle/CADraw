@@ -163,10 +163,12 @@ def test_confirmed_line_scale_preserves_non_line_cad_scaling() -> None:
     # When the CAD document is recalculated
     document = calculate_document(analysis)
 
-    # Then legacy non-line geometry still follows the established scale
+    # Then non-line geometry is placed through the same frame as the line:
+    # the line's start is the origin, and the circle drawn below it on the
+    # photograph sits at negative CAD y, ten pixels right and twenty down.
     circle = document.entities[1]
     assert isinstance(circle, CircleEntity)
-    assert circle.center == Point(10.0, 20.0)
+    assert circle.center == Point(5.0, -10.0)
     assert circle.radius == 5.0
 
 
