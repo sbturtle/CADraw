@@ -1,5 +1,6 @@
 """Composition of image detection and geometry normalization."""
 
+import math
 from dataclasses import dataclass, field, replace
 from io import BytesIO
 from pathlib import Path
@@ -20,6 +21,7 @@ from cadraw.detection import (
     load_grayscale_image,
     stroke_intensity,
 )
+from cadraw.duplicate_filter import without_polygon_edge_lines
 from cadraw.furniture_filter import (
     RulingRails,
     without_ruling_remnants,
@@ -178,6 +180,8 @@ class _AnalysisQualityContext:
 
 _PAGE_EDGE_DOMINANCE_RATIO = 0.50
 _RAIL_REMNANT_PERIOD_RATIO = 0.25
+_POLYGON_EDGE_TOLERANCE = 12.0
+_POLYGON_EDGE_TOLERANCE_RATIO = 0.012
 _MIN_GRID_LIKE_SHAPES = 8
 _MIN_SHAPES_PER_LINE = 4
 
@@ -781,6 +785,28 @@ def _prepare_analysis_frame(
     )
 
 
+def _largest_shape_perimeter(entities: tuple[GeometryEntity, ...]) -> float:
+    """Return the longest closed-shape perimeter as the drawing's yardstick.
+
+    Once a part's outline closes into a polygon or circle, its edges leave the
+    line pool, and the longest remaining line group is often lettering. The
+    outline's perimeter says how large the drawing really is.
+    """
+    perimeters: list[float] = [0.0]
+    for entity in entities:
+        if isinstance(entity, PolylineEntity) and entity.closed and entity.points:
+            points = entity.points
+            perimeters.append(
+                sum(
+                    points[index].distance_to(points[(index + 1) % len(points)])
+                    for index in range(len(points))
+                ),
+            )
+        elif isinstance(entity, CircleEntity):
+            perimeters.append(2.0 * math.pi * entity.radius)
+    return max(perimeters)
+
+
 def _is_isolated_line(
     entity: LineEntity,
     lines: tuple[LineEntity, ...],
@@ -972,6 +998,20 @@ def analyze_image(
             * detection_config.printed_table.edge_line_tolerance_ratio,
         ),
     )
+    shape_entities = tuple(
+        _shape_candidate_to_entity(candidate)
+        for candidate in shape_detection.candidates
+    )
+    lines = without_polygon_edge_lines(
+        lines,
+        tuple(
+            entity for entity in shape_entities if isinstance(entity, PolylineEntity)
+        ),
+        max(
+            _POLYGON_EDGE_TOLERANCE,
+            min(frame_width, frame_height) * _POLYGON_EDGE_TOLERANCE_RATIO,
+        ),
+    )
     if (
         normalization.keep_largest_connected_component
         and not detection_config.drawing_field.enabled
@@ -980,11 +1020,8 @@ def analyze_image(
             lines,
             normalization.endpoint_snap_distance,
             normalization.component_length_ratio,
+            _largest_shape_perimeter(shape_entities),
         )
-    shape_entities = tuple(
-        _shape_candidate_to_entity(candidate)
-        for candidate in shape_detection.candidates
-    )
     restored_lines = without_ruling_remnants(
         tuple(
             entity

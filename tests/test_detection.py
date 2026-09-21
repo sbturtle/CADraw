@@ -7,7 +7,7 @@ from cadraw.detection import (
     detect_line_candidates,
     detect_shape_candidates,
 )
-from cadraw.models import ArcCandidate, CircleCandidate, PolylineCandidate
+from cadraw.models import ArcCandidate, CircleCandidate, Point, PolylineCandidate
 
 
 def test_opencv_detects_long_structural_strokes() -> None:
@@ -258,3 +258,49 @@ def test_the_same_mark_is_handwriting_on_a_photograph() -> None:
 
     # Then the extent floor scales with the sheet and drops it
     assert candidates == ()
+
+
+def test_a_hole_seen_as_circle_and_polygon_is_kept_once_as_a_circle() -> None:
+    # Given a thick ring whose two contour edges both pass the shape tests
+    image = np.full((300, 300), 255, dtype=np.uint8)
+    _ = cv2.rectangle(image, (20, 20), (280, 280), 0, 4)
+    _ = cv2.circle(image, (150, 150), 40, 0, 9)
+
+    # When closed-shape detection runs
+    candidates = detect_shape_candidates(
+        image,
+        DetectionConfig(
+            detect_closed_shapes=True,
+            minimum_shape_area=500.0,
+            minimum_shape_radius=20.0,
+            maximum_shape_candidates=12,
+        ),
+    )
+
+    # Then the ring is one circle, not a circle plus a many-sided polygon
+    round_marks = tuple(
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, (CircleCandidate, PolylineCandidate))
+        and abs(_center_of(candidate).x - 150.0) < 10.0
+        and abs(_center_of(candidate).y - 150.0) < 10.0
+        and _extent_of(candidate) < 120.0
+    )
+    assert len(round_marks) == 1
+    assert isinstance(round_marks[0], CircleCandidate)
+
+
+def _center_of(candidate: CircleCandidate | PolylineCandidate) -> Point:
+    if isinstance(candidate, CircleCandidate):
+        return candidate.center
+    xs = [point.x for point in candidate.points]
+    ys = [point.y for point in candidate.points]
+    return Point((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0)
+
+
+def _extent_of(candidate: CircleCandidate | PolylineCandidate) -> float:
+    if isinstance(candidate, CircleCandidate):
+        return 2.0 * candidate.radius
+    xs = [point.x for point in candidate.points]
+    ys = [point.y for point in candidate.points]
+    return max(max(xs) - min(xs), max(ys) - min(ys))

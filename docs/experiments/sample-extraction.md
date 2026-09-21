@@ -16,13 +16,13 @@ uv run python scripts/render_sample_report.py
 
 | 샘플 | 선택 variant | 상태 | 추출 | 레퍼런스 |
 | --- | --- | --- | --- | --- |
-| 1 | `blur_otsu` | `READY` | line 4 | LWPOLYLINE 1 |
-| 2 | `blur_otsu` | `READY` | arc 1, line 2, polyline 6 | LWPOLYLINE 3 |
-| 3 | `blur_otsu` | `READY` | line 9, polyline 2 | LWPOLYLINE 10 |
-| 4 | `clahe_adaptive` | `READY` | circle 1, line 3, polyline 3 | ARC 2, CIRCLE 2, LINE 2, LWPOLYLINE 1 |
-| 5 | `shadow_removed_adaptive` | `READY` | arc 1, circle 2, line 8, polyline 13 | ARC 24, CIRCLE 7, LINE 24, LWPOLYLINE 1 |
-| 6 | `clahe_adaptive` | `READY` | line 1, polyline 4 | LWPOLYLINE 10 |
-| 7 | `shadow_removed_adaptive` | `READY` | arc 1, line 4, polyline 9 | ARC 8, CIRCLE 13, LINE 8, LWPOLYLINE 4 |
+| 1 | `blur_otsu` | `READY` | line 5 | LWPOLYLINE 1 |
+| 2 | `blur_otsu` | `READY` | arc 1, line 17, polyline 6 | LWPOLYLINE 3 |
+| 3 | `blur_otsu` | `READY` | line 25, polyline 2 | LWPOLYLINE 10 |
+| 4 | `clahe_adaptive` | `READY` | circle 1, polyline 2 | ARC 2, CIRCLE 2, LINE 2, LWPOLYLINE 1 |
+| 5 | `shadow_removed_adaptive` | `READY` | arc 1, circle 2, line 19, polyline 12 | ARC 24, CIRCLE 7, LINE 24, LWPOLYLINE 1 |
+| 6 | `clahe_adaptive` | `READY` | line 24, polyline 4 | LWPOLYLINE 10 |
+| 7 | `shadow_removed_adaptive` | `READY` | arc 1, line 34, polyline 9 | ARC 8, CIRCLE 13, LINE 8, LWPOLYLINE 4 |
 
 ## 샘플 1
 
@@ -30,7 +30,7 @@ uv run python scripts/render_sample_report.py
 
 - 선택 variant: `blur_otsu`
 - 상태: `READY`
-- 추출: line 4
+- 추출: line 5
 - 레퍼런스: LWPOLYLINE 1
 - 경고: `PERSPECTIVE_REJECTED`, `UNKNOWN_DIMENSION`
 
@@ -40,7 +40,7 @@ uv run python scripts/render_sample_report.py
 
 - 선택 variant: `blur_otsu`
 - 상태: `READY`
-- 추출: arc 1, line 2, polyline 6
+- 추출: arc 1, line 17, polyline 6
 - 레퍼런스: LWPOLYLINE 3
 - 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `UNKNOWN_DIMENSION`
 
@@ -50,7 +50,7 @@ uv run python scripts/render_sample_report.py
 
 - 선택 variant: `blur_otsu`
 - 상태: `READY`
-- 추출: line 9, polyline 2
+- 추출: line 25, polyline 2
 - 레퍼런스: LWPOLYLINE 10
 - 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `UNKNOWN_DIMENSION`
 
@@ -60,7 +60,7 @@ uv run python scripts/render_sample_report.py
 
 - 선택 variant: `clahe_adaptive`
 - 상태: `READY`
-- 추출: circle 1, line 3, polyline 3
+- 추출: circle 1, polyline 2
 - 레퍼런스: ARC 2, CIRCLE 2, LINE 2, LWPOLYLINE 1
 - 경고: `PRINTED_RULING_REMOVED`, `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `UNKNOWN_DIMENSION`
 
@@ -70,7 +70,7 @@ uv run python scripts/render_sample_report.py
 
 - 선택 variant: `shadow_removed_adaptive`
 - 상태: `READY`
-- 추출: arc 1, circle 2, line 8, polyline 13
+- 추출: arc 1, circle 2, line 19, polyline 12
 - 레퍼런스: ARC 24, CIRCLE 7, LINE 24, LWPOLYLINE 1
 - 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `UNKNOWN_DIMENSION`
 
@@ -80,7 +80,7 @@ uv run python scripts/render_sample_report.py
 
 - 선택 variant: `clahe_adaptive`
 - 상태: `READY`
-- 추출: line 1, polyline 4
+- 추출: line 24, polyline 4
 - 레퍼런스: LWPOLYLINE 10
 - 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `UNKNOWN_DIMENSION`
 
@@ -90,6 +90,6 @@ uv run python scripts/render_sample_report.py
 
 - 선택 variant: `shadow_removed_adaptive`
 - 상태: `READY`
-- 추출: arc 1, line 4, polyline 9
+- 추출: arc 1, line 34, polyline 9
 - 레퍼런스: ARC 8, CIRCLE 13, LINE 8, LWPOLYLINE 4
 - 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `UNKNOWN_DIMENSION`

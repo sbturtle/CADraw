@@ -1033,6 +1033,8 @@ def _shape_duplicate(
             )
             and radius_ratio >= _MIN_DUPLICATE_RADIUS_RATIO
         )
+    if isinstance(first, circular) != isinstance(second, circular):
+        return _circle_polygon_duplicate(first, second)
     if not isinstance(first, PolylineCandidate) or not isinstance(
         second,
         PolylineCandidate,
@@ -1062,6 +1064,33 @@ def _shape_duplicate(
     return (
         centers_close
         and overlaps
+        and width_ratio >= _MIN_DUPLICATE_SHAPE_EXTENT_RATIO
+        and height_ratio >= _MIN_DUPLICATE_SHAPE_EXTENT_RATIO
+    )
+
+
+def _circle_polygon_duplicate(first: ShapeCandidate, second: ShapeCandidate) -> bool:
+    """Check whether a circle and a polygon describe one round mark.
+
+    A drilled hole's ring comes back from the contour pass twice: once as a
+    circle and once as the many-sided polygon of its other edge. The polygon
+    is one when its box is centred on the circle and spans about the diameter
+    on both axes; a small shape inside a large circle fails the span test.
+    """
+    circle = first if isinstance(first, (CircleCandidate, ArcCandidate)) else second
+    polygon = second if circle is first else first
+    if not isinstance(circle, CircleCandidate) or not isinstance(
+        polygon,
+        PolylineCandidate,
+    ):
+        return False
+    min_x, min_y, max_x, max_y = _shape_bounds(polygon)
+    diameter = 2.0 * circle.radius
+    width_ratio = min(max_x - min_x, diameter) / max(max_x - min_x, diameter, 1.0)
+    height_ratio = min(max_y - min_y, diameter) / max(max_y - min_y, diameter, 1.0)
+    return (
+        circle.center.distance_to(_shape_center(polygon))
+        <= max(_MIN_DUPLICATE_CIRCLE_DISTANCE, 0.25 * circle.radius)
         and width_ratio >= _MIN_DUPLICATE_SHAPE_EXTENT_RATIO
         and height_ratio >= _MIN_DUPLICATE_SHAPE_EXTENT_RATIO
     )
@@ -1451,9 +1480,21 @@ def _without_nested_duplicates(
     """
     unique: list[ShapeCandidate] = []
     for candidate in candidates:
-        if any(_shape_duplicate(existing, candidate) for existing in unique):
+        matches = [
+            index
+            for index, existing in enumerate(unique)
+            if _shape_duplicate(existing, candidate)
+        ]
+        if not matches:
+            unique.append(candidate)
             continue
-        unique.append(candidate)
+        # A round mark is described best by its circle; when the polygon of
+        # the same ring arrived first, the circle takes its place.
+        if isinstance(candidate, CircleCandidate) and isinstance(
+            unique[matches[0]],
+            PolylineCandidate,
+        ):
+            unique[matches[0]] = candidate
     return tuple(unique)
 
 

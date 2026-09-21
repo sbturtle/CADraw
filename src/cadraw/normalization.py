@@ -402,14 +402,20 @@ def select_significant_components(
     lines: tuple[LineEntity, ...],
     snap_distance: float,
     minimum_length_ratio: float,
+    reference_length: float = 0.0,
 ) -> tuple[LineEntity, ...]:
     """Keep every connected stroke group that is a real share of the drawing.
 
     A work order routinely holds several parts side by side, so keeping only
     the single longest group deleted every other part on the sheet. Groups
-    whose total stroke length reaches `minimum_length_ratio` of the longest
-    group are kept; lettering and stray marks are short next to any part and
-    still fall away. A ratio of 1.0 keeps only the longest group.
+    whose total stroke length reaches `minimum_length_ratio` of the drawing's
+    largest feature are kept; lettering and stray marks are short next to any
+    part and still fall away. A ratio of 1.0 keeps only the longest group.
+
+    `reference_length` lets the largest feature be something other than a
+    line group. Once a part's outline closes into a polygon, the line pool
+    holds little but lettering, and the longest lettering stroke is a poor
+    yardstick; the outline's perimeter is the right one.
     """
     if len(lines) <= 1:
         return lines
@@ -447,7 +453,10 @@ def select_significant_components(
         return sum(lines[index].length for index in component)
 
     longest = max(total_length(component) for component in components)
-    threshold = longest * min(1.0, max(0.0, minimum_length_ratio))
+    threshold = max(longest, reference_length) * min(
+        1.0,
+        max(0.0, minimum_length_ratio),
+    )
     selected = {
         index
         for component in components

@@ -177,3 +177,33 @@ def test_proved_periodic_shape_grid_is_removed_with_its_evidence() -> None:
     # And the profile is what remains
     assert isinstance(evidence.candidates[0], PolylineCandidate)
     assert evidence.candidates[0].confidence > 0.8
+
+
+def test_a_stroke_drawn_twice_a_few_degrees_off_is_one_candidate() -> None:
+    # Given a pen stroke and the overdraw a hand laid ten degrees across it
+    candidates = (
+        LineCandidate(
+            EntityId("stroke"), Point(340.0, 935.0), Point(342.0, 1037.0), 0.8
+        ),
+        LineCandidate(
+            EntityId("overdraw"), Point(334.0, 1007.0), Point(348.0, 928.0), 0.8
+        ),
+    )
+
+    # When arbitration runs with the default overdraw tolerance
+    retained = arbitrate_line_candidates(candidates, CandidateArbitrationConfig())
+
+    # Then the longer stroke stands for both
+    assert tuple(candidate.entity_id for candidate in retained) == (EntityId("stroke"),)
+
+
+def test_a_short_stroke_meeting_a_line_at_an_angle_is_not_a_duplicate() -> None:
+    # Given a member and a branch leaving it at a real angle
+    candidates = (
+        LineCandidate(EntityId("member"), Point(0.0, 0.0), Point(0.0, 200.0), 0.8),
+        LineCandidate(EntityId("branch"), Point(0.0, 100.0), Point(40.0, 200.0), 0.8),
+    )
+
+    retained = arbitrate_line_candidates(candidates, CandidateArbitrationConfig())
+
+    assert len(retained) == 2

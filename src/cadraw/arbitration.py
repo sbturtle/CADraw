@@ -11,10 +11,20 @@ _HALF_TURN_DEGREES = 180.0
 
 @dataclass(frozen=True, slots=True)
 class CandidateArbitrationConfig:
-    """Tolerances used to identify two rails from one physical stroke."""
+    """Tolerances used to identify two rails from one physical stroke.
+
+    `duplicate_angle_tolerance_degrees` covers the two parallel rails a thick
+    stroke yields. `overdraw_angle_tolerance_degrees` covers a stroke drawn
+    twice by hand, which lands a few degrees off the first pass. Either angle
+    is accepted only together with the perpendicular-distance test on both
+    endpoints, and for candidates at least the minimum line length that test
+    alone already bounds the real angle far below the overdraw limit.
+    """
 
     duplicate_angle_tolerance_degrees: float = 2.0
+    overdraw_angle_tolerance_degrees: float = 12.0
     duplicate_perpendicular_distance: float = 8.0
+    overdraw_perpendicular_distance: float = 12.0
     duplicate_overlap_ratio: float = 0.85
     grid: GridFilterConfig = field(default_factory=GridFilterConfig)
 
@@ -99,7 +109,11 @@ def _is_duplicate(
     config: CandidateArbitrationConfig,
 ) -> bool:
     """Check strict angle, offset, and overlap conditions for one duplicate."""
-    if _angle_delta(first, second) > config.duplicate_angle_tolerance_degrees:
+    angle = _angle_delta(first, second)
+    if angle > max(
+        config.duplicate_angle_tolerance_degrees,
+        config.overdraw_angle_tolerance_degrees,
+    ):
         return False
     direction = _unit_direction(first)
     if direction is None:
@@ -108,7 +122,15 @@ def _is_duplicate(
         _perpendicular_distance(second.start, first.start, direction),
         _perpendicular_distance(second.end, first.start, direction),
     )
-    if offset > config.duplicate_perpendicular_distance:
+    # An overdraw laid a few degrees across the first pass diverges from it
+    # toward the ends, so the angled case is allowed a little more room than
+    # two parallel rails of one thick stroke.
+    distance_limit = (
+        config.duplicate_perpendicular_distance
+        if angle <= config.duplicate_angle_tolerance_degrees
+        else config.overdraw_perpendicular_distance
+    )
+    if offset > distance_limit:
         return False
     shorter_length = min(_line_length(first), _line_length(second))
     if shorter_length == 0.0:

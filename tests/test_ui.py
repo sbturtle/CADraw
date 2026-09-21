@@ -864,12 +864,19 @@ def test_marking_a_drawing_region_reanalyzes_inside_it(tmp_path: Path) -> None:
     assert region_button is not None
     assert region_button.isChecked() is False
 
-    # And geometry stays in original photo coordinates below the region top
+    # And geometry stays in original photo coordinates below the region top.
+    # The drawn rectangle closes into one polygon and its edges are not
+    # repeated as lines, so every entity family is inspected.
     points = [
         point
         for entity in analysis.entities
-        if isinstance(entity, LineEntity)
-        for point in (entity.start, entity.end)
+        for point in (
+            (entity.start, entity.end)
+            if isinstance(entity, LineEntity)
+            else entity.points
+            if isinstance(entity, PolylineEntity)
+            else ()
+        )
     ]
     assert points
     assert min(point.y for point in points) >= float(region[1])
