@@ -6,7 +6,7 @@ from scripts.run_poc import PocOptions, run
 
 from cadraw.detection import DetectionConfig
 from cadraw.export import validate_dxf
-from cadraw.models import LineEntity
+from cadraw.models import LineEntity, Orientation
 from cadraw.normalization import NormalizationConfig
 from cadraw.pipeline import PipelineConfig, analyze_image
 
@@ -74,7 +74,47 @@ def test_perspective_is_rejected_when_unwarped_geometry_is_stronger() -> None:
 
     # Then the source-coordinate analysis keeps the stronger unwarped result
     assert analysis.perspective_transform is None
-    assert len(analysis.entities) == 4
+    lines = {
+        entity.entity_id: entity
+        for entity in analysis.entities
+        if isinstance(entity, LineEntity)
+    }
+    connected = {
+        frozenset((connection.first_entity_id, connection.second_entity_id))
+        for connection in analysis.connections
+    }
+
+    def joined(first: LineEntity, second: LineEntity) -> bool:
+        return frozenset((first.entity_id, second.entity_id)) in connected
+
+    # And the sketch's four members are present as one connected chain: the
+    # 1050 stroke is whole even though Hough broke it, the 100 horizontal
+    # meets its top, the bend meets its bottom, and the 150 stroke follows.
+    tall = max(
+        (line for line in lines.values() if line.orientation is Orientation.VERTICAL),
+        key=lambda line: line.length,
+    )
+    assert tall.length > 400.0
+    top = min(tall.start.y, tall.end.y)
+    horizontal = next(
+        line
+        for line in lines.values()
+        if line.orientation is Orientation.HORIZONTAL and joined(line, tall)
+    )
+    assert abs(horizontal.start.y - top) < 5.0
+    bend = next(
+        line
+        for line in lines.values()
+        if line.orientation is Orientation.DIAGONAL
+        and joined(line, tall)
+        and max(line.start.y, line.end.y) > top + 400.0
+    )
+    assert any(
+        line.orientation is Orientation.VERTICAL
+        and line is not tall
+        and joined(line, bend)
+        for line in lines.values()
+    )
 
 
 @pytest.mark.parametrize(

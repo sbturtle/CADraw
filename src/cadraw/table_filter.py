@@ -30,6 +30,7 @@ class TableFilterConfig:
     tile_gap_ratio: float = 0.012
     depth_tolerance_ratio: float = 0.40
     maximum_cell_depth_ratio: float = 0.12
+    edge_line_tolerance_ratio: float = 0.02
 
 
 @dataclass(frozen=True, slots=True)

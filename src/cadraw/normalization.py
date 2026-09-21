@@ -1,5 +1,6 @@
 """Deterministic line orientation, snapping, merging, and connectivity."""
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from math import atan2, degrees
 from typing import Final
@@ -14,10 +15,28 @@ from cadraw.models import (
 
 _FULL_TURN: Final[float] = 180.0
 
+type InkBetween = Callable[[Point, Point], bool]
+
 
 @dataclass(frozen=True, slots=True)
 class NormalizationConfig:
-    """Tolerances controlling every line normalization decision."""
+    """Tolerances controlling every line normalization decision.
+
+    `evidence_gap_distance` is how far apart two near-collinear pieces may be
+    and still merge when the ink between them is continuous; zero disables
+    that path so geometry alone never bridges a gap wider than
+    `line_merge_tolerance`. `component_length_ratio` keeps every connected
+    stroke group whose total length reaches that share of the longest group,
+    so a sheet that holds several parts is not reduced to one of them; 1.0
+    keeps only the longest group.
+
+    `line_merge_tolerance_ratio` raises the collinear merge tolerance with the
+    shorter image side, the way shape floors already scale (ADR-0012). The
+    offset between two pieces of one stroke is a few pixels of pen width, and
+    that width grows with the photograph's resolution, whereas a fixed
+    tolerance wide enough for a 2560 px photo also swallows a digit written
+    beside a line on a 1024 px scan.
+    """
 
     horizontal_angle_tolerance_degrees: float = 4.0
     vertical_angle_tolerance_degrees: float = 4.0
@@ -25,6 +44,21 @@ class NormalizationConfig:
     line_merge_tolerance: float = 12.0
     minimum_line_length: float = 30.0
     keep_largest_connected_component: bool = False
+    evidence_gap_distance: float = 0.0
+    component_length_ratio: float = 1.0
+    line_merge_tolerance_ratio: float = 0.0
+
+
+def resolution_adjusted(
+    config: NormalizationConfig,
+    width: int,
+    height: int,
+) -> NormalizationConfig:
+    """Return the config with its merge tolerance scaled to the image size."""
+    scaled = min(width, height) * config.line_merge_tolerance_ratio
+    if scaled <= config.line_merge_tolerance:
+        return config
+    return replace(config, line_merge_tolerance=scaled)
 
 
 def classify_orientation(
@@ -93,13 +127,26 @@ def _perpendicular_distance(
     return abs((point.x - origin.x) * unit_y - (point.y - origin.y) * unit_x)
 
 
-def _mergeable(first: LineEntity, second: LineEntity, tolerance: float) -> bool:
-    """Check whether two normalized lines describe one physical stroke."""
+@dataclass(frozen=True, slots=True)
+class _Gap:
+    """The distance between two collinear pieces and the endpoints facing it."""
+
+    distance: float
+    first_point: Point
+    second_point: Point
+
+
+def _collinear_gap(
+    first: LineEntity,
+    second: LineEntity,
+    tolerance: float,
+) -> _Gap | None:
+    """Return the gap between two near-collinear lines, or nothing."""
     if first.orientation is not second.orientation:
-        return False
+        return None
     length = first.length
     if length == 0.0:
-        return False
+        return None
     unit_x = (first.end.x - first.start.x) / length
     unit_y = (first.end.y - first.start.y) / length
     points = (first.start, first.end, second.start, second.end)
@@ -107,14 +154,41 @@ def _mergeable(first: LineEntity, second: LineEntity, tolerance: float) -> bool:
         _perpendicular_distance(point, first.start, unit_x, unit_y) for point in points
     )
     if max(distances) > tolerance:
-        return False
+        return None
     projections = tuple(
         _projection(point, first.start, unit_x, unit_y) for point in points
     )
-    first_min, first_max = sorted(projections[:2])
-    second_min, second_max = sorted(projections[2:])
-    gap = max(first_min - second_max, second_min - first_max, 0.0)
-    return gap <= tolerance
+    first_low, first_high = sorted(zip(projections[:2], points[:2], strict=True))
+    second_low, second_high = sorted(zip(projections[2:], points[2:], strict=True))
+    if second_low[0] > first_high[0]:
+        return _Gap(second_low[0] - first_high[0], first_high[1], second_low[1])
+    if first_low[0] > second_high[0]:
+        return _Gap(first_low[0] - second_high[0], first_low[1], second_high[1])
+    return _Gap(0.0, first_high[1], second_low[1])
+
+
+def _mergeable(
+    first: LineEntity,
+    second: LineEntity,
+    tolerance: float,
+    evidence_gap: float = 0.0,
+    ink_between: InkBetween | None = None,
+) -> bool:
+    """Check whether two normalized lines describe one physical stroke.
+
+    Geometry alone closes a gap up to `tolerance`. A wider gap, up to
+    `evidence_gap`, is closed only when the raster shows continuous ink
+    between the two facing endpoints, so a broken Hough trace of one stroke
+    rejoins while two strokes that merely line up stay apart.
+    """
+    gap = _collinear_gap(first, second, tolerance)
+    if gap is None:
+        return False
+    if gap.distance <= tolerance:
+        return True
+    if ink_between is None or gap.distance > evidence_gap:
+        return False
+    return ink_between(gap.first_point, gap.second_point)
 
 
 def _merged_line(first: LineEntity, second: LineEntity) -> LineEntity:
@@ -156,6 +230,8 @@ def _merged_line(first: LineEntity, second: LineEntity) -> LineEntity:
 def _merge_collinear(
     lines: list[LineEntity],
     tolerance: float,
+    evidence_gap: float = 0.0,
+    ink_between: InkBetween | None = None,
 ) -> list[LineEntity]:
     """Iteratively merge neighboring pieces until stable."""
     merged = list(lines)
@@ -165,7 +241,13 @@ def _merge_collinear(
         for first_index, first in enumerate(merged):
             for second_index in range(first_index + 1, len(merged)):
                 second = merged[second_index]
-                if not _mergeable(first, second, tolerance):
+                if not _mergeable(
+                    first,
+                    second,
+                    tolerance,
+                    evidence_gap,
+                    ink_between,
+                ):
                     continue
                 merged[first_index] = _merged_line(first, second)
                 del merged[second_index]
@@ -252,14 +334,25 @@ def _snap_nearby_endpoints(
 def normalize_lines(
     candidates: tuple[LineCandidate, ...],
     config: NormalizationConfig,
+    ink_between: InkBetween | None = None,
 ) -> tuple[LineEntity, ...]:
-    """Normalize raw candidates into stable, connected-ready line entities."""
+    """Normalize raw candidates into stable, connected-ready line entities.
+
+    `ink_between` is the raster evidence that lets two collinear pieces merge
+    across a gap wider than the geometric tolerance; without it that path is
+    off and the result is exactly what geometry alone supports.
+    """
     lines = [
         line
         for candidate in sorted(candidates, key=lambda item: item.entity_id)
         if (line := _candidate_to_line(candidate, config)) is not None
     ]
-    merged = _merge_collinear(lines, config.line_merge_tolerance)
+    merged = _merge_collinear(
+        lines,
+        config.line_merge_tolerance,
+        config.evidence_gap_distance,
+        ink_between,
+    )
     snapped = _snap_nearby_endpoints(merged, config.endpoint_snap_distance)
     return tuple(sorted(snapped, key=lambda item: item.entity_id))
 
@@ -301,7 +394,23 @@ def select_largest_connected_component(
     lines: tuple[LineEntity, ...],
     snap_distance: float,
 ) -> tuple[LineEntity, ...]:
-    """Keep the strongest connected stroke group when a photo has clutter."""
+    """Keep only the strongest connected stroke group."""
+    return select_significant_components(lines, snap_distance, 1.0)
+
+
+def select_significant_components(
+    lines: tuple[LineEntity, ...],
+    snap_distance: float,
+    minimum_length_ratio: float,
+) -> tuple[LineEntity, ...]:
+    """Keep every connected stroke group that is a real share of the drawing.
+
+    A work order routinely holds several parts side by side, so keeping only
+    the single longest group deleted every other part on the sheet. Groups
+    whose total stroke length reaches `minimum_length_ratio` of the longest
+    group are kept; lettering and stray marks are short next to any part and
+    still fall away. A ratio of 1.0 keeps only the longest group.
+    """
     if len(lines) <= 1:
         return lines
     adjacency = [set[int]() for _ in lines]
@@ -334,17 +443,20 @@ def select_largest_connected_component(
                     stack.append(neighbor)
         components.append(tuple(sorted(component)))
 
-    selected = max(
-        components,
-        key=lambda component: (
-            sum(lines[index].length for index in component),
-            len(component),
-            -min(component),
-        ),
-    )
+    def total_length(component: tuple[int, ...]) -> float:
+        return sum(lines[index].length for index in component)
+
+    longest = max(total_length(component) for component in components)
+    threshold = longest * min(1.0, max(0.0, minimum_length_ratio))
+    selected = {
+        index
+        for component in components
+        if total_length(component) >= threshold
+        for index in component
+    }
     return tuple(
         sorted(
-            (lines[index] for index in selected),
+            (lines[index] for index in sorted(selected)),
             key=lambda line: line.entity_id,
         ),
     )

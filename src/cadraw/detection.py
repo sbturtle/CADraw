@@ -150,6 +150,7 @@ class ShapeDetectionEvidence:
     table_detected: bool = False
     table_candidate_count: int = 0
     candidate_limit_reached: bool = False
+    table_cell_bounds: tuple[tuple[float, float, float, float], ...] = ()
 
 
 def load_grayscale_image(path: Path) -> GrayImage:
@@ -273,24 +274,25 @@ def _line_angle_degrees(candidate: LineCandidate) -> float:
 
 def _line_intensity(image: GrayImage, candidate: LineCandidate) -> float:
     """Estimate the darkest grayscale value along a candidate stroke."""
-    length = candidate.start.distance_to(candidate.end)
+    return stroke_intensity(image, candidate.start, candidate.end)
+
+
+def stroke_intensity(image: GrayImage, start: Point, end: Point) -> float:
+    """Estimate the darkest grayscale value along one straight stroke."""
+    length = start.distance_to(end)
     if length == 0.0:
         return 255.0
     direction = (
-        (candidate.end.x - candidate.start.x) / length,
-        (candidate.end.y - candidate.start.y) / length,
+        (end.x - start.x) / length,
+        (end.y - start.y) / length,
     )
     normal = (-direction[1], direction[0])
     height, width = cast("tuple[int, int]", image.shape[:2])
     sample_count = max(12, min(160, int(length / 4.0)))
     values: list[int] = []
     for fraction in np.linspace(0.0, 1.0, sample_count):
-        center_x = candidate.start.x + (candidate.end.x - candidate.start.x) * float(
-            fraction
-        )
-        center_y = candidate.start.y + (candidate.end.y - candidate.start.y) * float(
-            fraction
-        )
+        center_x = start.x + (end.x - start.x) * float(fraction)
+        center_y = start.y + (end.y - start.y) * float(fraction)
         band_values = [
             int(
                 cast(
@@ -1513,11 +1515,18 @@ def detect_shape_candidates_with_evidence(
         prepared.height,
         config.arbitration.grid,
     )
+    deduplicated = _without_nested_duplicates(grid_evidence.candidates)
     table_evidence = inspect_printed_table_shapes(
-        _without_nested_duplicates(grid_evidence.candidates),
+        deduplicated,
         prepared.width,
         prepared.height,
         config.printed_table,
+    )
+    retained_ids = {id(candidate) for candidate in table_evidence.candidates}
+    table_cell_bounds = tuple(
+        _shape_bounds(candidate)
+        for candidate in deduplicated
+        if id(candidate) not in retained_ids
     )
     classified = classify_shape_holes(table_evidence.candidates)
     limited = classified[: config.maximum_shape_candidates]
@@ -1531,6 +1540,7 @@ def detect_shape_candidates_with_evidence(
         table_detected=table_evidence.table_detected,
         table_candidate_count=table_evidence.removed_count,
         candidate_limit_reached=len(classified) > config.maximum_shape_candidates,
+        table_cell_bounds=table_cell_bounds,
     )
 
 

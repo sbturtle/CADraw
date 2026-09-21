@@ -54,6 +54,8 @@ class PageCleanupResult:
     horizontal_rule_count: int
     vertical_rule_count: int
     grid_period: float | None
+    horizontal_rails: tuple[float, ...] = ()
+    vertical_rails: tuple[float, ...] = ()
 
     @property
     def applied(self) -> bool:
@@ -162,6 +164,8 @@ class _ProvedRuling:
     period: float
     horizontal_count: int
     vertical_count: int
+    horizontal_rails: tuple[float, ...] = ()
+    vertical_rails: tuple[float, ...] = ()
 
 
 def _periodic_rails(
@@ -203,6 +207,8 @@ def _periodic_rails(
         period=float(np.median(np.asarray(gaps, dtype=np.float64))),
         horizontal_count=len(horizontal_rails),
         vertical_count=len(vertical_rails),
+        horizontal_rails=horizontal_rails,
+        vertical_rails=vertical_rails,
     )
 
 
@@ -230,4 +236,6 @@ def clean_page(
         horizontal_rule_count=ruling.horizontal_count,
         vertical_rule_count=ruling.vertical_count,
         grid_period=ruling.period,
+        horizontal_rails=ruling.horizontal_rails,
+        vertical_rails=ruling.vertical_rails,
     )

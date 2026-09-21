@@ -18,6 +18,12 @@ from cadraw.detection import (
     detect_shape_candidates_with_evidence,
     is_page_frame_rule,
     load_grayscale_image,
+    stroke_intensity,
+)
+from cadraw.furniture_filter import (
+    RulingRails,
+    without_ruling_remnants,
+    without_table_edge_lines,
 )
 from cadraw.models import (
     AnalysisStatus,
@@ -43,10 +49,12 @@ from cadraw.models import (
     WarningCode,
 )
 from cadraw.normalization import (
+    InkBetween,
     NormalizationConfig,
     build_connections,
     normalize_lines,
-    select_largest_connected_component,
+    resolution_adjusted,
+    select_significant_components,
 )
 from cadraw.ocr import (
     OcrBackend,
@@ -71,6 +79,7 @@ from cadraw.preprocessing import (
     score_candidates,
     write_debug_outputs,
 )
+from cadraw.stroke_evidence import ink_between_factory, ink_mask_from_grayscale
 
 type VariantEvaluation = tuple[
     PreprocessingResult,
@@ -125,9 +134,12 @@ class PipelineConfig:
                 horizontal_angle_tolerance_degrees=7.0,
                 vertical_angle_tolerance_degrees=7.0,
                 endpoint_snap_distance=18.0,
-                line_merge_tolerance=18.0,
+                line_merge_tolerance=8.0,
+                line_merge_tolerance_ratio=0.009,
                 minimum_line_length=60.0,
                 keep_largest_connected_component=True,
+                evidence_gap_distance=90.0,
+                component_length_ratio=0.20,
             ),
             perspective_correction=True,
             preprocessing=PreprocessingConfig(enabled=True),
@@ -144,6 +156,7 @@ class _PreprocessingSelection:
     previews: tuple[PreprocessingPreview, ...]
     selected_variant: str | None
     score: CandidateScore | None
+    ink_mask: GrayImage | None = None
 
 
 type DetectionStream = tuple[
@@ -164,6 +177,7 @@ class _AnalysisQualityContext:
 
 
 _PAGE_EDGE_DOMINANCE_RATIO = 0.50
+_RAIL_REMNANT_PERIOD_RATIO = 0.25
 _MIN_GRID_LIKE_SHAPES = 8
 _MIN_SHAPES_PER_LINE = 4
 
@@ -590,7 +604,27 @@ def _select_preprocessing_stream(
         previews=previews,
         selected_variant=selected_variant,
         score=chosen_score,
+        ink_mask=chosen[0].mask if automatic_confident else None,
     )
+
+
+def _ink_between_for(
+    stream: DetectionStream,
+    config: PipelineConfig,
+) -> InkBetween | None:
+    """Return the gap-bridging predicate for the selected raster, if wanted.
+
+    The selected variant's own binary mask is the natural evidence; when no
+    variant was trusted, the raw frame is binarized once so the merge still
+    sees the same ink the detector saw.
+    """
+    if config.normalization.evidence_gap_distance <= 0.0:
+        return None
+    selection, _, detection_image = stream
+    mask = None if selection is None else selection.ink_mask
+    if mask is None:
+        mask = ink_mask_from_grayscale(detection_image)
+    return ink_between_factory(mask)
 
 
 def _add_analysis_quality_warnings(
@@ -909,36 +943,74 @@ def analyze_image(
         if preprocessing_selection is None
         else preprocessing_selection.selected_variant
     )
+    frame_height, frame_width = cast("tuple[int, int]", analysis_image.shape[:2])
+    normalization = resolution_adjusted(
+        config.normalization,
+        frame_width,
+        frame_height,
+    )
     lines = _without_page_frame_rules(
-        normalize_lines(candidates, config.normalization),
+        normalize_lines(
+            candidates,
+            normalization,
+            _ink_between_for(detection_stream, config),
+        ),
         analysis_image,
         detection_config,
-        config.normalization.endpoint_snap_distance,
+        normalization.endpoint_snap_distance,
     )
-    if (
-        config.normalization.keep_largest_connected_component
-        and not detection_config.drawing_field.enabled
-    ):
-        lines = select_largest_connected_component(
-            lines,
-            config.normalization.endpoint_snap_distance,
-        )
     shape_detection = detect_shape_candidates_with_evidence(
         detection_image,
         detection_config,
     )
+    lines = without_table_edge_lines(
+        lines,
+        shape_detection.table_cell_bounds,
+        max(
+            normalization.endpoint_snap_distance,
+            min(frame_width, frame_height)
+            * detection_config.printed_table.edge_line_tolerance_ratio,
+        ),
+    )
+    if (
+        normalization.keep_largest_connected_component
+        and not detection_config.drawing_field.enabled
+    ):
+        lines = select_significant_components(
+            lines,
+            normalization.endpoint_snap_distance,
+            normalization.component_length_ratio,
+        )
     shape_entities = tuple(
         _shape_candidate_to_entity(candidate)
         for candidate in shape_detection.candidates
     )
-    restored_lines = tuple(
-        entity
-        for entity in _restore_source_coordinates(
-            lines,
-            offset,
-            inverse_matrix,
-        )
-        if isinstance(entity, LineEntity)
+    restored_lines = without_ruling_remnants(
+        tuple(
+            entity
+            for entity in _restore_source_coordinates(
+                lines,
+                offset,
+                inverse_matrix,
+            )
+            if isinstance(entity, LineEntity)
+        ),
+        RulingRails(
+            horizontal=cleanup.horizontal_rails,
+            vertical=cleanup.vertical_rails,
+            # A skewed scan drifts a rail off its median row by more than the
+            # erasure band over the sheet, so remnants are matched within a
+            # quarter period; the ink test keeps a stroke drawn on a rail.
+            band_width=max(
+                config.page_cleanup.rail_band_width,
+                _RAIL_REMNANT_PERIOD_RATIO * (cleanup.grid_period or 0.0),
+            ),
+            maximum_intensity=(
+                detection_config.arbitration.grid.maximum_grid_intensity
+            ),
+        ),
+        normalization.endpoint_snap_distance,
+        lambda start, end: stroke_intensity(source_image, start, end),
     )
     restored_shapes = _restore_source_coordinates(
         shape_entities,
