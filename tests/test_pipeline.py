@@ -3,6 +3,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 from PIL import Image
 
 from cadraw.detection import DetectionConfig
@@ -12,12 +13,14 @@ from cadraw.models import (
     DimensionKind,
     DimensionStatus,
     LineEntity,
+    Point,
     PolylineEntity,
     TextCandidate,
     WarningCode,
 )
 from cadraw.normalization import NormalizationConfig
 from cadraw.pipeline import PipelineConfig, analyze_image
+from cadraw.text_filter import TextStrokeConfig
 
 
 class _FakeOcrBackend:
@@ -431,3 +434,141 @@ def test_a_page_spanning_stroke_joined_to_the_drawing_is_kept(
     # Then the baseline survives, because it is joined to the rest of the part
     lines = [entity for entity in analysis.entities if isinstance(entity, LineEntity)]
     assert any(abs(entity.end.x - entity.start.x) > 500.0 for entity in lines)
+
+
+class _StrokeLabelBackend:
+    """Reports the box of a `117` label drawn with pen-width strokes."""
+
+    def __init__(self, box: tuple[int, int, int, int]) -> None:
+        self._box: tuple[int, int, int, int] = box
+
+    def recognize(self, image: np.ndarray) -> tuple[TextCandidate, ...]:
+        del image
+        left, top, right, bottom = self._box
+        return (
+            TextCandidate(
+                text="117",
+                bounds=(left, top, right - left, bottom - top),
+                confidence=0.95,
+                quad=(
+                    Point(left, top),
+                    Point(right, top),
+                    Point(right, bottom),
+                    Point(left, bottom),
+                ),
+            ),
+        )
+
+
+def _labelled_outline(tmp_path: Path) -> tuple[Path, tuple[int, int, int, int]]:
+    image = np.full((600, 800), 255, dtype=np.uint8)
+    _ = cv2.line(image, (100, 100), (700, 100), 0, 5)
+    _ = cv2.line(image, (100, 100), (100, 500), 0, 5)
+    (width, height), _ = cv2.getTextSize("117", cv2.FONT_HERSHEY_SIMPLEX, 3, 5)
+    _ = cv2.putText(image, "117", (330, 330), cv2.FONT_HERSHEY_SIMPLEX, 3, 0, 5)
+    image_path = tmp_path / "labelled-outline.png"
+    Image.fromarray(image).save(image_path)
+    return image_path, (330, 330 - height, 330 + width, 330)
+
+
+def _entity_points(entity: object) -> tuple[Point, ...]:
+    if isinstance(entity, LineEntity):
+        return (entity.start, entity.end)
+    if isinstance(entity, PolylineEntity):
+        return entity.points
+    return ()
+
+
+def test_label_strokes_are_removed_while_the_outline_stays(tmp_path: Path) -> None:
+    # Given an L outline and, apart from it, a pen-drawn `117` label
+    image_path, box = _labelled_outline(tmp_path)
+    config = replace(
+        _single_line_config(),
+        normalization=replace(
+            _single_line_config().normalization,
+            keep_largest_connected_component=False,
+        ),
+    )
+    backend = _StrokeLabelBackend(box)
+    left, top, right, bottom = box
+
+    def inside_label(entity: object) -> bool:
+        points = _entity_points(entity)
+        return bool(points) and all(
+            left - 5 <= point.x <= right + 5 and top - 5 <= point.y <= bottom + 5
+            for point in points
+        )
+
+    # When the pipeline runs with, and then without, lettering removal
+    kept = analyze_image(
+        image_path,
+        replace(config, text_strokes=TextStrokeConfig(enabled=False)),
+        backend,
+    )
+    filtered = analyze_image(image_path, config, backend)
+
+    # Then only the label's own strokes leave the geometry
+    assert any(inside_label(entity) for entity in kept.entities)
+    assert not any(inside_label(entity) for entity in filtered.entities)
+    long_lines = [
+        entity
+        for entity in filtered.entities
+        if isinstance(entity, LineEntity) and entity.length > 350.0
+    ]
+    assert len(long_lines) == 2
+    assert WarningCode.TEXT_STROKES_REMOVED in {
+        warning.code for warning in filtered.warnings
+    }
+    assert filtered.text_candidates[0].quad is not None
+
+
+class _DisagreeingReader:
+    def read(self, crop: np.ndarray) -> str | None:
+        assert crop.size
+        return "180"
+
+
+def test_a_value_read_differently_twice_is_flagged_on_its_line(
+    tmp_path: Path,
+) -> None:
+    # Given one line, its `150` label, and a second reader that sees `180`
+    image = np.full((240, 320), 255, dtype=np.uint8)
+    _ = cv2.line(image, (40, 50), (280, 50), 0, 5)
+    image_path = tmp_path / "second-reading.png"
+    Image.fromarray(image).save(image_path)
+
+    # When the pipeline cross-checks OCR
+    analysis = analyze_image(
+        image_path,
+        _single_line_config(),
+        _AdjacentTextOcrBackend(),
+        second_reader=_DisagreeingReader(),
+    )
+
+    # Then the suggestion is uncertain and the warning names its line
+    dimension = analysis.dimensions[0]
+    assert dimension.status is DimensionStatus.UNCERTAIN
+    warning = next(
+        warning
+        for warning in analysis.warnings
+        if warning.code is WarningCode.UNCERTAIN_TEXT
+    )
+    assert warning.entity_ids == dimension.target_entity_ids
+    assert "150 / 180" in warning.message
+    assert analysis.text_candidates[0].alternate_text == "180"
+
+
+def test_workbench_config_reads_labels_and_the_optional_vision_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given no vision model, then a configured one
+    monkeypatch.delenv("CADRAW_VISION_MODEL", raising=False)
+    plain = PipelineConfig.for_workbench()
+    monkeypatch.setenv("CADRAW_VISION_MODEL", "qwen3-vl:2b-instruct")
+    checked = PipelineConfig.for_workbench()
+
+    # Then OCR is on in the app while tests' defaults stay model-free
+    assert not PipelineConfig.from_detection_defaults().ocr_enabled
+    assert plain.ocr_enabled
+    assert plain.ocr_cross_check_model is None
+    assert checked.ocr_cross_check_model == "qwen3-vl:2b-instruct"

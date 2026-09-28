@@ -128,8 +128,10 @@ analysis를 그대로 재설치하며 `manual_dimensions`를 다시 계산하지
 원본 사진 공간으로 복원됩니다. 페이지 경계가 없으면 변환은 `None`이고
 `PERSPECTIVE_NOT_FOUND` 경고가 추가됩니다.
 
-`TextCandidate`는 OCR 원문·box·신뢰도를 보존하며, 기존 dimension parser를
-통과한 값만 `Dimension`으로 변환합니다. OCR 치수는 `NEEDS_REVIEW`이고
+`TextCandidate`는 OCR 원문·box·신뢰도와, 검출기가 준 경우 기울어진 글자를
+감싸는 사변형 `quad`를 보존합니다. `quad`도 `bounds`와 같은 역행렬로 원본 사진
+좌표로 복원됩니다. 두 번째 판독 결과는 `alternate_text`에만 남고 `text`를 바꾸지
+않습니다. 기존 dimension parser를 통과한 값만 `Dimension`으로 변환합니다. OCR 치수는 `NEEDS_REVIEW`이고
 `target_entity_ids`가 비어 있어 사용자가 확인하기 전에는 DXF TEXT로 내보내지지
 않습니다.
 

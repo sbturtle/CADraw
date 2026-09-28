@@ -20,6 +20,10 @@ from cadraw.models import (
         ("Ø25", DimensionKind.DIAMETER, 25.0),
         ("R12.5", DimensionKind.RADIUS, 12.5),
         ("45°", DimensionKind.ANGLE, 45.0),
+        ("400R", DimensionKind.RADIUS, 400.0),
+        ("790Ø", DimensionKind.DIAMETER, 790.0),
+        ("790φ", DimensionKind.DIAMETER, 790.0),
+        ("φ20", DimensionKind.DIAMETER, 20.0),
     ],
 )
 def test_dimension_parser_reads_supported_notation(

@@ -6,8 +6,10 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
+from cadraw.pipeline import PipelineConfig
 from cadraw.ui.main_window import MainWindow
 from cadraw.ui.theme import apply_theme
+from cadraw.vision import MockVisionAnalyzer
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -15,7 +17,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv if argv is None else argv)
     application = QApplication(arguments)
     apply_theme(application)
-    window = MainWindow()
+    window = MainWindow(MockVisionAnalyzer(PipelineConfig.for_workbench()))
     if len(arguments) > 1:
         _ = window.load_path(Path(arguments[1]))
     window.show()

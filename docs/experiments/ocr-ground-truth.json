@@ -1,0 +1,115 @@
+{
+  "description": "Hand-labelled handwritten dimension labels in the checked-in sample photos. Each label is the value as written (symbols such as R kept, Ø and ° omitted) and the centre of its text box in photo pixels. Only labels a person could read without doubt are included; the set measures recognition, not detection recall.",
+  "samples": [
+    {
+      "image": "sample/1.jpg",
+      "labels": [
+        {"text": "100", "center": [837.4, 631.0]},
+        {"text": "1050", "center": [880.2, 1067.7]},
+        {"text": "20", "center": [621.1, 1489.0]},
+        {"text": "150", "center": [522.1, 1700.0]}
+      ]
+    },
+    {
+      "image": "sample/2.jpg",
+      "labels": [
+        {"text": "30", "center": [234.2, 1351.8]},
+        {"text": "601", "center": [1511.1, 1512.1]},
+        {"text": "30", "center": [232.2, 1570.6]},
+        {"text": "65", "center": [402.1, 1715.7]},
+        {"text": "60", "center": [498.7, 2060.5]},
+        {"text": "10", "center": [285.5, 2315.5]},
+        {"text": "10", "center": [742.0, 2331.7]},
+        {"text": "30", "center": [298.6, 2498.0]},
+        {"text": "30", "center": [726.9, 2512.1]},
+        {"text": "30", "center": [1397.4, 2534.3]},
+        {"text": "500", "center": [66.4, 2628.0]},
+        {"text": "50", "center": [1493.0, 2606.9]},
+        {"text": "600", "center": [467.5, 2914.3]}
+      ]
+    },
+    {
+      "image": "sample/3.jpg",
+      "labels": [
+        {"text": "1550", "center": [1497.0, 2274.2]},
+        {"text": "10", "center": [255.4, 2960.7]},
+        {"text": "140", "center": [795.2, 3302.4]}
+      ]
+    },
+    {
+      "image": "sample/4.jpg",
+      "labels": [
+        {"text": "60", "center": [1155.2, 2685.5]}
+      ]
+    },
+    {
+      "image": "sample/5.jpg",
+      "labels": [
+        {"text": "790", "center": [1282.8, 1068.5]},
+        {"text": "790", "center": [1508.0, 2429.4]},
+        {"text": "30", "center": [780.2, 2789.3]},
+        {"text": "30", "center": [888.7, 2880.0]}
+      ]
+    },
+    {
+      "image": "sample/6.jpg",
+      "labels": [
+        {"text": "400", "center": [1924.3, 1672.4]},
+        {"text": "100", "center": [1704.1, 1732.9]},
+        {"text": "300", "center": [1894.1, 1822.6]},
+        {"text": "300", "center": [626.3, 1913.3]},
+        {"text": "300", "center": [488.6, 2016.1]},
+        {"text": "100", "center": [1762.4, 2123.0]},
+        {"text": "1500", "center": [298.6, 2180.4]},
+        {"text": "300", "center": [590.1, 2199.6]},
+        {"text": "200", "center": [1911.2, 2219.8]},
+        {"text": "200", "center": [453.4, 2313.5]},
+        {"text": "100", "center": [1933.3, 2349.8]},
+        {"text": "100", "center": [1245.6, 2713.7]},
+        {"text": "300", "center": [1050.6, 2851.8]},
+        {"text": "300", "center": [1299.9, 2961.7]},
+        {"text": "200", "center": [1015.4, 3332.7]},
+        {"text": "300", "center": [1264.7, 3418.3]},
+        {"text": "400R", "center": [1410.5, 2572.6]},
+        {"text": "400R", "center": [1410.5, 3075.6]}
+      ]
+    },
+    {
+      "image": "sample/7.jpg",
+      "labels": [
+        {"text": "500", "center": [1022.2, 648.5]},
+        {"text": "600", "center": [2976.8, 665.5]},
+        {"text": "500", "center": [1767.1, 686.7]},
+        {"text": "400", "center": [2363.9, 699.7]},
+        {"text": "200", "center": [635.1, 686.7]},
+        {"text": "200", "center": [1525.2, 745.0]},
+        {"text": "160", "center": [2912.3, 832.4]},
+        {"text": "180", "center": [1026.2, 972.2]},
+        {"text": "180", "center": [1651.2, 957.1]},
+        {"text": "305", "center": [2902.2, 926.9]},
+        {"text": "150", "center": [3087.7, 905.8]},
+        {"text": "510", "center": [607.9, 1051.6]},
+        {"text": "510", "center": [1442.5, 1072.7]},
+        {"text": "650", "center": [2100.8, 1018.4]},
+        {"text": "320", "center": [2273.2, 1049.6]},
+        {"text": "930", "center": [2749.0, 1000.3]},
+        {"text": "305", "center": [2947.6, 1035.5]},
+        {"text": "180", "center": [1668.3, 1101.9]},
+        {"text": "149", "center": [2773.2, 1120.0]},
+        {"text": "160", "center": [3000.0, 1150.1]},
+        {"text": "50", "center": [2241.9, 1240.6]},
+        {"text": "200", "center": [2804.4, 1232.6]},
+        {"text": "149", "center": [3019.2, 1293.9]},
+        {"text": "148", "center": [3744.0, 1313.0]},
+        {"text": "200", "center": [523.2, 1377.3]},
+        {"text": "200", "center": [1447.6, 1354.2]},
+        {"text": "200", "center": [2109.9, 1315.0]},
+        {"text": "130", "center": [2821.6, 1371.3]},
+        {"text": "130", "center": [2112.9, 1440.7]},
+        {"text": "130", "center": [1413.3, 1493.0]},
+        {"text": "90", "center": [3486.9, 725.9]},
+        {"text": "151", "center": [3429.4, 977.2]}
+      ]
+    }
+  ]
+}

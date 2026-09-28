@@ -18,7 +18,12 @@ class VisionAnalyzer(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class MockVisionAnalyzer:
-    """Local adapter used before handwriting OCR is introduced."""
+    """Local adapter: the deterministic pipeline and, if configured, local OCR.
+
+    Nothing leaves the machine. OCR, when the configuration enables it, is the
+    bundled PP-OCR reader and an optional local Ollama model, and both only
+    produce reviewable text suggestions.
+    """
 
     config: PipelineConfig
 

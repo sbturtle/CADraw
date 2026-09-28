@@ -28,7 +28,11 @@ _VALUE_PATTERN = re.compile(
     rf"^\s*{_NUMBER}\s*(?P<unit>mm|㎜)?\s*$",
     re.IGNORECASE,
 )
-_PREFIX_PATTERN = re.compile(r"^\s*(?P<prefix>[Ø⌀Rr])\s*(?P<body>.*)$")
+_PREFIX_PATTERN = re.compile(r"^\s*(?P<prefix>[Ø⌀ΦφRr])\s*(?P<body>.*)$")
+# Korean shop drawings put the symbol after the number as often as before it:
+# `400R` is a 400 radius and `790Ø` or `790φ` a 790 diameter.
+_SUFFIX_PATTERN = re.compile(r"^\s*(?P<body>.*?\d)\s*(?P<prefix>[Ø⌀ΦφRr])\s*$")
+_DIAMETER_SYMBOLS = frozenset({"Ø", "⌀", "Φ"})
 _ANGLE_PATTERN = re.compile(
     rf"^\s*{_NUMBER}\s*(?P<unit>°|deg|degree|degrees)\s*$",
     re.IGNORECASE,
@@ -72,12 +76,18 @@ def parse_dimension_text(raw_text: str, dimension_id: DimensionId) -> Dimension:
             status=DimensionStatus.NEEDS_REVIEW,
         )
 
-    prefix_match = _PREFIX_PATTERN.fullmatch(normalized)
+    prefix_match = _PREFIX_PATTERN.fullmatch(
+        normalized,
+    ) or _SUFFIX_PATTERN.fullmatch(normalized)
     kind = DimensionKind.LENGTH
     body = normalized
     if prefix_match is not None:
         prefix = prefix_match.group("prefix").upper()
-        kind = DimensionKind.DIAMETER if prefix in {"Ø", "⌀"} else DimensionKind.RADIUS
+        kind = (
+            DimensionKind.DIAMETER
+            if prefix in _DIAMETER_SYMBOLS
+            else DimensionKind.RADIUS
+        )
         body = prefix_match.group("body")
 
     value_match = _VALUE_PATTERN.fullmatch(body)

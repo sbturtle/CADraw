@@ -1,6 +1,7 @@
 """Composition of image detection and geometry normalization."""
 
 import math
+import os
 from dataclasses import dataclass, field, replace
 from io import BytesIO
 from pathlib import Path
@@ -27,6 +28,7 @@ from cadraw.furniture_filter import (
     without_ruling_remnants,
     without_table_edge_lines,
 )
+from cadraw.local_ocr import discover_ocr_backend
 from cadraw.models import (
     AnalysisStatus,
     AnalysisWarning,
@@ -36,6 +38,7 @@ from cadraw.models import (
     CircleEntity,
     DetectedEntity,
     Dimension,
+    DimensionStatus,
     DrawingAnalysis,
     GeometryEntity,
     LineCandidate,
@@ -61,9 +64,10 @@ from cadraw.normalization import (
 from cadraw.ocr import (
     OcrBackend,
     OcrResult,
-    discover_tesseract_backend,
+    TextReader,
     recognize_dimensions,
 )
+from cadraw.ollama_reader import OllamaTextReader
 from cadraw.page_cleanup import PageCleanupConfig, clean_page
 from cadraw.perspective import (
     PageQuadConfig,
@@ -82,12 +86,14 @@ from cadraw.preprocessing import (
     write_debug_outputs,
 )
 from cadraw.stroke_evidence import ink_between_factory, ink_mask_from_grayscale
+from cadraw.text_filter import TextStrokeConfig, without_text_strokes
 
 type VariantEvaluation = tuple[
     PreprocessingResult,
     tuple[LineCandidate, ...],
     CandidateScore,
 ]
+_VISION_MODEL_ENV = "CADRAW_VISION_MODEL"
 _VARIANT_NEAR_TIE = 0.05
 _HIGH_NOISE_RATIO = 0.80
 type AnalysisFrame = tuple[
@@ -114,6 +120,8 @@ class PipelineConfig:
     preprocessing_debug_directory: Path | None = None
     page_quad: PageQuadConfig = field(default_factory=PageQuadConfig)
     page_cleanup: PageCleanupConfig = field(default_factory=PageCleanupConfig)
+    text_strokes: TextStrokeConfig = field(default_factory=TextStrokeConfig)
+    ocr_cross_check_model: str | None = None
 
     @classmethod
     def from_detection_defaults(cls) -> "PipelineConfig":
@@ -145,6 +153,23 @@ class PipelineConfig:
             ),
             perspective_correction=True,
             preprocessing=PreprocessingConfig(enabled=True),
+        )
+
+    @classmethod
+    def for_workbench(cls) -> "PipelineConfig":
+        """Return the detection defaults plus the local OCR the app ships.
+
+        OCR stays off in `from_detection_defaults` so that analyses built for
+        tests and scripts never depend on a model download. The workbench reads
+        labels with the bundled PP-OCR reader, which also lets it drop the pen
+        strokes of those labels before geometry is built. Setting
+        `CADRAW_VISION_MODEL` to a local Ollama vision model (for example
+        `qwen3-vl:4b-instruct`) adds a second reading of every value.
+        """
+        return replace(
+            cls.from_detection_defaults(),
+            ocr_enabled=True,
+            ocr_cross_check_model=os.environ.get(_VISION_MODEL_ENV) or None,
         )
 
 
@@ -429,9 +454,18 @@ def _restore_text_candidate(
     min_y = min(point.y for point in corners)
     max_x = max(point.x for point in corners)
     max_y = max(point.y for point in corners)
+    quad = candidate.quad
     return replace(
         candidate,
         bounds=(min_x, min_y, max_x - min_x, max_y - min_y),
+        quad=None
+        if quad is None
+        else (
+            _restore_point(quad[0], offset, inverse_matrix),
+            _restore_point(quad[1], offset, inverse_matrix),
+            _restore_point(quad[2], offset, inverse_matrix),
+            _restore_point(quad[3], offset, inverse_matrix),
+        ),
     )
 
 
@@ -612,23 +646,26 @@ def _select_preprocessing_stream(
     )
 
 
-def _ink_between_for(
-    stream: DetectionStream,
-    config: PipelineConfig,
-) -> InkBetween | None:
-    """Return the gap-bridging predicate for the selected raster, if wanted.
+def _ink_mask_for(stream: DetectionStream) -> GrayImage:
+    """Return the binary ink the selected raster's detector saw.
 
     The selected variant's own binary mask is the natural evidence; when no
-    variant was trusted, the raw frame is binarized once so the merge still
-    sees the same ink the detector saw.
+    variant was trusted, the raw frame is binarized once so later tests still
+    see the same ink the detector saw.
     """
-    if config.normalization.evidence_gap_distance <= 0.0:
-        return None
     selection, _, detection_image = stream
     mask = None if selection is None else selection.ink_mask
-    if mask is None:
-        mask = ink_mask_from_grayscale(detection_image)
-    return ink_between_factory(mask)
+    return ink_mask_from_grayscale(detection_image) if mask is None else mask
+
+
+def _ink_between_for(
+    ink_mask: GrayImage,
+    config: PipelineConfig,
+) -> InkBetween | None:
+    """Return the gap-bridging predicate for the selected raster, if wanted."""
+    if config.normalization.evidence_gap_distance <= 0.0:
+        return None
+    return ink_between_factory(ink_mask)
 
 
 def _add_analysis_quality_warnings(
@@ -883,11 +920,134 @@ def _suggest_ocr_dimension_targets(
     )
 
 
+def _second_reader_for(
+    config: PipelineConfig,
+    second_reader: TextReader | None,
+) -> TextReader | None:
+    """Return the injected cross-check reader, or the configured local model."""
+    if second_reader is not None:
+        return second_reader
+    model = config.ocr_cross_check_model
+    return None if model is None else OllamaTextReader(model=model)
+
+
+def _read_text(
+    analysis_image: GrayImage,
+    config: PipelineConfig,
+    ocr_backend: OcrBackend | None,
+    second_reader: TextReader | None,
+    warnings: list[AnalysisWarning],
+) -> OcrResult:
+    """Read labels in the analysis frame and report what could not run."""
+    reader = _second_reader_for(config, second_reader)
+    result = recognize_dimensions(
+        analysis_image,
+        ocr_backend if ocr_backend is not None else discover_ocr_backend(),
+        second_reader=reader,
+    )
+    if not result.available:
+        warnings.append(
+            AnalysisWarning(
+                code=WarningCode.OCR_UNAVAILABLE,
+                message="OCR 엔진을 찾지 못해 문자 후보를 만들지 못했습니다.",
+            ),
+        )
+    elif result.second_reader_available is False:
+        warnings.append(
+            AnalysisWarning(
+                code=WarningCode.SECOND_READER_UNAVAILABLE,
+                message=(
+                    "보조 판독 모델에 연결하지 못해 일부 치수를 교차 확인하지 "
+                    "못했습니다."
+                ),
+            ),
+        )
+    return result
+
+
+def _without_lettering(
+    candidates: tuple[LineCandidate, ...],
+    shape_detection: ShapeDetectionEvidence,
+    ocr_result: OcrResult | None,
+    ink_mask: GrayImage,
+    config: TextStrokeConfig,
+) -> tuple[
+    tuple[LineCandidate, ...],
+    ShapeDetectionEvidence,
+    AnalysisWarning | None,
+]:
+    """Drop candidates proved to be the pen strokes of a text label."""
+    if ocr_result is None or not ocr_result.candidates:
+        return candidates, shape_detection, None
+    removal = without_text_strokes(
+        candidates,
+        shape_detection.candidates,
+        ocr_result.candidates,
+        ink_mask,
+        config,
+    )
+    warning = (
+        AnalysisWarning(
+            code=WarningCode.TEXT_STROKES_REMOVED,
+            message=(
+                f"숫자로 읽힌 글자 영역 {removal.region_count}곳 안에만 있는 "
+                f"획 후보 {len(removal.removed_ids)}개를 도형에서 제외했습니다."
+            ),
+        )
+        if removal.removed_ids
+        else None
+    )
+    return (
+        removal.lines,
+        replace(shape_detection, candidates=removal.shapes),
+        warning,
+    )
+
+
+def _uncertain_reading_warnings(
+    dimensions: tuple[Dimension, ...],
+    ocr_result: OcrResult | None,
+) -> tuple[AnalysisWarning, ...]:
+    """Name every OCR value a second reader saw differently, with both readings.
+
+    Showing the second reading matters: on the samples it was the right one
+    for several values the primary got wrong (`590` against `510`), so the
+    reviewer gets a concrete alternative to check rather than only a flag.
+    """
+    sources = () if ocr_result is None else ocr_result.dimension_sources
+    uncertain = tuple(
+        (dimension, source)
+        for dimension, source in zip(dimensions, sources, strict=True)
+        if dimension.status is DimensionStatus.UNCERTAIN
+    )
+    if not uncertain:
+        return ()
+    readings = ", ".join(
+        f"{dimension.raw_text} / {source.alternate_text or '읽지 못함'}"
+        for dimension, source in uncertain
+    )
+    return (
+        AnalysisWarning(
+            code=WarningCode.UNCERTAIN_TEXT,
+            message=(
+                f"두 판독기가 다르게 읽은 치수 {len(uncertain)}개({readings})는 "
+                "원본 사진과 대조해 주세요."
+            ),
+            entity_ids=tuple(
+                entity_id
+                for dimension, _ in uncertain
+                for entity_id in dimension.target_entity_ids
+            ),
+        ),
+    )
+
+
 def analyze_image(
     image_path: Path,
     config: PipelineConfig,
     ocr_backend: OcrBackend | None = None,
     preprocessing_variant: str | None = None,
+    second_reader: TextReader | None = None,
 ) -> DrawingAnalysis:
     """Analyze one image without inventing physical dimensions."""
     source_image = load_grayscale_image(image_path)
@@ -975,19 +1135,34 @@ def analyze_image(
         frame_width,
         frame_height,
     )
-    lines = _without_page_frame_rules(
-        normalize_lines(
-            candidates,
-            normalization,
-            _ink_between_for(detection_stream, config),
-        ),
-        analysis_image,
-        detection_config,
-        normalization.endpoint_snap_distance,
+    ink_mask = _ink_mask_for(detection_stream)
+    ocr_result = (
+        _read_text(analysis_image, config, ocr_backend, second_reader, warnings)
+        if config.ocr_enabled
+        else None
     )
     shape_detection = detect_shape_candidates_with_evidence(
         detection_image,
         detection_config,
+    )
+    candidates, shape_detection, lettering_warning = _without_lettering(
+        candidates,
+        shape_detection,
+        ocr_result,
+        ink_mask,
+        config.text_strokes,
+    )
+    if lettering_warning is not None:
+        warnings.append(lettering_warning)
+    lines = _without_page_frame_rules(
+        normalize_lines(
+            candidates,
+            normalization,
+            _ink_between_for(ink_mask, config),
+        ),
+        analysis_image,
+        detection_config,
+        normalization.endpoint_snap_distance,
     )
     lines = without_table_edge_lines(
         lines,
@@ -1055,19 +1230,6 @@ def analyze_image(
         inverse_matrix,
     )
     entities = (*restored_lines, *restored_shapes)
-    ocr_result = None
-    if config.ocr_enabled:
-        backend = (
-            ocr_backend if ocr_backend is not None else discover_tesseract_backend()
-        )
-        ocr_result = recognize_dimensions(analysis_image, backend)
-        if not ocr_result.available:
-            warnings.append(
-                AnalysisWarning(
-                    code=WarningCode.OCR_UNAVAILABLE,
-                    message="OCR 엔진을 찾지 못해 문자 후보를 만들지 못했습니다.",
-                ),
-            )
     if ocr_result is None or not ocr_result.dimensions:
         warnings.append(
             AnalysisWarning(
@@ -1099,6 +1261,7 @@ def analyze_image(
         offset,
         inverse_matrix,
     )
+    warnings.extend(_uncertain_reading_warnings(suggested_dimensions, ocr_result))
     return DrawingAnalysis(
         unit="mm",
         image_size=(image_shape[1], image_shape[0]),

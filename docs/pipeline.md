@@ -134,8 +134,16 @@ polyline 조립은 proximity connection을 다시 사용하지 않습니다. bra
 `PERSPECTIVE_REJECTED`를 남기고 원본 stream을 사용합니다. 페이지 경계를
 찾지 못한 경우에는 `PERSPECTIVE_NOT_FOUND`와 `DOCUMENT_NOT_FOUND`를 남깁니다.
 
-`--ocr`는 설치된 Tesseract TSV 결과를 `TextCandidate`로 보존하고, 기존
-`parse_dimension_text`를 거친 값만 `NEEDS_REVIEW` 치수로 추가합니다.
+`--ocr`(앱에서는 항상)는 로컬 RapidOCR PP-OCRv6 판독 결과를 `TextCandidate`로
+보존하고(onnxruntime이 없으면 Tesseract), 기존 `parse_dimension_text`를 거친
+값만 `NEEDS_REVIEW` 치수로 추가합니다. 소수점 아래 세 자리 이상(가격·날짜·천
+단위 구분)과 기호 없는 한 자리 숫자는 제안하지 않습니다. OCR은 분석 프레임이
+정해진 직후, 선 정규화 전에 실행됩니다. `text_filter.without_text_strokes`가
+숫자 두 개 이상으로 읽힌 상자 안에 후보와 그 밑의 잉크 성분이 모두 들어 있는
+선·다각형·호 후보를 제거하고 `TEXT_STROKES_REMOVED`를 남깁니다. 원은 구멍일
+수 있으므로 남깁니다. `CADRAW_VISION_MODEL`이 설정되면 각 값의 크롭을 로컬
+Ollama 비전 모델이 다시 읽고, 다르게 읽힌 값은 `UNCERTAIN`과
+`UNCERTAIN_TEXT` 경고가 됩니다(ADR-0018).
 `association.suggest_dimension_target`이 텍스트 상자와 같은 물리적 종류의
 geometry 중 유일하게 가까운 후보가 있을 때만 `target_entity_ids`를 채우며,
 `status`는 `NEEDS_REVIEW`로 유지하고 `source`만 `ocr_suggested`로 남깁니다.
