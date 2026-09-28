@@ -14,15 +14,18 @@ uv run python scripts/render_sample_report.py
 
 ## 요약
 
-| 샘플 | 선택 variant | 상태 | 추출 | 레퍼런스 |
-| --- | --- | --- | --- | --- |
-| 1 | `blur_otsu` | `READY` | line 5 | LWPOLYLINE 1 |
-| 2 | `blur_otsu` | `READY` | arc 1, line 17, polyline 6 | LWPOLYLINE 3 |
-| 3 | `blur_otsu` | `READY` | line 25, polyline 2 | LWPOLYLINE 10 |
-| 4 | `clahe_adaptive` | `READY` | circle 1, polyline 2 | ARC 2, CIRCLE 2, LINE 2, LWPOLYLINE 1 |
-| 5 | `shadow_removed_adaptive` | `READY` | arc 1, circle 2, line 19, polyline 12 | ARC 24, CIRCLE 7, LINE 24, LWPOLYLINE 1 |
-| 6 | `clahe_adaptive` | `READY` | line 24, polyline 4 | LWPOLYLINE 10 |
-| 7 | `shadow_removed_adaptive` | `READY` | arc 1, line 34, polyline 9 | ARC 8, CIRCLE 13, LINE 8, LWPOLYLINE 4 |
+OCR 제안은 로컬 PP-OCR이 읽고 가까운 geometry 하나에 미리 연결한
+검토 전 값이며, 확정된 치수가 아닙니다.
+
+| 샘플 | 선택 variant | 상태 | 추출 | OCR 제안 | 레퍼런스 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `blur_otsu` | `READY` | line 5 | 4 | LWPOLYLINE 1 |
+| 2 | `blur_otsu` | `READY` | arc 1, line 17, polyline 5 | 12 | LWPOLYLINE 3 |
+| 3 | `blur_otsu` | `READY` | line 25, polyline 2 | 4 | LWPOLYLINE 10 |
+| 4 | `clahe_adaptive` | `READY` | circle 1, polyline 2 | 0 | ARC 2, CIRCLE 2, LINE 2, LWPOLYLINE 1 |
+| 5 | `shadow_removed_adaptive` | `READY` | arc 1, circle 2, line 19, polyline 11 | 1 | ARC 24, CIRCLE 7, LINE 24, LWPOLYLINE 1 |
+| 6 | `clahe_adaptive` | `READY` | line 20, polyline 4 | 12 | LWPOLYLINE 10 |
+| 7 | `shadow_removed_adaptive` | `READY` | arc 1, line 12, polyline 8 | 16 | ARC 8, CIRCLE 13, LINE 8, LWPOLYLINE 4 |
 
 ## 샘플 1
 
@@ -31,8 +34,9 @@ uv run python scripts/render_sample_report.py
 - 선택 variant: `blur_otsu`
 - 상태: `READY`
 - 추출: line 5
+- OCR 제안: `100`, `1050`, `20`, `50`
 - 레퍼런스: LWPOLYLINE 1
-- 경고: `PERSPECTIVE_REJECTED`, `UNKNOWN_DIMENSION`
+- 경고: `PERSPECTIVE_REJECTED`
 
 ## 샘플 2
 
@@ -40,9 +44,10 @@ uv run python scripts/render_sample_report.py
 
 - 선택 variant: `blur_otsu`
 - 상태: `READY`
-- 추출: arc 1, line 17, polyline 6
+- 추출: arc 1, line 17, polyline 5
+- OCR 제안: `200`, `160`, `30`, `601`, `30`, `25`, `21`, `695`, `10`, `10`, `30`, `50`
 - 레퍼런스: LWPOLYLINE 3
-- 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `UNKNOWN_DIMENSION`
+- 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `TEXT_STROKES_REMOVED`
 
 ## 샘플 3
 
@@ -51,8 +56,9 @@ uv run python scripts/render_sample_report.py
 - 선택 variant: `blur_otsu`
 - 상태: `READY`
 - 추출: line 25, polyline 2
+- OCR 제안: `200`, `80`, `200`, `140`
 - 레퍼런스: LWPOLYLINE 10
-- 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `UNKNOWN_DIMENSION`
+- 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `TEXT_STROKES_REMOVED`
 
 ## 샘플 4
 
@@ -61,8 +67,9 @@ uv run python scripts/render_sample_report.py
 - 선택 variant: `clahe_adaptive`
 - 상태: `READY`
 - 추출: circle 1, polyline 2
+- OCR 제안: 없음
 - 레퍼런스: ARC 2, CIRCLE 2, LINE 2, LWPOLYLINE 1
-- 경고: `PRINTED_RULING_REMOVED`, `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `UNKNOWN_DIMENSION`
+- 경고: `PRINTED_RULING_REMOVED`, `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`
 
 ## 샘플 5
 
@@ -70,9 +77,10 @@ uv run python scripts/render_sample_report.py
 
 - 선택 variant: `shadow_removed_adaptive`
 - 상태: `READY`
-- 추출: arc 1, circle 2, line 19, polyline 12
+- 추출: arc 1, circle 2, line 19, polyline 11
+- OCR 제안: `200`
 - 레퍼런스: ARC 24, CIRCLE 7, LINE 24, LWPOLYLINE 1
-- 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `UNKNOWN_DIMENSION`
+- 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `TEXT_STROKES_REMOVED`
 
 ## 샘플 6
 
@@ -80,9 +88,10 @@ uv run python scripts/render_sample_report.py
 
 - 선택 variant: `clahe_adaptive`
 - 상태: `READY`
-- 추출: line 24, polyline 4
+- 추출: line 20, polyline 4
+- OCR 제안: `400`, `100`, `300`, `300`, `300`, `100`, `100`, `100`, `300`, `300`, `200`, `300`
 - 레퍼런스: LWPOLYLINE 10
-- 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `UNKNOWN_DIMENSION`
+- 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `TEXT_STROKES_REMOVED`
 
 ## 샘플 7
 
@@ -90,6 +99,7 @@ uv run python scripts/render_sample_report.py
 
 - 선택 variant: `shadow_removed_adaptive`
 - 상태: `READY`
-- 추출: arc 1, line 34, polyline 9
+- 추출: arc 1, line 12, polyline 8
+- OCR 제안: `500`, `180`, `180`, `305`, `20`, `510`, `70`, `180`, `930`, `199`, `60`, `149`, `200`, `200`, `0149`, `130`
 - 레퍼런스: ARC 8, CIRCLE 13, LINE 8, LWPOLYLINE 4
-- 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `UNKNOWN_DIMENSION`
+- 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `TEXT_STROKES_REMOVED`

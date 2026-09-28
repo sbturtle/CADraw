@@ -32,7 +32,11 @@ CADraw는 범용 CAD 편집기가 아닙니다. 사진에서 선 후보를 찾�
 - 치수 행에 선 방향과 로컬 길이를 사람이 읽을 수 있는 형태로 표시
 - 선택한 선 조각 병합, 잘못 인식한 선 삭제, 원본 이미지 위 선 다시 그리기
 - 선 편집·치수 확정에 대한 실행 취소/다시 실행(`Ctrl+Z`/`Ctrl+Y`)
+- 로컬 손글씨 OCR(RapidOCR PP-OCRv6, CPU, API 키 없음)로 치수 값을 읽어 검토 전 제안으로 표시
 - OCR 인식값과 가까운 geometry가 유일하면 확인 대상만 미리 채우는 제안(자동 확정 아님)
+- 숫자 두 개 이상으로 읽힌 글자 영역 안에만 있는 획을 도형 후보에서 제외(외곽선에 닿은 획과 구멍은 유지)
+- `400R`, `790Ø`처럼 기호를 뒤에 쓴 반지름·지름 표기 인식
+- 선택: 로컬 Ollama 비전 모델(`qwen3-vl:4b-instruct`)로 같은 크롭을 다시 읽어 다르게 읽힌 값을 `불확실`로 표시
 - 원/호 전용 지름·반지름 확인 행과 확정값-실제 크기 불일치 경고
 - 닫힌 사각형/원 외에 모따기·필렛 등 부분 호(open arc) 검출
 - T·L·노치 등 모서리 개수를 가정하지 않는 일반 프로파일 폴리곤 검출
@@ -52,8 +56,9 @@ CADraw는 범용 CAD 편집기가 아닙니다. 사진에서 선 후보를 찾�
 사진상의 비율은 입력 치수 대신 사용하지 않습니다. 연결 geometry에 확정 치수가 있으면
 각 segment의 명시 길이와 각도를 우선해 anchor부터 CAD mm 좌표를 재구성합니다.
 치수가 없거나 대각선 각도가 없으면 원본 방향을 preview용으로만 사용하고
-`UNRESOLVED` 또는 `UNKNOWN_ANGLE` 상태를 유지합니다. OCR/AI가 나중에 추가되더라도
-결과는 `needs_review`로 들어가며 사용자가 확인하기 전에는 확정 constraint가 되지 않습니다.
+`UNRESOLVED` 또는 `UNKNOWN_ANGLE` 상태를 유지합니다. OCR과 로컬 비전 모델의
+결과는 `needs_review` 또는 `uncertain`으로 들어가며, 사용자가 확인하기 전에는
+확정 constraint가 되지 않습니다.
 
 ## 시작하기
 
@@ -123,13 +128,6 @@ uv run python scripts/run_poc.py `
 도형은 원본 사진 좌표로 복원되어 기존 DXF/preview 경로에 전달됩니다.
 
 페이지 경계를 찾을 수 있는 사진은 실제 사변형 투시 보정도 적용할 수 있습니다.
-OCR은 설치된 Tesseract를 사용할 때만 활성화되며, 엔진이 없으면 값을 추측하지
-않고 `OCR_UNAVAILABLE` 경고를 남깁니다. Tesseract가 PATH에 없다면
-`CADRAW_TESSERACT`에 실행 파일 경로를 지정할 수 있습니다.
-
-```powershell
-$env:CADRAW_TESSERACT = "C:\Program Files\Tesseract-OCR\tesseract.exe"
-```
 
 ```powershell
 uv run python scripts/run_poc.py `
@@ -140,6 +138,41 @@ uv run python scripts/run_poc.py `
 
 외곽 형상 안에 포함된 작은 닫힌 형상은 `HOLE` 의미로 보수적으로 분류합니다.
 미리보기에서는 파란색으로, DXF에서는 `HOLE` 레이어로 구분됩니다.
+
+## 로컬 OCR
+
+앱은 RapidOCR의 PP-OCRv6 모델로 손글씨 치수를 읽습니다. CPU에서 돌고 API 키나
+GPU가 필요 없으며, 모델(약 31MB)은 첫 분석 때 한 번 내려받습니다. 읽은 값은
+모두 `검토 필요` 상태의 제안이고, 숫자 두 개 이상으로 읽힌 글자 영역 안에만 있는
+획은 도형 후보에서 빠집니다(`TEXT_STROKES_REMOVED`). 모델을 받을 수 없으면
+값을 추측하지 않고 `OCR_UNAVAILABLE` 경고를 남깁니다. onnxruntime이 없는
+환경에서는 설치된 Tesseract로 돌아가며, PATH에 없으면 `CADRAW_TESSERACT`에
+실행 파일 경로를 지정합니다.
+
+```powershell
+$env:CADRAW_TESSERACT = "C:\Program Files\Tesseract-OCR\tesseract.exe"
+```
+
+선택으로, 로컬 Ollama 비전 모델이 같은 글자 크롭을 한 번 더 읽게 할 수
+있습니다. 두 판독이 다르면 그 값은 `불확실`로 표시되고 `UNCERTAIN_TEXT` 경고가
+남고, 경고에 두 판독이 함께 적힙니다. 샘플에서 `qwen3-vl:4b-instruct`(VRAM
+3.5GB)는 1차 오독 10개 중 8개를 불확실로 표시했고, `qwen3-vl:2b-instruct`(2.0GB)는
+6개를 표시했습니다. 값마다 GPU 추론을 한 번씩 하므로 사진 한 장에 7~13초가 더
+걸리며, 그래서 기본으로는 꺼져 있습니다.
+
+```powershell
+ollama pull qwen3-vl:4b-instruct
+$env:CADRAW_VISION_MODEL = "qwen3-vl:4b-instruct"
+uv run cadraw
+```
+
+태그 없는 `qwen3-vl:4b`는 추론(thinking) 빌드라서 빈 답을 냅니다. `-instruct`
+태그를 사용합니다. 판독 정확도와 모델 비교는 `docs/experiments/local-ocr.md`에
+있고, 다음 명령으로 재현할 수 있습니다.
+
+```powershell
+uv run python scripts/run_ocr_benchmark.py
+```
 
 ## 샘플 추출 결과 검토
 
@@ -179,6 +212,9 @@ CADraw/
 │  ├─ detection.py
 │  ├─ perspective.py
 │  ├─ ocr.py
+│  ├─ local_ocr.py
+│  ├─ ollama_reader.py
+│  ├─ text_filter.py
 │  ├─ normalization.py
 │  ├─ dimensions.py
 │  ├─ calculator.py
@@ -196,8 +232,13 @@ CADraw/
   비워 두고 값 확정은 항상 사람이 합니다.
 - 페이지 경계가 사진에 보이지 않으면 실제 원근 보정을 적용할 수 없으며,
   `PERSPECTIVE_NOT_FOUND` 경고와 함께 원본 좌표로 안전하게 처리합니다.
-- Tesseract가 설치되지 않은 환경에서는 OCR을 실행하지 않고
-  `OCR_UNAVAILABLE` 경고를 남깁니다.
+- 로컬 OCR은 손글씨 치수 75개 중 61개(81%)를 정확히 읽습니다. 손글씨 `Ø`는
+  숫자로 읽히기 쉬워(`790Ø` → `7909`) 교차 판독을 켜지 않으면 그럴듯한 길이
+  제안으로 남습니다. 저해상도 스캔에서는 정확도가 65~71%로 떨어집니다.
+- PP-OCRv6은 한국어를 읽지 않으므로 숫자가 하나 이하인 한글 메모(`2개`,
+  `마구리`)의 획은 도형 후보에서 빠지지 않습니다.
+- OCR은 분석마다 1~2초(CPU 경합이 있으면 4~6초)를 더 쓰며 UI 스레드에서
+  실행됩니다.
 - 부분 호 검출은 면적 기준을 만족하는 닫힌 도형이 되지 못한 윤곽에만
   최소제곱 원 피팅을 시도하며, 자재 가장자리에 걸쳐 잘린 반원처럼 여백
   규칙에 걸리는 경우는 아직 제외됩니다.
@@ -210,8 +251,8 @@ CADraw/
   증명되지 않은 머리글·푸터 괘선이 고립 선으로 남을 수 있습니다. 이 경우
   도면 영역을 지정하는 것이 의도된 해결책입니다.
 - 손글씨 숫자의 획이 도면 모서리에 닿으면 구조에 연결된 선으로 남습니다.
-  기하만으로는 구분할 수 없어 사용자가 삭제해야 합니다. 글자 획이 서로 닿아
-  큰 성분을 이루면 길이 기준도 통과합니다.
+  잉크가 외곽선과 이어져 있어 글자 영역 증명으로도 구분할 수 없으므로 사용자가
+  삭제해야 합니다.
 - 닫힌 다각형의 변을 다시 그린 선은 제거되므로 그 변의 길이를 따로 확정할 행이
   없습니다. 프로파일은 전체 폭·높이 행으로만 확정합니다.
 - 푸터의 회사 로고 블록은 표가 아니라 글리프 묶음이어서 타일링 증명에

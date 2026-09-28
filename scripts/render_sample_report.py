@@ -110,6 +110,7 @@ class SampleRecord:
     reference_counts: dict[str, int]
     warning_codes: tuple[str, ...]
     image_name: str
+    suggested_dimensions: tuple[str, ...] = ()
 
 
 def _read_reference(index: int) -> ReferenceDocumentLike:
@@ -307,11 +308,16 @@ def _compose(left: Image.Image, right: Image.Image) -> Image.Image:
 
 
 def _analysis_config() -> PipelineConfig:
-    """Return the shipped defaults plus closed-shape detection."""
-    config = PipelineConfig.from_detection_defaults()
+    """Return what the workbench ships: detection defaults plus local OCR.
+
+    The optional vision-model cross-check is left out so the report does not
+    change with whatever `CADRAW_VISION_MODEL` happens to be set to.
+    """
+    config = PipelineConfig.for_workbench()
     return replace(
         config,
         detection=replace(config.detection, detect_closed_shapes=True),
+        ocr_cross_check_model=None,
     )
 
 
@@ -336,6 +342,11 @@ def _render_sample(index: int, output: Path) -> SampleRecord:
         reference_counts=_reference_counts(document),
         warning_codes=tuple(warning.code.value for warning in analysis.warnings),
         image_name=image_name,
+        suggested_dimensions=tuple(
+            dimension.raw_text
+            for dimension in analysis.dimensions
+            if dimension.target_entity_ids
+        ),
     )
 
 
@@ -363,8 +374,11 @@ def _markdown(records: tuple[SampleRecord, ...]) -> str:
         "",
         "## 요약",
         "",
-        "| 샘플 | 선택 variant | 상태 | 추출 | 레퍼런스 |",
-        "| --- | --- | --- | --- | --- |",
+        "OCR 제안은 로컬 PP-OCR이 읽고 가까운 geometry 하나에 미리 연결한",
+        "검토 전 값이며, 확정된 치수가 아닙니다.",
+        "",
+        "| 샘플 | 선택 variant | 상태 | 추출 | OCR 제안 | 레퍼런스 |",
+        "| --- | --- | --- | --- | --- | --- |",
     )
     rows = tuple(
         " | ".join(
@@ -373,6 +387,7 @@ def _markdown(records: tuple[SampleRecord, ...]) -> str:
                 f"`{record.selected_variant}`",
                 f"`{record.status}`",
                 _counts_text(record.entity_counts),
+                str(len(record.suggested_dimensions)),
                 f"{_counts_text(record.reference_counts)} |",
             ),
         )
@@ -391,6 +406,11 @@ def _markdown(records: tuple[SampleRecord, ...]) -> str:
                 f"- 선택 variant: `{record.selected_variant}`",
                 f"- 상태: `{record.status}`",
                 f"- 추출: {_counts_text(record.entity_counts)}",
+                "- OCR 제안: "
+                + (
+                    ", ".join(f"`{text}`" for text in record.suggested_dimensions)
+                    or "없음"
+                ),
                 f"- 레퍼런스: {_counts_text(record.reference_counts)}",
                 f"- 경고: {warnings}",
             ),

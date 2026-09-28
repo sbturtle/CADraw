@@ -109,6 +109,8 @@ class WarningCode(StrEnum):
     GRAPH_PAPER_DETECTED = "GRAPH_PAPER_DETECTED"
     PERSPECTIVE_REJECTED = "PERSPECTIVE_REJECTED"
     PRINTED_RULING_REMOVED = "PRINTED_RULING_REMOVED"
+    TEXT_STROKES_REMOVED = "TEXT_STROKES_REMOVED"
+    SECOND_READER_UNAVAILABLE = "SECOND_READER_UNAVAILABLE"
 
 
 class AnalysisStatus(StrEnum):
@@ -340,12 +342,21 @@ class AnalysisWarning:
 
 @dataclass(frozen=True, slots=True)
 class TextCandidate:
-    """One OCR text box before dimension association or confirmation."""
+    """One OCR text box before dimension association or confirmation.
+
+    `bounds` is the axis-aligned box every consumer can use. A detector that
+    finds slanted handwriting also reports its tighter `quad`, clockwise from
+    the top-left corner, which is what a stroke must fall inside before it can
+    be called lettering. `alternate_text` is a second, independent reading of
+    the same box when one was requested; it never replaces `text`.
+    """
 
     text: str
     bounds: tuple[float, float, float, float]
     confidence: float
     source: str = "ocr"
+    quad: tuple[Point, Point, Point, Point] | None = None
+    alternate_text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
