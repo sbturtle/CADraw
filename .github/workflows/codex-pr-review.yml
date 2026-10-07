@@ -70,61 +70,15 @@ jobs:
       BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
       HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
       PR_NUMBER: ${{ needs.resolve.outputs.number }}
-      CODEX_MODEL: gpt-6-luna
-      CODEX_EFFORT: max
+      # 리뷰 로직·프롬프트·스키마·모델 설정은 러너 서버에서 관리합니다 (원본: sbturtle/codex-review-kit).
+      CODEX_KIT: /opt/codex-review
 
     steps:
       - name: Read previous state and create this run's comment
         id: start
         uses: actions/github-script@v9
         with:
-          script: |
-            const { owner, repo } = context.repo;
-            const issue_number = Number(process.env.PR_NUMBER);
-            const bot = 'github-actions[bot]';
-            const prefix = '<!-- codex-pr-review:v3 ';
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner, repo, issue_number, per_page: 100
-            });
-            const own = comments.filter(c => c.user?.login === bot && c.body?.startsWith(prefix));
-
-            // 취소된 실행은 finalize step이 실행되지 않을 수도 있습니다.
-            for (const comment of own.filter(c => c.body.startsWith(prefix + 'status=running '))) {
-              let body = comment.body.replace('status=running', 'status=cancelled');
-              body = body.replace('🟡 **검토 중입니다.**',
-                '⚪ **새로운 실행으로 취소되었습니다.**');
-              await github.rest.issues.updateComment({
-                owner, repo, comment_id: comment.id, body
-              });
-            }
-
-            let previous = {version: 3, next_id: 1, open_blockers: []};
-            const completed = own.filter(c => c.body.startsWith(prefix + 'status=completed '));
-            if (completed.length) {
-              const latest = completed[completed.length - 1];
-              const found = latest.body.match(/<!-- codex-state:v3:([A-Za-z0-9+/=]+) -->/);
-              if (!found) throw new Error('최근 완료 리뷰에 상태 메타데이터가 없습니다. 수동 확인 필요');
-              previous = JSON.parse(Buffer.from(found[1], 'base64').toString('utf8'));
-              if (previous.version !== 3 || !Array.isArray(previous.open_blockers) ||
-                  !Number.isInteger(previous.next_id) || previous.next_id < 1 ||
-                  previous.open_blockers.length > 100) {
-                throw new Error('이전 리뷰 상태가 손상되었거나 추적 최대 개수를 넘었습니다.');
-              }
-            }
-            core.setOutput('prior_b64', Buffer.from(JSON.stringify(previous)).toString('base64'));
-
-            const head = process.env.HEAD_SHA;
-            const shortHead = head.slice(0, 7);
-            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
-            const body = `<!-- codex-pr-review:v3 status=running run=${context.runId} attempt=${process.env.GITHUB_RUN_ATTEMPT} -->\n` +
-              `## 🤖 AI Code Review · ${shortHead}\n\n` +
-              `🟡 **검토 중입니다.**\n\n` +
-              `- HEAD: [\`${shortHead}\`](https://github.com/${owner}/${repo}/commit/${head})\n` +
-              `- 이전 미해결 Blocking: ${previous.open_blockers.length}건\n` +
-              `- [실행 로그](${runUrl})\n\n` +
-              `변경 범위와 연결된 주변 코드를 탐색하고 기존 Blocking을 재검증합니다.`;
-            const created = await github.rest.issues.createComment({owner, repo, issue_number, body});
-            core.setOutput('comment_id', String(created.data.id));
+          script: return await require(`${process.env.CODEX_KIT}/lib/start.js`)({github, context, core});
 
       - name: Checkout PR HEAD
         uses: actions/checkout@v7
@@ -133,74 +87,18 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify tools and Git history
-        shell: bash
-        run: |
-          set -euo pipefail
-          git --version
-          codex --version
-          codex login status
-          git cat-file -e "${BASE_SHA}^{commit}" || { echo 'BASE SHA 없음'; exit 1; }
-          git cat-file -e "${HEAD_SHA}^{commit}" || { echo 'HEAD SHA 없음'; exit 1; }
-
-      - name: Prepare worktree and trusted inputs
+      - name: Verify tools and prepare inputs
         id: prepare
         shell: bash
         env:
           PRIOR_B64: ${{ steps.start.outputs.prior_b64 }}
-        run: |
-          set -euo pipefail
-          root="$RUNNER_TEMP/codex-review-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          mkdir -p "$root"
-          tree="$root/worktree"
-          # 먼저 경로를 기록해 두어 준비 중 실패해도 cleanup할 수 있게 합니다.
-          echo "REVIEW_ROOT=$root" >> "$GITHUB_ENV"
-          echo "REVIEW_WORKTREE=$tree" >> "$GITHUB_ENV"
-          git worktree add --detach "$tree" "$HEAD_SHA" || { echo 'worktree 생성 실패'; exit 1; }
-
-          # PR HEAD에서 실행 지침을 읽지 않고, BASE commit의 버전을 가져옵니다.
-          prompt_file="$root/prompt.md"
-          schema_file="$root/schema.json"
-          git show "$BASE_SHA:.github/prompts/codex-pr-review.md" > "$prompt_file" \
-            || { echo 'BASE prompt 없음: 먼저 default/base branch에 설정을 병합하세요.'; exit 1; }
-          git show "$BASE_SHA:.github/codex/review-output.schema.json" > "$schema_file" \
-            || { echo 'BASE schema 없음'; exit 1; }
-
-          prior_file="$root/prior.json"
-          printf '%s' "$PRIOR_B64" | base64 -d > "$prior_file"
-          open="$(jq -c '.open_blockers // []' "$prior_file")"
-
-          # 자리표시자 치환. 값은 jq 변수로 넘겨 문자 그대로 들어갑니다.
-          jq -Rrs --arg base "$BASE_SHA" --arg head "$HEAD_SHA" --arg open "$open" '
-            gsub("\\{\\{BASE_SHA\\}\\}"; $base)
-            | gsub("\\{\\{HEAD_SHA\\}\\}"; $head)
-            | gsub("\\{\\{PREVIOUS_OPEN_BLOCKERS_JSON\\}\\}"; $open)
-          ' "$prompt_file" > "$prompt_file.tmp"
-          mv "$prompt_file.tmp" "$prompt_file"
-
-          echo "REVIEW_PROMPT=$prompt_file" >> "$GITHUB_ENV"
-          echo "REVIEW_SCHEMA=$schema_file" >> "$GITHUB_ENV"
-          echo "REVIEW_PRIOR=$prior_file" >> "$GITHUB_ENV"
-          echo "REVIEW_JSON=$root/result.json" >> "$GITHUB_ENV"
+        run: 'bash "$CODEX_KIT/bin/codex-review.sh" prepare'
 
       - name: Codex full-repository review
         id: codex
         continue-on-error: true
         shell: bash
-        run: |
-          set -euo pipefail
-          unset GITHUB_TOKEN GH_TOKEN || true
-          echo "Codex model: $CODEX_MODEL (reasoning: $CODEX_EFFORT)"
-          codex exec \
-            -C "$REVIEW_WORKTREE" \
-            -m "$CODEX_MODEL" \
-            -c "model_reasoning_effort=$CODEX_EFFORT" \
-            --sandbox read-only \
-            --ephemeral \
-            --output-schema "$REVIEW_SCHEMA" \
-            --output-last-message "$REVIEW_JSON" \
-            - < "$REVIEW_PROMPT"
-          [[ -s "$REVIEW_JSON" ]] || { echo 'Codex JSON 파일 없음 또는 비어있음'; exit 1; }
+        run: 'bash "$CODEX_KIT/bin/codex-review.sh" review'
 
       - name: Update only this run's comment and persist Blocking state
         if: ${{ always() && steps.start.outputs.comment_id != '' }}
@@ -209,144 +107,13 @@ jobs:
           COMMENT_ID: ${{ steps.start.outputs.comment_id }}
           CODEX_OUTCOME: ${{ steps.codex.outcome }}
         with:
-          script: |
-            const fs = require('fs');
-            const {owner, repo} = context.repo;
-            const comment_id = Number(process.env.COMMENT_ID);
-            const head = process.env.HEAD_SHA;
-            const shortHead = head.slice(0, 7);
-            const logUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
-            const prefix = (status) => `<!-- codex-pr-review:v3 status=${status} run=${context.runId} attempt=${process.env.GITHUB_RUN_ATTEMPT} -->`;
-            const update = (body) => github.rest.issues.updateComment({owner, repo, comment_id, body});
-            const info = `- 대상 HEAD: \`${shortHead}\`\n- [실행 로그](${logUrl})`;
-            try {
-              // 취소 요청 또는 새 Push 이후 오래된 실행이라면 완료로 기록하지 않습니다.
-              const pr = await github.rest.pulls.get({
-                owner, repo, pull_number: Number(process.env.PR_NUMBER)
-              });
-              if (pr.data.head.sha !== head) {
-                await update(`${prefix('cancelled')}\n## 🤖 AI Code Review · ${shortHead}\n\n⚪ **최신 Push로 취소되었습니다.**\n\n${info}`);
-                return;
-              }
-              if (process.env.CODEX_OUTCOME !== 'success' || !process.env.REVIEW_JSON ||
-                  !fs.existsSync(process.env.REVIEW_JSON) || !process.env.REVIEW_PRIOR) {
-                throw new Error('Codex 또는 선행 작업 실패');
-              }
-              const result = JSON.parse(fs.readFileSync(process.env.REVIEW_JSON, 'utf8'));
-              const prior = JSON.parse(fs.readFileSync(process.env.REVIEW_PRIOR, 'utf8'));
-              if (!Array.isArray(result.previous_blockers) ||
-                  !Array.isArray(result.new_blockers) ||
-                  !Array.isArray(result.other_findings) ||
-                  !Array.isArray(result.inspected_paths) ||
-                  typeof result.summary !== 'string') {
-                throw new Error('결과 JSON 필수 필드 불일치');
-              }
-              const expected = new Map(prior.open_blockers.map(x => [x.id, x]));
-              const seen = new Set();
-              const validStates = new Set(['RESOLVED','STILL_PRESENT','CHANGED','UNVERIFIED']);
-              for (const item of result.previous_blockers) {
-                if (!expected.has(item.id) || seen.has(item.id) || !validStates.has(item.status)) {
-                  throw new Error(`이전 ID 누락/중복/알 수 없는 상태: ${item.id}`);
-                }
-                if (typeof item.evidence !== 'string' || item.evidence.trim().length < 15 ||
-                    typeof item.explanation !== 'string' || !item.explanation.trim()) {
-                  throw new Error(`기존 Blocking 근거 미흡: ${item.id}`);
-                }
-                seen.add(item.id);
-              }
-              if (seen.size !== expected.size) {
-                throw new Error('기존 Blocking 중 재검증되지 않은 ID가 있습니다.');
-              }
-              if (result.new_blockers.length > 50) {
-                throw new Error('Blocking 결과가 너무 많습니다. 수동 검토 필요.');
-              }
-              const active = [];
-              const render = [];
-              const trim = x => String(x ?? '').replace(/\r/g, '').trim();
-              const location = x => `${trim(x.file || x.current_file || '위치 미확인')}${Number.isInteger(x.line ?? x.current_line) ? ':' + (x.line ?? x.current_line) : ''}`;
-              for (const item of result.previous_blockers) {
-                const old = expected.get(item.id);
-                const file = trim(item.current_file) || old.file;
-                const line = Number.isInteger(item.current_line) ? item.current_line : old.line;
-                render.push(`- **${item.id} · ${item.status}** — ${old.title}\n  - 근거: ${trim(item.evidence)}\n  - 판단: ${trim(item.explanation)}`);
-                if (item.status !== 'RESOLVED') {
-                  active.push({ id: old.id, title: old.title, file, line,
-                    evidence: trim(item.evidence).slice(0, 4000),
-                    scenario: old.scenario, impact: old.impact, recommendation: old.recommendation });
-                }
-              }
-              let next = prior.next_id;
-              const fresh = [];
-              for (const item of result.new_blockers) {
-                for (const field of ['title','file','evidence','scenario','impact','recommendation']) {
-                  if (typeof item[field] !== 'string' || !item[field].trim()) {
-                    throw new Error(`새 Blocking 필드 누락: ${field}`);
-                  }
-                }
-                const id = `B-${String(next++).padStart(4, '0')}`;
-                const issue = {id, title: trim(item.title), file: trim(item.file),
-                  line: Number.isInteger(item.line) ? item.line : null,
-                  evidence: trim(item.evidence).slice(0, 4000),
-                  scenario: trim(item.scenario).slice(0, 4000),
-                  impact: trim(item.impact).slice(0, 4000),
-                  recommendation: trim(item.recommendation).slice(0, 4000)};
-                fresh.push(issue);
-                active.push(issue);
-              }
-              if (active.length > 100) throw new Error('미해결 Blocking 100건 초과');
-              const state = {version:3, next_id:next, open_blockers:active};
-              const stateB64 = Buffer.from(JSON.stringify(state)).toString('base64');
-              const marker = `<!-- codex-state:v3:${stateB64} -->`;
-              const lines = [
-                `${prefix('completed')}\n${marker}`,
-                `## 🤖 AI Code Review · ${shortHead}`,
-                `✅ **검토 완료**`, info,
-                `- 미해결 Blocking: **${active.length}건** (신규 ${fresh.length}건)`,
-                `### 변경 요약\n${trim(result.summary)}`,
-                `### 확인한 주변 코드\n${result.inspected_paths.map(x => '- ' + trim(x)).join('\n') || '- 없음'}`,
-                `### 이전 Blocking 재검증\n${render.join('\n') || '- 이전 미해결 Blocking 없음'}`,
-                `### 신규 Blocking\n${fresh.map(x => `- **${x.id} · ${x.title}** (${location(x)})\n  - 근거: ${x.evidence}\n  - 재현 상황: ${x.scenario}\n  - 영향: ${x.impact}\n  - 수정: ${x.recommendation}`).join('\n') || '- 신규 Blocking 없음'}`,
-                `### Major / Minor\n${result.other_findings.map(x => `- **[${x.severity}] ${trim(x.title)}** (${location(x)}) — ${trim(x.evidence)} / 영향: ${trim(x.impact)} / 수정: ${trim(x.recommendation)}`).join('\n') || '- 없음'}`,
-                '> `RESOLVED`는 AI가 확인한 코드 근거 기반의 판정이며, 테스트 실행 또는 인간 검증을 대체하지 않습니다.'
-              ];
-              let body = lines.join('\n\n');
-              // 메타데이터는 절대 자르지 않고 사람이 보는 뒷부분만 생략합니다.
-              if (Buffer.byteLength(marker, 'utf8') > 40000) {
-                throw new Error('Blocking 메타데이터 크기 초과; 별도 저장소 필요');
-              }
-              if (Buffer.byteLength(body, 'utf8') > 58000) {
-                while (Buffer.byteLength(body, 'utf8') > 57000) {
-                  const cut = Math.max(lines.length - 2, 7);
-                  if (cut <= 7) break;
-                  lines.splice(cut, 1);
-                  body = lines.join('\n\n');
-                }
-                if (Buffer.byteLength(body, 'utf8') > 58000) throw new Error('코멘트가 너무 큽니다.');
-                body += '\n\n> 일부 상세 출력은 코멘트 크기 제한으로 생략되었습니다.';
-              }
-              await update(body);
-            } catch (error) {
-              await update(`${prefix('failed')}\n## 🤖 AI Code Review · ${shortHead}\n\n❌ **검토 실패 — Blocking 상태는 변경하지 않았습니다.**\n\n${info}\n\n원인: ${String(error.message).slice(0, 500)}`);
-              core.setFailed(String(error));
-            }
+          script: return await require(`${process.env.CODEX_KIT}/lib/finish.js`)({github, context, core});
 
       - name: Cleanup worktree
         if: ${{ always() }}
         continue-on-error: true
         shell: bash
-        run: |
-          if [[ -n "${REVIEW_WORKTREE:-}" && -d "$REVIEW_WORKTREE" ]]; then
-            git worktree remove --force "$REVIEW_WORKTREE"
-          fi
-          git worktree prune
-          # RUNNER_TEMP 아래 경로일 때만 삭제합니다.
-          if [[ -n "${REVIEW_ROOT:-}" && -d "$REVIEW_ROOT" ]]; then
-            root_real="$(realpath "$REVIEW_ROOT")"
-            tmp_real="$(realpath "$RUNNER_TEMP")"
-            case "$root_real/" in
-              "$tmp_real"/?*) rm -rf -- "$root_real" ;;
-            esac
-          fi
+        run: 'bash "$CODEX_KIT/bin/codex-review.sh" cleanup'
 
       - name: Fail when Codex failed
         if: ${{ always() && steps.start.outputs.comment_id != '' && steps.codex.outcome != 'success' }}
