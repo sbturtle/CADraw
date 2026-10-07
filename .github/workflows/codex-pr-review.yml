@@ -14,7 +14,8 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: codex-pr-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
+  # 봇 댓글(Vercel 등)로 생긴 실행은 별도 그룹으로 분리해 진행 중인 리뷰를 취소하지 않습니다.
+  group: codex-pr-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}${{ (github.event.comment && github.event.comment.user.type != 'User') && format('-bot-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 jobs:
