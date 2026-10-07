@@ -14,12 +14,14 @@ permissions:
   pull-requests: write
 
 concurrency:
-  # 봇 댓글(Vercel 등)로 생긴 실행은 별도 그룹으로 분리해 진행 중인 리뷰를 취소하지 않습니다.
-  group: codex-pr-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}${{ (github.event.comment && github.event.comment.user.type != 'User') && format('-bot-{0}', github.run_id) || '' }}
+  # 재리뷰 대상이 아닌 댓글(PR 작성자가 아닌 사람, 봇)로 생긴 실행은 별도 그룹으로 분리해
+  # 진행 중인 리뷰를 취소하지 않습니다.
+  group: codex-pr-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}${{ (github.event.comment && !(github.event.comment.user.type == 'User' && github.event.comment.user.login == (github.event.issue.user.login || github.event.pull_request.user.login))) && format('-skip-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 jobs:
   resolve:
+    # PR 이벤트, 또는 PR 작성자 본인이 단 댓글(일반 댓글·코드 리뷰 댓글)일 때만 리뷰합니다.
     if: >-
       (
         github.event_name == 'pull_request' &&
@@ -29,8 +31,10 @@ jobs:
       (
         github.event.comment.user.type == 'User' &&
         (
-          (github.event_name == 'issue_comment' && github.event.issue.pull_request) ||
-          (github.event_name == 'pull_request_review_comment' && github.event.pull_request)
+          (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+            github.event.comment.user.login == github.event.issue.user.login) ||
+          (github.event_name == 'pull_request_review_comment' && github.event.pull_request &&
+            github.event.comment.user.login == github.event.pull_request.user.login)
         )
       )
     runs-on: ubuntu-latest
