@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   resolve:
-    # PR 이벤트, 또는 PR 작성자 본인이 단 댓글(일반 댓글·코드 리뷰 댓글)일 때만 리뷰합니다.
+    # PR 이벤트, 또는 열려 있는 PR에 PR 작성자 본인이 단 댓글(일반 댓글·코드 리뷰 댓글)일 때만 리뷰합니다.
     if: >-
       (
         github.event_name == 'pull_request' &&
@@ -32,8 +32,10 @@ jobs:
         github.event.comment.user.type == 'User' &&
         (
           (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+            github.event.issue.state == 'open' &&
             github.event.comment.user.login == github.event.issue.user.login) ||
           (github.event_name == 'pull_request_review_comment' && github.event.pull_request &&
+            github.event.pull_request.state == 'open' &&
             github.event.comment.user.login == github.event.pull_request.user.login)
         )
       )
@@ -43,6 +45,7 @@ jobs:
       head_sha: ${{ steps.pr.outputs.head_sha }}
       head_repo: ${{ steps.pr.outputs.head_repo }}
       draft: ${{ steps.pr.outputs.draft }}
+      state: ${{ steps.pr.outputs.state }}
       number: ${{ steps.pr.outputs.number }}
     steps:
       - name: Resolve pull request context
@@ -61,11 +64,13 @@ jobs:
             core.setOutput('head_sha', pr.head.sha);
             core.setOutput('head_repo', pr.head.repo?.full_name ?? '');
             core.setOutput('draft', String(pr.draft));
+            core.setOutput('state', pr.state);
             core.setOutput('number', String(pr.number));
 
   review:
     needs: resolve
     if: >-
+      needs.resolve.outputs.state == 'open' &&
       needs.resolve.outputs.draft == 'false' &&
       needs.resolve.outputs.head_repo == github.repository
     runs-on: [self-hosted, Linux, X64, codex-review]
