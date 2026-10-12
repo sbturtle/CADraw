@@ -2,7 +2,8 @@ name: Codex PR Review
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
+    # edited는 대상(base) 브랜치를 바꾼 경우에만 리뷰합니다 (제목·본문 수정은 아래 resolve 조건에서 제외).
+    types: [opened, reopened, synchronize, ready_for_review, edited]
   issue_comment:
     types: [created]
   pull_request_review_comment:
@@ -14,9 +15,9 @@ permissions:
   pull-requests: write
 
 concurrency:
-  # 재리뷰 대상이 아닌 댓글(PR 작성자가 아닌 사람, 봇)로 생긴 실행은 별도 그룹으로 분리해
-  # 진행 중인 리뷰를 취소하지 않습니다.
-  group: codex-pr-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}${{ (github.event.comment && !(github.event.comment.user.type == 'User' && github.event.comment.user.login == (github.event.issue.user.login || github.event.pull_request.user.login))) && format('-skip-{0}', github.run_id) || '' }}
+  # 재리뷰 대상이 아닌 댓글(PR 작성자가 아닌 사람, 봇)과 대상 브랜치 변경이 아닌 편집(제목·본문)으로 생긴 실행은
+  # 별도 그룹으로 분리해 진행 중인 리뷰를 취소하지 않습니다.
+  group: codex-pr-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}${{ ((github.event.comment && !(github.event.comment.user.type == 'User' && github.event.comment.user.login == (github.event.issue.user.login || github.event.pull_request.user.login))) || (github.event.action == 'edited' && !github.event.changes.base)) && format('-skip-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -25,6 +26,7 @@ jobs:
     if: >-
       (
         github.event_name == 'pull_request' &&
+        (github.event.action != 'edited' || github.event.changes.base != null) &&
         github.event.pull_request.draft == false &&
         github.event.pull_request.head.repo.full_name == github.repository
       ) ||
@@ -42,6 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       base_sha: ${{ steps.pr.outputs.base_sha }}
+      base_ref: ${{ steps.pr.outputs.base_ref }}
       head_sha: ${{ steps.pr.outputs.head_sha }}
       head_repo: ${{ steps.pr.outputs.head_repo }}
       draft: ${{ steps.pr.outputs.draft }}
@@ -61,6 +64,7 @@ jobs:
               pull_number
             });
             core.setOutput('base_sha', pr.base.sha);
+            core.setOutput('base_ref', pr.base.ref);
             core.setOutput('head_sha', pr.head.sha);
             core.setOutput('head_repo', pr.head.repo?.full_name ?? '');
             core.setOutput('draft', String(pr.draft));
@@ -77,6 +81,9 @@ jobs:
     timeout-minutes: 45
     env:
       BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
+      BASE_REF: ${{ needs.resolve.outputs.base_ref }}
+      # 대상 브랜치를 바꾼 이벤트(edited)면 이전 대상 브랜치 이름, 그 밖의 이벤트는 빈 값
+      BASE_CHANGED_FROM: ${{ github.event.changes.base.ref.from }}
       HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
       PR_NUMBER: ${{ needs.resolve.outputs.number }}
       # 리뷰 로직·프롬프트·스키마·모델 설정은 러너 서버에서 관리합니다 (원본: sbturtle/codex-review-kit).
