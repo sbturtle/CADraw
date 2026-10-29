@@ -8,6 +8,7 @@ from cadraw.detection import DetectionConfig, detect_face_shapes_with_evidence
 from cadraw.faces import (
     Face,
     FaceConfig,
+    FacingReach,
     drawing_ink,
     enclosed_faces,
     face_shape,
@@ -197,7 +198,7 @@ def test_a_faint_stretch_of_one_stroke_is_bridged_across_blank_paper() -> None:
     # When ends are bridged with a facing reach longer than the gap
     ends = stroke_ends(thinned(mask), minimum_branch=12, direction_span=10)
     near_only = with_stroke_bridges(mask, ends, 30.0, 2)
-    bridged = with_stroke_bridges(mask, ends, 30.0, 2, facing_reach=120.0)
+    bridged = with_stroke_bridges(mask, ends, 30.0, 2, FacingReach(120.0))
 
     # Then only the long facing reach joins the two halves
     assert _ink_count(near_only, slice(97, 104), slice(260, 330)) == 0
@@ -213,10 +214,38 @@ def test_a_dimension_line_broken_for_its_value_stays_broken() -> None:
 
     # When ends are bridged with the long facing reach
     ends = stroke_ends(thinned(mask), minimum_branch=12, direction_span=10)
-    bridged = with_stroke_bridges(mask, ends, 30.0, 2, facing_reach=120.0)
+    bridged = with_stroke_bridges(mask, ends, 30.0, 2, FacingReach(120.0))
 
     # Then the written value keeps the two halves apart
     assert _ink_count(bridged, slice(97, 104), slice(262, 278)) == 0
+
+
+def test_a_gap_with_its_value_written_beside_it_stays_open() -> None:
+    # Given a dimension line broken for a value written above the gap
+    mask = np.zeros((200, 600), dtype=np.uint8)
+    _ = cv2.line(mask, (40, 100), (250, 100), 255, 3)
+    _ = cv2.line(mask, (340, 100), (560, 100), 255, 3)
+    ends = stroke_ends(thinned(mask), minimum_branch=12, direction_span=10)
+
+    # When the value's box sits over the middle of the gap, or by one end
+    centred = with_stroke_bridges(
+        mask,
+        ends,
+        30.0,
+        2,
+        FacingReach(120.0, labels=((275.0, 60.0, 40.0, 25.0),)),
+    )
+    beside_end = with_stroke_bridges(
+        mask,
+        ends,
+        30.0,
+        2,
+        FacingReach(120.0, labels=((235.0, 110.0, 30.0, 25.0),)),
+    )
+
+    # Then only the label centred on the gap keeps it open
+    assert _ink_count(centred, slice(97, 104), slice(262, 328)) == 0
+    assert _ink_count(beside_end, slice(97, 104), slice(262, 328)) >= 60
 
 
 def test_a_small_ring_is_sized_by_its_centre_line() -> None:
@@ -241,6 +270,18 @@ def test_a_tiny_rough_face_inside_a_part_reads_as_a_hole() -> None:
     # Then it is a drilled hole rather than a polygon
     assert parsed is not None
     assert isinstance(parsed[1], CircleCandidate)
+
+
+def test_a_tiny_square_cutout_keeps_its_corners() -> None:
+    # Given a square face only ten pixels across
+    square = _face([(0, 0), (10, 0), (10, 10), (0, 10)])
+
+    # When it is read on a sheet a thousand pixels wide
+    parsed = face_shape(square, FaceConfig(), 1000)
+
+    # Then it stays a four-cornered polygon, not a hole
+    assert parsed is not None
+    assert isinstance(parsed[1], PolylineCandidate)
 
 
 def test_enclosed_faces_fill_islands_and_skip_the_open_page() -> None:

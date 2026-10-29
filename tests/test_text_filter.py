@@ -146,6 +146,43 @@ def test_a_loop_past_the_leading_glyph_is_a_digit_not_a_hole() -> None:
     assert removal.removed_ids == (EntityId("loop"),)
 
 
+def test_a_hole_read_as_a_letter_after_the_label_is_kept() -> None:
+    # Given a hole drawn after its size, read together with it as `14O`
+    hole = CircleCandidate(EntityId("hole"), Point(165.0, 120.0), 6.0, 0.9)
+
+    # When shapes are checked against the label
+    removal = without_text_strokes(
+        (),
+        (hole,),
+        (_label("14O"),),
+        _mask_with(),
+        TextStrokeConfig(),
+    )
+
+    # Then nothing in the reading accounts for a loop there, so it stays
+    assert removal.shapes == (hole,)
+
+
+def test_only_as_many_loops_as_the_digits_have_are_removed() -> None:
+    # Given `100` and three small circles past its first glyph
+    circles = tuple(
+        CircleCandidate(EntityId(f"circle_{index}"), Point(x, 120.0), 5.0, 0.9)
+        for index, x in enumerate((135.0, 150.0, 168.0))
+    )
+
+    # When shapes are checked against the label
+    removal = without_text_strokes(
+        (),
+        circles,
+        (_label("100"),),
+        _mask_with(),
+        TextStrokeConfig(),
+    )
+
+    # Then the two zeros' loops go and the circle nearest the start stays
+    assert removal.shapes == (circles[0],)
+
+
 def test_a_circle_under_an_uncertain_label_is_kept() -> None:
     # Given the same loop under a label read with low confidence
     loop = CircleCandidate(EntityId("loop"), Point(165.0, 120.0), 6.0, 0.9)

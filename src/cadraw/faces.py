@@ -44,6 +44,7 @@ from cadraw.preprocessing import illumination_flattened
 
 type GrayImage = NDArray[np.uint8]
 type Contour = NDArray[np.int32]
+type Bounds = tuple[float, float, float, float]
 
 _INK = 255
 _PENDING_ID = EntityId("shape_raw_pending")
@@ -57,6 +58,7 @@ _MINIMUM_CORNER_SINE = 0.34
 _CORNER_BACKTRACK_RATIO = 0.25
 _FACING_COSINE = 0.87
 _SQUARE_FACING_COSINE = 0.95
+_LABEL_GAP_START = 0.2
 _RING_RAYS = 24
 _RING_SEARCH_MARGIN = 6.0
 _RING_SEARCH_START = 0.8
@@ -96,6 +98,7 @@ class FaceConfig:
     small_circle_residual_ratio: float = 0.18
     tiny_feature_ratio: float = 0.015
     tiny_circle_aspect_ratio: float = 0.5
+    tiny_maximum_rectangularity: float = 0.93
     maximum_vertices: int = 48
     sliver_aspect_ratio: float = 5.0
     sliver_width: float = 10.0
@@ -652,20 +655,53 @@ def _paper_between(mask: GrayImage, start: Point, end: Point, skip: float) -> bo
     return True
 
 
+@dataclass(frozen=True, slots=True)
+class FacingReach:
+    """How far squarely facing stroke ends may be joined, and where not.
+
+    `labels` are the boxes of text read on the sheet. A dimension line is
+    broken to make room for its value, which is written across the middle of
+    the gap, so a gap with a label centred on it keeps its break. A label by
+    either end of the gap, such as the size of a corner, does not.
+    """
+
+    reach: float = 0.0
+    labels: tuple[Bounds, ...] = ()
+
+    def labelled(self, start: Point, end: Point) -> bool:
+        """Return whether a label is centred on the gap between two ends."""
+        length = start.distance_to(end)
+        if length == 0.0:
+            return False
+        direction_x = (end.x - start.x) / length
+        direction_y = (end.y - start.y) / length
+        for left, top, width, height in self.labels:
+            offset_x = left + width / 2.0 - start.x
+            offset_y = top + height / 2.0 - start.y
+            along = (offset_x * direction_x + offset_y * direction_y) / length
+            across = abs(offset_x * direction_y - offset_y * direction_x)
+            if (
+                _LABEL_GAP_START <= along <= 1.0 - _LABEL_GAP_START
+                and across <= length / 2.0 + max(width, height) / 2.0
+            ):
+                return True
+        return False
+
+
 def _facing_bridges(
     mask: GrayImage,
     ends: tuple[StrokeEnd, ...],
     bridged: set[int],
-    reach: float,
+    facing: FacingReach,
     skip: float,
 ) -> list[tuple[int, int]]:
     """Pair the ends that point straight at each other across blank paper.
 
     A faint stretch of one stroke drops out of the ink mask as a gap far
     longer than a pen lift, and the two ends left on either side still point
-    squarely at each other. Nothing may lie between them: a dimension line
-    broken for its written value, or two lines meeting a third between them,
-    keep their gap.
+    squarely at each other. Nothing may lie between them: two lines meeting a
+    third between them keep their gap, and so does a dimension line broken
+    for a value written in or beside the gap.
     """
     pairs: list[tuple[int, int]] = []
     taken = set(bridged)
@@ -677,8 +713,9 @@ def _facing_bridges(
             for other_index, second in enumerate(ends)
             if other_index != index
             and other_index not in taken
-            and _faces_squarely(first, second, reach)
+            and _faces_squarely(first, second, facing.reach)
             and _paper_between(mask, first.point, second.point, skip)
+            and not facing.labelled(first.point, second.point)
         ]
         if candidates:
             _, other_index = min(candidates)
@@ -692,7 +729,7 @@ def with_stroke_bridges(
     ends: tuple[StrokeEnd, ...],
     reach: float,
     thickness: int,
-    facing_reach: float = 0.0,
+    facing: FacingReach | None = None,
 ) -> GrayImage:
     """Close the gaps a drawing's long strokes stop just short of.
 
@@ -702,7 +739,8 @@ def with_stroke_bridges(
       both are run to the crossing, the corner the pen was heading for; two
       ends facing each other along one line are joined directly.
     - Two ends pointing squarely at each other across blank paper are joined
-      up to the longer `facing_reach`, closing a faint stretch of one stroke.
+      up to the longer `facing` reach, closing a faint stretch of one stroke,
+      unless a text label sits by the gap.
     - A remaining end whose continuation meets other ink within `reach` is
       run to it, closing a T junction drawn a little short.
     """
@@ -724,7 +762,13 @@ def with_stroke_bridges(
         _draw(guided, ends[index].point, meeting, thickness)
         _draw(guided, ends[other_index].point, meeting, thickness)
         bridged.update((index, other_index))
-    for index, other_index in _facing_bridges(mask, ends, bridged, facing_reach, skip):
+    for index, other_index in _facing_bridges(
+        mask,
+        ends,
+        bridged,
+        facing or FacingReach(),
+        skip,
+    ):
         _draw(guided, ends[index].point, ends[other_index].point, thickness)
         bridged.update((index, other_index))
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
@@ -913,9 +957,12 @@ def _reads_as_circle(roundness: _Roundness, config: FaceConfig) -> bool:
     as it is tall.
     """
     if roundness.extent_ratio <= config.tiny_feature_ratio:
+        # A small square cutout still fills its bounding box; a rough round
+        # hole leaves the box's corners empty.
         return (
             roundness.aspect >= config.tiny_circle_aspect_ratio
             and roundness.residual_ratio <= config.small_circle_residual_ratio
+            and roundness.rectangularity <= config.tiny_maximum_rectangularity
         )
     if (
         roundness.aspect < config.circle_aspect_ratio

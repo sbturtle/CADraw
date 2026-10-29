@@ -20,11 +20,11 @@ OCR 제안은 로컬 PP-OCR이 읽고 가까운 geometry 하나에 미리 연결
 | 샘플 | 선택 variant | 상태 | 추출 | OCR 제안 | 레퍼런스 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `blur_otsu` | `READY` | line 5 | 4 | LWPOLYLINE 1 |
-| 2 | `blur_otsu` | `READY` | circle 1, line 2, polyline 5 | 8 | LWPOLYLINE 3 |
-| 3 | `blur_otsu` | `READY` | line 20, polyline 3 | 3 | LWPOLYLINE 10 |
-| 4 | `clahe_adaptive` | `READY` | circle 2, line 4, polyline 1 | 2 | ARC 2, CIRCLE 2, LINE 2, LWPOLYLINE 1 |
-| 5 | `shadow_removed_adaptive` | `READY` | circle 12, polyline 18 | 0 | ARC 24, CIRCLE 7, LINE 24, LWPOLYLINE 1 |
-| 6 | `clahe_adaptive` | `READY` | line 10, polyline 9 | 10 | LWPOLYLINE 10 |
+| 2 | `blur_otsu` | `READY` | circle 2, line 2, polyline 5 | 8 | LWPOLYLINE 3 |
+| 3 | `blur_otsu` | `READY` | circle 1, line 17, polyline 3 | 2 | LWPOLYLINE 10 |
+| 4 | `clahe_adaptive` | `READY` | circle 2, line 2, polyline 1 | 1 | ARC 2, CIRCLE 2, LINE 2, LWPOLYLINE 1 |
+| 5 | `shadow_removed_adaptive` | `READY` | arc 1, circle 15, polyline 18 | 0 | ARC 24, CIRCLE 7, LINE 24, LWPOLYLINE 1 |
+| 6 | `clahe_adaptive` | `READY` | line 9, polyline 9 | 9 | LWPOLYLINE 10 |
 | 7 | `shadow_removed_adaptive` | `READY` | circle 18, line 19, polyline 17 | 26 | ARC 8, CIRCLE 13, LINE 8, LWPOLYLINE 4 |
 
 ## 샘플 1
@@ -44,7 +44,7 @@ OCR 제안은 로컬 PP-OCR이 읽고 가까운 geometry 하나에 미리 연결
 
 - 선택 variant: `blur_otsu`
 - 상태: `READY`
-- 추출: circle 1, line 2, polyline 5
+- 추출: circle 2, line 2, polyline 5
 - OCR 제안: `160`, `475`, `30`, `601`, `30`, `25`, `65`, `21`
 - 레퍼런스: LWPOLYLINE 3
 - 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `TEXT_STROKES_REMOVED`
@@ -55,8 +55,8 @@ OCR 제안은 로컬 PP-OCR이 읽고 가까운 geometry 하나에 미리 연결
 
 - 선택 variant: `blur_otsu`
 - 상태: `READY`
-- 추출: line 20, polyline 3
-- OCR 제안: `200`, `200`, `140`
+- 추출: circle 1, line 17, polyline 3
+- OCR 제안: `200`, `140`
 - 레퍼런스: LWPOLYLINE 10
 - 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `TEXT_STROKES_REMOVED`
 
@@ -66,8 +66,8 @@ OCR 제안은 로컬 PP-OCR이 읽고 가까운 geometry 하나에 미리 연결
 
 - 선택 variant: `clahe_adaptive`
 - 상태: `READY`
-- 추출: circle 2, line 4, polyline 1
-- OCR 제안: `200`, `50`
+- 추출: circle 2, line 2, polyline 1
+- OCR 제안: `50`
 - 레퍼런스: ARC 2, CIRCLE 2, LINE 2, LWPOLYLINE 1
 - 경고: `PRINTED_RULING_REMOVED`, `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `TEXT_STROKES_REMOVED`
 
@@ -77,7 +77,7 @@ OCR 제안은 로컬 PP-OCR이 읽고 가까운 geometry 하나에 미리 연결
 
 - 선택 variant: `shadow_removed_adaptive`
 - 상태: `READY`
-- 추출: circle 12, polyline 18
+- 추출: arc 1, circle 15, polyline 18
 - OCR 제안: 없음
 - 레퍼런스: ARC 24, CIRCLE 7, LINE 24, LWPOLYLINE 1
 - 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `TEXT_STROKES_REMOVED`
@@ -88,8 +88,8 @@ OCR 제안은 로컬 PP-OCR이 읽고 가까운 geometry 하나에 미리 연결
 
 - 선택 variant: `clahe_adaptive`
 - 상태: `READY`
-- 추출: line 10, polyline 9
-- OCR 제안: `200`, `400`, `100`, `300`, `100`, `200`, `100`, `300`, `200`, `300`
+- 추출: line 9, polyline 9
+- OCR 제안: `400`, `100`, `300`, `100`, `200`, `100`, `300`, `200`, `300`
 - 레퍼런스: LWPOLYLINE 10
 - 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `TEXT_STROKES_REMOVED`
 

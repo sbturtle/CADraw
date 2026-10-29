@@ -184,7 +184,7 @@ uv run python scripts/render_sample_report.py
 ```
 
 스캔 위에 따라 그린 정답(`docs/experiments/sample-geometry-ground-truth.json`)과
-비교한 경계 F1, 외곽선·구멍·슬롯 일치 수, 오검출 수는 다음 명령으로 잽니다.
+비교한 경계 F1, 외곽선·구멍·슬롯·컷아웃 일치 수, 오검출 수는 다음 명령으로 잽니다.
 측정 기록은 `docs/experiments/reference-fidelity.md`에 있습니다.
 
 ```powershell

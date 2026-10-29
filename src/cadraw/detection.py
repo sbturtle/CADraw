@@ -15,6 +15,7 @@ from cadraw.arbitration import (
 )
 from cadraw.faces import (
     FaceConfig,
+    FacingReach,
     enclosed_faces,
     face_shape,
     flattened_ink,
@@ -116,12 +117,21 @@ class ImageReadError(Exception):
 
     @override
     def __str__(self) -> str:
-        return f"?대?吏瑜??쎌쓣 ???놁뒿?덈떎: {self.path}"
+        return f"이미지를 읽을 수 없습니다: {self.path}"
 
 
 @dataclass(frozen=True, slots=True)
 class DetectionConfig:
-    """OpenCV parameters for the Phase 1 detector."""
+    """OpenCV parameters for the Phase 1 detector.
+
+    The `minimum_shape_*` limits belong to the contour path. With
+    `faces.enabled`, closed shapes are read from enclosed paper instead and
+    those limits do not apply: they would drop every drilled hole a few pen
+    widths across. There `faces.minimum_face_area` bounds a face's size, and
+    a small mark that sits inside no other shape is dropped as lettering
+    (`faces.isolated_mark_ratio`). Open arcs still come from the contour path
+    and keep its limits.
+    """
 
     minimum_line_length: float = 80.0
     hough_threshold: int = 40
@@ -1746,6 +1756,8 @@ def detect_face_shapes_with_evidence(
     image: GrayImage,
     config: DetectionConfig,
     bridge_reach: float = 0.0,
+    labels: tuple[tuple[float, float, float, float], ...] = (),
+    arcs: tuple[ArcCandidate, ...] = (),
 ) -> ShapeDetectionEvidence:
     """Detect closed shapes from the paper regions the strokes enclose.
 
@@ -1753,7 +1765,10 @@ def detect_face_shapes_with_evidence(
     variant: a variant tuned to make faint lines visible also makes graph
     paper visible, and its rails would cut every part into grid cells.
     `bridge_reach` is the least gap a stroke end may be bridged across; the
-    sheet's own size usually asks for more.
+    sheet's own size usually asks for more. `labels` are the boxes of text
+    read on the sheet, which keep a dimension line's gap from being bridged.
+    An open curve encloses no face, so `arcs` found by the contour path are
+    carried along and deduplicated with the faces' circles.
     """
     if not config.detect_closed_shapes:
         return ShapeDetectionEvidence(())
@@ -1775,7 +1790,10 @@ def detect_face_shapes_with_evidence(
         ends,
         reach,
         settings.bridge_thickness,
-        max(reach, minimum_side * settings.facing_reach_ratio),
+        FacingReach(
+            reach=max(reach, minimum_side * settings.facing_reach_ratio),
+            labels=labels,
+        ),
     )
     part_close = round(minimum_side * settings.part_close_ratio)
     # Paper meeting the backdrop at a photograph's edge encloses wedges of
@@ -1808,6 +1826,9 @@ def detect_face_shapes_with_evidence(
                         ),
                     ),
                 )
+    # Faces sort first, so a circle read from a face wins over the arc the
+    # contour path found along the same ring.
+    candidates.extend((0.0, arc) for arc in arcs)
     return _shape_evidence(
         candidates,
         width,

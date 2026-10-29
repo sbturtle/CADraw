@@ -1071,6 +1071,38 @@ class _ShapeContext:
     ocr_result: OcrResult | None
     text_strokes: TextStrokeConfig
     snap_distance: float
+    lines: tuple[LineEntity, ...] = ()
+
+
+def _joins_lines(arc: ArcCandidate, context: _ShapeContext) -> bool:
+    """Return whether both ends of an open arc meet the end of a line.
+
+    An open curve that belongs to a part, such as a rounded corner, runs from
+    one straight edge to another. A curve standing alone, such as part of a
+    written number or a scribble around a price, meets no line.
+    """
+    reach = 2.0 * context.snap_distance
+    ends = tuple(point for line in context.lines for point in (line.start, line.end))
+    return all(
+        any(point.distance_to(end) <= reach for end in ends)
+        for point in _arc_endpoints(arc)
+    )
+
+
+def _arc_endpoints(arc: ArcCandidate) -> tuple[Point, Point]:
+    """Return the start and end points of an arc in image coordinates."""
+    start = math.radians(arc.start_angle_degrees)
+    end = math.radians(arc.end_angle_degrees)
+    return (
+        Point(
+            arc.center.x + arc.radius * math.cos(start),
+            arc.center.y + arc.radius * math.sin(start),
+        ),
+        Point(
+            arc.center.x + arc.radius * math.cos(end),
+            arc.center.y + arc.radius * math.sin(end),
+        ),
+    )
 
 
 def _lettering_free_shapes(
@@ -1079,12 +1111,7 @@ def _lettering_free_shapes(
     """Detect closed shapes, drop lettering, and settle the hole roles."""
     _, shapes, removal = _without_lettering(
         (),
-        _closed_shapes(
-            context.analysis_image,
-            context.detection_image,
-            context.detection,
-            context.snap_distance,
-        ),
+        _closed_shapes(context),
         context.ocr_result,
         context.ink_mask,
         context.text_strokes,
@@ -1104,16 +1131,25 @@ def _lettering_free_shapes(
     )
 
 
-def _closed_shapes(
-    analysis_image: GrayImage,
-    detection_image: GrayImage,
-    config: DetectionConfig,
-    bridge_reach: float,
-) -> ShapeDetectionEvidence:
+def _closed_shapes(context: _ShapeContext) -> ShapeDetectionEvidence:
     """Detect closed shapes from enclosed faces, or from variant contours."""
-    if config.faces.enabled:
-        return detect_face_shapes_with_evidence(analysis_image, config, bridge_reach)
-    return detect_shape_candidates_with_evidence(detection_image, config)
+    config = context.detection
+    contours = detect_shape_candidates_with_evidence(context.detection_image, config)
+    if not config.faces.enabled:
+        return contours
+    return detect_face_shapes_with_evidence(
+        context.analysis_image,
+        config,
+        context.snap_distance,
+        ()
+        if context.ocr_result is None
+        else tuple(candidate.bounds for candidate in context.ocr_result.candidates),
+        tuple(
+            candidate
+            for candidate in contours.candidates
+            if isinstance(candidate, ArcCandidate) and _joins_lines(candidate, context)
+        ),
+    )
 
 
 def _uncertain_reading_warnings(
@@ -1283,6 +1319,7 @@ def analyze_image(
             ocr_result=ocr_result,
             text_strokes=config.text_strokes,
             snap_distance=normalization.endpoint_snap_distance,
+            lines=lines,
         ),
     )
     lettering_warning = _lettering_warning((line_lettering, shape_lettering))
