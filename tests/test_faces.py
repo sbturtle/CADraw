@@ -12,6 +12,7 @@ from cadraw.faces import (
     enclosed_faces,
     face_shape,
     merge_straight_corners,
+    ring_radius,
     ruled_paper,
     stroke_ends,
     thinned,
@@ -185,6 +186,61 @@ def test_a_leader_line_stopping_short_of_a_hole_is_not_joined_to_it() -> None:
 
     # Then the gap to the small hole stays open
     assert np.array_equal(bridged, mask)
+
+
+def test_a_faint_stretch_of_one_stroke_is_bridged_across_blank_paper() -> None:
+    # Given one horizontal stroke whose middle faded out of the ink
+    mask = np.zeros((200, 600), dtype=np.uint8)
+    _ = cv2.line(mask, (40, 100), (250, 100), 255, 3)
+    _ = cv2.line(mask, (340, 100), (560, 100), 255, 3)
+
+    # When ends are bridged with a facing reach longer than the gap
+    ends = stroke_ends(thinned(mask), minimum_branch=12, direction_span=10)
+    near_only = with_stroke_bridges(mask, ends, 30.0, 2)
+    bridged = with_stroke_bridges(mask, ends, 30.0, 2, facing_reach=120.0)
+
+    # Then only the long facing reach joins the two halves
+    assert _ink_count(near_only, slice(97, 104), slice(260, 330)) == 0
+    assert _ink_count(bridged, slice(97, 104), slice(260, 330)) >= 70
+
+
+def test_a_dimension_line_broken_for_its_value_stays_broken() -> None:
+    # Given a dimension line interrupted by the number written in its gap
+    mask = np.zeros((200, 600), dtype=np.uint8)
+    _ = cv2.line(mask, (40, 100), (250, 100), 255, 3)
+    _ = cv2.line(mask, (340, 100), (560, 100), 255, 3)
+    _ = cv2.circle(mask, (295, 100), 14, 255, 2)
+
+    # When ends are bridged with the long facing reach
+    ends = stroke_ends(thinned(mask), minimum_branch=12, direction_span=10)
+    bridged = with_stroke_bridges(mask, ends, 30.0, 2, facing_reach=120.0)
+
+    # Then the written value keeps the two halves apart
+    assert _ink_count(bridged, slice(97, 104), slice(262, 278)) == 0
+
+
+def test_a_small_ring_is_sized_by_its_centre_line() -> None:
+    # Given a small hole drawn as a ring four pixels wide around radius 10
+    mask = np.zeros((100, 100), dtype=np.uint8)
+    _ = cv2.circle(mask, (50, 50), 10, 255, 4)
+
+    # When the radius of the paper inside the ring is corrected
+    radius = ring_radius(mask, Point(50.0, 50.0), 7.5)
+
+    # Then it is the ring's centre line, not the paper inside it
+    assert abs(radius - 10.0) <= 1.0
+
+
+def test_a_tiny_rough_face_inside_a_part_reads_as_a_hole() -> None:
+    # Given a face only a few pixels across and not quite round
+    tiny = _face([(0, 0), (6, 0), (8, 5), (6, 11), (0, 11), (-2, 5)])
+
+    # When it is read on a sheet a thousand pixels wide
+    parsed = face_shape(tiny, FaceConfig(), 1000)
+
+    # Then it is a drilled hole rather than a polygon
+    assert parsed is not None
+    assert isinstance(parsed[1], CircleCandidate)
 
 
 def test_enclosed_faces_fill_islands_and_skip_the_open_page() -> None:

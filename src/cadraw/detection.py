@@ -1,6 +1,6 @@
 """OpenCV image preparation and deterministic line candidate detection."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from math import atan2, degrees, hypot, isfinite, pi, sqrt
 from pathlib import Path
 from typing import cast, final, override
@@ -18,6 +18,7 @@ from cadraw.faces import (
     enclosed_faces,
     face_shape,
     flattened_ink,
+    ring_radius,
     stroke_ends,
     stroke_width,
     thinned,
@@ -110,7 +111,7 @@ class ImageReadError(Exception):
 
     @override
     def __str__(self) -> str:
-        return f"이미지를 읽을 수 없습니다: {self.path}"
+        return f"?대?吏瑜??쎌쓣 ???놁뒿?덈떎: {self.path}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1666,6 +1667,24 @@ def _shape_evidence(
     )
 
 
+def _ring_sized(
+    candidate: ShapeCandidate,
+    ink: GrayImage,
+    largest_radius: float,
+) -> ShapeCandidate:
+    """Size a small circle read from a face by its drawn ring's centre line.
+
+    Only a drilled hole is drawn as a ring a few pen widths across; a large
+    circle is a part outline, with features drawn just inside it.
+    """
+    if not isinstance(candidate, CircleCandidate) or candidate.radius > largest_radius:
+        return candidate
+    return replace(
+        candidate,
+        radius=ring_radius(ink, candidate.center, candidate.radius),
+    )
+
+
 def detect_face_shapes_with_evidence(
     image: GrayImage,
     config: DetectionConfig,
@@ -1694,7 +1713,13 @@ def detect_face_shapes_with_evidence(
         round(minimum_side * settings.bridge_branch_ratio),
         settings.bridge_direction_span,
     )
-    guided = with_stroke_bridges(parts, ends, reach, settings.bridge_thickness)
+    guided = with_stroke_bridges(
+        parts,
+        ends,
+        reach,
+        settings.bridge_thickness,
+        max(reach, minimum_side * settings.facing_reach_ratio),
+    )
     part_close = round(minimum_side * settings.part_close_ratio)
     # Paper meeting the backdrop at a photograph's edge encloses wedges of
     # its own; nothing drawn sits that close to the frame.
@@ -1716,7 +1741,16 @@ def detect_face_shapes_with_evidence(
                 continue
             parsed = face_shape(face, settings, minimum_side)
             if parsed is not None:
-                candidates.append(parsed)
+                candidates.append(
+                    (
+                        parsed[0],
+                        _ring_sized(
+                            parsed[1],
+                            features,
+                            minimum_side * settings.small_feature_ratio / 2.0,
+                        ),
+                    ),
+                )
     return _shape_evidence(
         candidates,
         width,
