@@ -44,6 +44,7 @@ from cadraw.preprocessing import illumination_flattened
 
 type GrayImage = NDArray[np.uint8]
 type Contour = NDArray[np.int32]
+type Bounds = tuple[float, float, float, float]
 
 _INK = 255
 _PENDING_ID = EntityId("shape_raw_pending")
@@ -56,6 +57,11 @@ _QUADRILATERAL_VERTICES = 4
 _MINIMUM_CORNER_SINE = 0.34
 _CORNER_BACKTRACK_RATIO = 0.25
 _FACING_COSINE = 0.87
+_SQUARE_FACING_COSINE = 0.95
+_LABEL_GAP_START = 0.2
+_RING_RAYS = 24
+_RING_SEARCH_MARGIN = 6.0
+_RING_SEARCH_START = 0.8
 _MAD_TO_SIGMA = 1.4826
 _PERIODICITY_DETREND = 61
 _PERIODICITY_MINIMUM_LAG = 15
@@ -90,6 +96,9 @@ class FaceConfig:
     small_feature_ratio: float = 0.03
     small_circle_circularity: float = 0.6
     small_circle_residual_ratio: float = 0.18
+    tiny_feature_ratio: float = 0.015
+    tiny_circle_aspect_ratio: float = 0.5
+    tiny_maximum_rectangularity: float = 0.93
     maximum_vertices: int = 48
     sliver_aspect_ratio: float = 5.0
     sliver_width: float = 10.0
@@ -98,6 +107,7 @@ class FaceConfig:
     isolated_mark_ratio: float = 0.04
     bridge_thickness: int = 2
     bridge_reach_ratio: float = 0.025
+    facing_reach_ratio: float = 0.10
     bridge_branch_ratio: float = 0.02
     bridge_direction_span: int = 10
 
@@ -616,11 +626,110 @@ def _closest_partner(
     return None if best is None else (best[1], best[2])
 
 
+def _faces_squarely(first: StrokeEnd, second: StrokeEnd, reach: float) -> bool:
+    """Return whether two ends point straight at each other within `reach`."""
+    delta_x = second.point.x - first.point.x
+    delta_y = second.point.y - first.point.y
+    distance = math.hypot(delta_x, delta_y)
+    if distance == 0.0 or distance > reach:
+        return False
+    first_x, first_y = first.direction
+    second_x, second_y = second.direction
+    facing = (delta_x * first_x + delta_y * first_y) / distance
+    returning = -(delta_x * second_x + delta_y * second_y) / distance
+    return min(facing, returning) >= _SQUARE_FACING_COSINE
+
+
+def _paper_between(mask: GrayImage, start: Point, end: Point, skip: float) -> bool:
+    """Return whether the straight run between two points crosses no ink."""
+    distance = start.distance_to(end)
+    steps = max(1, math.ceil(distance))
+    for step in range(steps + 1):
+        along = distance * step / steps
+        if along < skip or along > distance - skip:
+            continue
+        x = round(start.x + (end.x - start.x) * step / steps)
+        y = round(start.y + (end.y - start.y) * step / steps)
+        if mask[y, x] > 0:
+            return False
+    return True
+
+
+@dataclass(frozen=True, slots=True)
+class FacingReach:
+    """How far squarely facing stroke ends may be joined, and where not.
+
+    `labels` are the boxes of text read on the sheet. A dimension line is
+    broken to make room for its value, which is written across the middle of
+    the gap, so a gap with a label centred on it keeps its break. A label by
+    either end of the gap, such as the size of a corner, does not.
+    """
+
+    reach: float = 0.0
+    labels: tuple[Bounds, ...] = ()
+
+    def labelled(self, start: Point, end: Point) -> bool:
+        """Return whether a label is centred on the gap between two ends."""
+        length = start.distance_to(end)
+        if length == 0.0:
+            return False
+        direction_x = (end.x - start.x) / length
+        direction_y = (end.y - start.y) / length
+        for left, top, width, height in self.labels:
+            offset_x = left + width / 2.0 - start.x
+            offset_y = top + height / 2.0 - start.y
+            along = (offset_x * direction_x + offset_y * direction_y) / length
+            across = abs(offset_x * direction_y - offset_y * direction_x)
+            if (
+                _LABEL_GAP_START <= along <= 1.0 - _LABEL_GAP_START
+                and across <= length / 2.0 + max(width, height) / 2.0
+            ):
+                return True
+        return False
+
+
+def _facing_bridges(
+    mask: GrayImage,
+    ends: tuple[StrokeEnd, ...],
+    bridged: set[int],
+    facing: FacingReach,
+    skip: float,
+) -> list[tuple[int, int]]:
+    """Pair the ends that point straight at each other across blank paper.
+
+    A faint stretch of one stroke drops out of the ink mask as a gap far
+    longer than a pen lift, and the two ends left on either side still point
+    squarely at each other. Nothing may lie between them: two lines meeting a
+    third between them keep their gap, and so does a dimension line broken
+    for a value written in or beside the gap.
+    """
+    pairs: list[tuple[int, int]] = []
+    taken = set(bridged)
+    for index, first in enumerate(ends):
+        if index in taken:
+            continue
+        candidates = [
+            (first.point.distance_to(second.point), other_index)
+            for other_index, second in enumerate(ends)
+            if other_index != index
+            and other_index not in taken
+            and _faces_squarely(first, second, facing.reach)
+            and _paper_between(mask, first.point, second.point, skip)
+            and not facing.labelled(first.point, second.point)
+        ]
+        if candidates:
+            _, other_index = min(candidates)
+            pairs.append((index, other_index))
+            taken.update((index, other_index))
+    return pairs
+
+
 def with_stroke_bridges(
     mask: GrayImage,
     ends: tuple[StrokeEnd, ...],
     reach: float,
     thickness: int,
+    facing: FacingReach | None = None,
 ) -> GrayImage:
     """Close the gaps a drawing's long strokes stop just short of.
 
@@ -629,6 +738,9 @@ def with_stroke_bridges(
     - Two stroke ends whose straight continuations cross within `reach` of
       both are run to the crossing, the corner the pen was heading for; two
       ends facing each other along one line are joined directly.
+    - Two ends pointing squarely at each other across blank paper are joined
+      up to the longer `facing` reach, closing a faint stretch of one stroke,
+      unless a text label sits by the gap.
     - A remaining end whose continuation meets other ink within `reach` is
       run to it, closing a T junction drawn a little short.
     """
@@ -649,6 +761,15 @@ def with_stroke_bridges(
         other_index, meeting = partner
         _draw(guided, ends[index].point, meeting, thickness)
         _draw(guided, ends[other_index].point, meeting, thickness)
+        bridged.update((index, other_index))
+    for index, other_index in _facing_bridges(
+        mask,
+        ends,
+        bridged,
+        facing or FacingReach(),
+        skip,
+    ):
+        _draw(guided, ends[index].point, ends[other_index].point, thickness)
         bridged.update((index, other_index))
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     label_image = np.asarray(labels, dtype=np.int32)
@@ -815,6 +936,86 @@ def merge_straight_corners(
     return tuple(kept)
 
 
+@dataclass(frozen=True, slots=True)
+class _Roundness:
+    """The measurements that decide whether a face is a drilled hole."""
+
+    circularity: float
+    rectangularity: float
+    aspect: float
+    coarse_vertices: int
+    residual_ratio: float
+    extent_ratio: float
+
+
+def _reads_as_circle(roundness: _Roundness, config: FaceConfig) -> bool:
+    """Return whether a face's measurements make it a circle.
+
+    A face only a few stroke widths across has too few pixels to show its
+    corners or its roundness, and on a fabrication sketch a mark that small
+    inside a part is a drilled hole, so it needs only to be roughly as wide
+    as it is tall.
+    """
+    if roundness.extent_ratio <= config.tiny_feature_ratio:
+        # A small square cutout still fills its bounding box; a rough round
+        # hole leaves the box's corners empty.
+        return (
+            roundness.aspect >= config.tiny_circle_aspect_ratio
+            and roundness.residual_ratio <= config.small_circle_residual_ratio
+            and roundness.rectangularity <= config.tiny_maximum_rectangularity
+        )
+    if (
+        roundness.aspect < config.circle_aspect_ratio
+        or roundness.coarse_vertices <= _QUADRILATERAL_VERTICES
+    ):
+        return False
+    if (
+        roundness.circularity >= config.circle_circularity
+        and roundness.rectangularity <= config.circle_maximum_rectangularity
+        and roundness.residual_ratio <= config.circle_residual_ratio
+    ):
+        return True
+    return (
+        roundness.extent_ratio <= config.small_feature_ratio
+        and roundness.circularity >= config.small_circle_circularity
+        and roundness.residual_ratio <= config.small_circle_residual_ratio
+    )
+
+
+def ring_radius(mask: GrayImage, center: Point, radius: float) -> float:
+    """Return the radius of the centre line of the ink ring around a hole.
+
+    A hole's face is the paper inside its ring, so its fitted radius falls
+    short of the drawn circle by half the ring's width, which on a small hole
+    drawn with a heavy pen is half the radius itself. Rays from the centre
+    find where the ring's ink starts and ends; the median midpoint is the
+    drawn radius. Without a clear ring the fitted radius stands.
+    """
+    height, width = cast("tuple[int, int]", mask.shape[:2])
+    limit = 2.0 * radius + _RING_SEARCH_MARGIN
+    midpoints: list[float] = []
+    for step in range(_RING_RAYS):
+        angle = 2.0 * math.pi * step / _RING_RAYS
+        cosine, sine = math.cos(angle), math.sin(angle)
+        start: float | None = None
+        distance = _RING_SEARCH_START * radius
+        while distance <= limit:
+            x = round(center.x + cosine * distance)
+            y = round(center.y + sine * distance)
+            if not (0 <= x < width and 0 <= y < height):
+                break
+            inked = int(cast("int", mask[y, x])) > 0
+            if start is None and inked:
+                start = distance
+            elif start is not None and not inked:
+                midpoints.append((start + distance - 1.0) / 2.0)
+                break
+            distance += 1.0
+    if 2 * len(midpoints) < _RING_RAYS:
+        return radius
+    return float(np.median(np.asarray(midpoints, dtype=np.float64)))
+
+
 def face_shape(
     face: Face,
     config: FaceConfig,
@@ -845,27 +1046,23 @@ def face_shape(
         return None
     circularity = 4.0 * math.pi * face.area / (perimeter * perimeter)
     rectangularity = face.area / max(1.0, rect_width * rect_height)
-    coarse_vertices = len(
-        cv2.approxPolyDP(contour, _COARSE_APPROXIMATION * perimeter, closed=True),
-    )
-    small = long_side <= config.small_feature_ratio * minimum_side
     fit = _fitted_circle(contour.reshape(-1, 2).astype(np.float64))
-    if (
-        fit is not None
-        and short_side / long_side >= config.circle_aspect_ratio
-        and coarse_vertices > _QUADRILATERAL_VERTICES
-        and (
-            (
-                circularity >= config.circle_circularity
-                and rectangularity <= config.circle_maximum_rectangularity
-                and fit[2] <= config.circle_residual_ratio * fit[1]
-            )
-            or (
-                small
-                and circularity >= config.small_circle_circularity
-                and fit[2] <= config.small_circle_residual_ratio * fit[1]
-            )
-        )
+    if fit is not None and _reads_as_circle(
+        _Roundness(
+            circularity=circularity,
+            rectangularity=rectangularity,
+            aspect=short_side / long_side,
+            coarse_vertices=len(
+                cv2.approxPolyDP(
+                    contour,
+                    _COARSE_APPROXIMATION * perimeter,
+                    closed=True,
+                ),
+            ),
+            residual_ratio=fit[2] / max(fit[1], 1e-9),
+            extent_ratio=long_side / max(1, minimum_side),
+        ),
+        config,
     ):
         center, radius, _ = fit
         return face.area, CircleCandidate(

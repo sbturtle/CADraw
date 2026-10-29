@@ -105,6 +105,14 @@ polyline 조립은 proximity connection을 다시 사용하지 않습니다. bra
 (`duplicate_filter.without_lines_through_features`)을 제거합니다.
 `scripts/run_reference_benchmark.py`가 따라 그린 정답으로 이 경로를 잽니다.
 
+면 경로에서는 선에도 두 가지 근거 검사를 더합니다. 선 정규화 직후, 선을
+가로지르는 잉크가 펜 굵기의 3배보다 넓은 지점이 12%를 넘는 선은 글자 줄을
+관통한 것으로 보고 지우며 `TEXT_STROKES_REMOVED`에 함께 보고합니다
+(`stroke_evidence.without_lettering_crossings`, ADR-0021). 마지막에는 짧은 변의
+15% 이상이고, 다른 선이나 닫힌 도형에 닿지 않으며, 잉크가 0.6px 이내로 곧은
+선을 인쇄 양식의 괘선으로 보고 지웁니다(`furniture_filter.without_printed_rules`,
+ADR-0020).
+
 도형 크기 하한은 절대값과 비례값 중 큰 쪽입니다
 (`max(minimum_shape_span, min(width, height) * 0.02)`). 절대값만으로는
 해상도에 따라 의미가 달라져, 2560픽셀 높이 사진에서 30픽셀 표시는 손글씨

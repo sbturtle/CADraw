@@ -238,10 +238,12 @@ def _truth(elements: list[dict[str, object]], shape: tuple[int, int]) -> _Truth:
 def _hole_matches(
     holes: tuple[tuple[float, float, float], ...],
     circles: list[CircleEntity],
-) -> int:
-    """Match traced holes to extracted circles one to one by centre and size."""
+) -> set[int]:
+    """Match traced holes to extracted circles one to one by centre and size.
+
+    Returns the indices of the circles that were matched.
+    """
     used: set[int] = set()
-    found = 0
     for cx, cy, radius in holes:
         best: tuple[float, int] | None = None
         for index, circle in enumerate(circles):
@@ -257,8 +259,7 @@ def _hole_matches(
                 best = (distance, index)
         if best is not None:
             used.add(best[1])
-            found += 1
-    return found
+    return used
 
 
 def _best_unmatched(
@@ -289,11 +290,11 @@ def _boundary_scores(
     outside_ignore: NDArray[np.bool_] = np.equal(truth.ignore, 0)
     counted: NDArray[np.bool_] = np.logical_and(
         np.greater(extracted, 0),
-        np.logical_or(near_truth, outside_ignore),
+        outside_ignore,
     )
     true_positive = int(np.count_nonzero(np.logical_and(counted, near_truth)))
     precision = true_positive / max(1, int(np.count_nonzero(counted)))
-    on_truth = truth.boundary > 0
+    on_truth = np.logical_and(truth.boundary > 0, outside_ignore)
     covered = np.logical_and(on_truth, np.less_equal(to_extracted, tolerance))
     recall = int(np.count_nonzero(covered)) / max(1, int(np.count_nonzero(on_truth)))
     return precision, recall, to_extracted
@@ -363,14 +364,9 @@ def score_sample(
         for index, (entity, _) in enumerate(closed_shapes)
         if index not in matched and isinstance(entity, CircleEntity)
     ]
-    holes_found = _hole_matches(truth.holes, [circle for _, circle in circles])
-    claimed = matched | {
-        index
-        for index, circle in circles
-        for cx, cy, radius in truth.holes
-        if math.hypot(circle.center.x - cx, circle.center.y - cy)
-        <= max(4.0, 0.5 * radius)
-    }
+    hole_circles = _hole_matches(truth.holes, [circle for _, circle in circles])
+    holes_found = len(hole_circles)
+    claimed = matched | {circles[position][0] for position in hole_circles}
     return (
         precision,
         recall,

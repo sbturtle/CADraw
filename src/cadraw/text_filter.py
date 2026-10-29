@@ -45,6 +45,9 @@ type Quad = tuple[Point, Point, Point, Point]
 type Region = NDArray[np.float32]
 
 _SAMPLE_SPACING = 3.0
+# Closed loops a handwritten glyph encloses. A letter `O` is left out: a
+# drilled hole drawn after a label is read as one.
+_GLYPH_LOOPS = {"0": 1, "6": 1, "8": 2, "9": 1, "Ø": 1, "ø": 1, "φ": 1, "Φ": 1}
 _ARC_SAMPLE_DEGREES = 10.0
 
 
@@ -130,13 +133,27 @@ def _reading_axis(quad: Quad) -> tuple[Point, Point]:
     )
 
 
-def _proved_axes(
+@dataclass(frozen=True, slots=True)
+class _ReadLabel:
+    """A proved label region, its reading axis, and the text read there."""
+
+    region: Region
+    leading: Point
+    trailing: Point
+    text: str
+
+
+def _read_labels(
     candidates: tuple[TextCandidate, ...],
     config: TextStrokeConfig,
-) -> tuple[tuple[Region, Point, Point], ...]:
-    """Pair each proved region with the reading axis of its text."""
+) -> tuple[_ReadLabel, ...]:
+    """Pair each proved region with its reading axis and text."""
     return tuple(
-        (_expanded_region(quad, config), *_reading_axis(quad))
+        _ReadLabel(
+            _expanded_region(quad, config),
+            *_reading_axis(quad),
+            text=candidate.text,
+        )
         for candidate in candidates
         if candidate.confidence >= config.minimum_confidence
         and _digit_count(candidate.text) >= config.minimum_digits
@@ -144,18 +161,8 @@ def _proved_axes(
     )
 
 
-def _is_glyph_loop(
-    circle: CircleCandidate,
-    axes: tuple[tuple[Region, Point, Point], ...],
-    config: TextStrokeConfig,
-) -> bool:
-    """Return whether a small circle is a digit's loop inside a proved label.
-
-    A drilled hole is usually labelled by an arrow and a size written right
-    after it, so OCR reads hole and label as one string such as `0149`, with
-    the hole as its leading glyph. Every loop further along the reading
-    direction belongs to the written number itself.
-    """
+def _position_along(circle: CircleCandidate, label: _ReadLabel) -> float | None:
+    """Return how far along a label's reading axis a circle inside it sits."""
     center = circle.center
     corners = (
         Point(center.x - circle.radius, center.y - circle.radius),
@@ -163,20 +170,57 @@ def _is_glyph_loop(
         Point(center.x + circle.radius, center.y + circle.radius),
         Point(center.x - circle.radius, center.y + circle.radius),
     )
-    for region, leading, trailing in axes:
-        if not all(_inside(region, corner) for corner in corners):
-            continue
-        axis_x = trailing.x - leading.x
-        axis_y = trailing.y - leading.y
-        length_squared = axis_x * axis_x + axis_y * axis_y
-        if length_squared <= 0.0:
-            continue
-        along = (
-            (center.x - leading.x) * axis_x + (center.y - leading.y) * axis_y
-        ) / length_squared
-        if along > config.leading_glyph_fraction:
-            return True
-    return False
+    if not all(_inside(label.region, corner) for corner in corners):
+        return None
+    axis_x = label.trailing.x - label.leading.x
+    axis_y = label.trailing.y - label.leading.y
+    length_squared = axis_x * axis_x + axis_y * axis_y
+    if length_squared <= 0.0:
+        return None
+    return (
+        (center.x - label.leading.x) * axis_x + (center.y - label.leading.y) * axis_y
+    ) / length_squared
+
+
+def _glyph_loop_ids(
+    shapes: tuple[ShapeCandidate, ...],
+    labels: tuple[_ReadLabel, ...],
+    config: TextStrokeConfig,
+) -> set[EntityId]:
+    """Return the small circles that are the loops of a label's own digits.
+
+    OCR gives no position per glyph, so each glyph of the reading is given an
+    equal share of the label along its reading axis. A circle goes only when
+    it sits in the share of a looped digit, and no more of them than that
+    digit has loops: in `160` the circles in the `6` and `0` shares go. The
+    first glyph and the leading part of the label are never taken, because a
+    drilled hole is usually labelled by an arrow and a size written right
+    after it, so OCR reads hole and label as one string such as `0149`. A
+    hole read as the letter `O`, as in `100O`, sits in a share no digit
+    explains and stays.
+    """
+    circles = tuple(shape for shape in shapes if isinstance(shape, CircleCandidate))
+    removed: set[EntityId] = set()
+    for label in labels:
+        count = len(label.text)
+        placed = tuple(
+            (position, circle.entity_id)
+            for circle in circles
+            if (position := _position_along(circle, label)) is not None
+            and position > config.leading_glyph_fraction
+        )
+        for index, character in enumerate(label.text):
+            loops = _GLYPH_LOOPS.get(character, 0)
+            if index == 0 or not loops:
+                continue
+            low, high = index / count, (index + 1) / count
+            in_share = sorted(
+                (abs(position - (low + high) / 2.0), entity_id)
+                for position, entity_id in placed
+                if low <= position <= high and entity_id not in removed
+            )
+            removed.update(entity_id for _, entity_id in in_share[:loops])
+    return removed
 
 
 def _inside(region: Region, point: Point) -> bool:
@@ -335,11 +379,11 @@ def without_text_strokes(
             removed.append(line.entity_id)
         else:
             kept_lines.append(line)
-    axes = _proved_axes(text_candidates, config)
+    loops = _glyph_loop_ids(shapes, _read_labels(text_candidates, config), config)
     kept_shapes: list[ShapeCandidate] = []
     for shape in shapes:
         lettering = (
-            _is_glyph_loop(shape, axes, config)
+            shape.entity_id in loops
             if isinstance(shape, CircleCandidate)
             else _is_lettering(_outline_samples(shape), regions, ink)
         )

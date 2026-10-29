@@ -1,7 +1,7 @@
 """OpenCV image preparation and deterministic line candidate detection."""
 
-from dataclasses import dataclass, field
-from math import atan2, degrees, hypot, isfinite, pi, sqrt
+from dataclasses import dataclass, field, replace
+from math import atan2, degrees, hypot, inf, isfinite, pi, sqrt
 from pathlib import Path
 from typing import cast, final, override
 
@@ -15,9 +15,11 @@ from cadraw.arbitration import (
 )
 from cadraw.faces import (
     FaceConfig,
+    FacingReach,
     enclosed_faces,
     face_shape,
     flattened_ink,
+    ring_radius,
     stroke_ends,
     stroke_width,
     thinned,
@@ -69,6 +71,11 @@ _MAX_ARC_SPAN_DEGREES = 320.0
 _MAX_ARC_TO_BOX_RADIUS_RATIO = 3.0
 _FRAME_RULE_AXIS_SLOPE = 0.09
 _THINNING_SLACK_ITERATIONS = 3
+_PAPER_LEVEL = 255
+_WOBBLE_STEP = 3.0
+_WOBBLE_HALF_BAND = 6.0
+_WOBBLE_MINIMUM_DARKNESS = 60.0
+_WOBBLE_MINIMUM_SAMPLES = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +122,16 @@ class ImageReadError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class DetectionConfig:
-    """OpenCV parameters for the Phase 1 detector."""
+    """OpenCV parameters for the Phase 1 detector.
+
+    The `minimum_shape_*` limits belong to the contour path. With
+    `faces.enabled`, closed shapes are read from enclosed paper instead and
+    those limits do not apply: they would drop every drilled hole a few pen
+    widths across. There `faces.minimum_face_area` bounds a face's size, and
+    a small mark that sits inside no other shape is dropped as lettering
+    (`faces.isolated_mark_ratio`). Open arcs still come from the contour path
+    and keep its limits.
+    """
 
     minimum_line_length: float = 80.0
     hough_threshold: int = 40
@@ -326,6 +342,58 @@ def stroke_intensity(image: GrayImage, start: Point, end: Point) -> float:
         ]
         values.append(min(band_values))
     return float(np.median(np.asarray(values, dtype=np.float32)))
+
+
+def stroke_wobble(flattened: GrayImage, start: Point, end: Point) -> float:
+    """Return how far a stroke's ink strays from one straight line, in pixels.
+
+    Every few pixels along the line, the darkness-weighted centre of the ink
+    across it is measured; the RMS of those centres about their own best-fit
+    line is the wobble. `flattened` is an illumination-flattened page, so
+    paper contributes nothing. A line with too little ink under it to measure
+    returns infinity.
+    """
+    length = start.distance_to(end)
+    if length <= 0.0:
+        return inf
+    direction_x = (end.x - start.x) / length
+    direction_y = (end.y - start.y) / length
+    height, width = cast("tuple[int, int]", flattened.shape[:2])
+    along = np.arange(0.0, length, _WOBBLE_STEP)
+    across = np.arange(-_WOBBLE_HALF_BAND, _WOBBLE_HALF_BAND + 1.0)
+    xs = np.clip(
+        np.rint(
+            start.x + direction_x * along[:, None] - direction_y * across[None, :],
+        ).astype(np.int64),
+        0,
+        width - 1,
+    )
+    ys = np.clip(
+        np.rint(
+            start.y + direction_y * along[:, None] + direction_x * across[None, :],
+        ).astype(np.int64),
+        0,
+        height - 1,
+    )
+    darkness = np.subtract(
+        float(_PAPER_LEVEL),
+        np.asarray(flattened[ys, xs], dtype=np.float64),
+    )
+    weights: NDArray[np.float64] = np.clip(darkness, 0.0, None)
+    totals: NDArray[np.float64] = weights.sum(axis=1)
+    inked = totals >= _WOBBLE_MINIMUM_DARKNESS
+    if int(np.count_nonzero(inked)) < _WOBBLE_MINIMUM_SAMPLES:
+        return inf
+    centres: NDArray[np.float64] = (weights[inked] * across[None, :]).sum(
+        axis=1,
+    ) / totals[inked]
+    positions: NDArray[np.float64] = along[inked]
+    slope, intercept = cast(
+        "list[float]",
+        np.polyfit(positions, centres, 1).tolist(),
+    )
+    residual = centres - (slope * positions + intercept)
+    return sqrt(float(np.mean(residual * residual)))
 
 
 def _line_local_contrast(
@@ -1666,10 +1734,30 @@ def _shape_evidence(
     )
 
 
+def _ring_sized(
+    candidate: ShapeCandidate,
+    ink: GrayImage,
+    largest_radius: float,
+) -> ShapeCandidate:
+    """Size a small circle read from a face by its drawn ring's centre line.
+
+    Only a drilled hole is drawn as a ring a few pen widths across; a large
+    circle is a part outline, with features drawn just inside it.
+    """
+    if not isinstance(candidate, CircleCandidate) or candidate.radius > largest_radius:
+        return candidate
+    return replace(
+        candidate,
+        radius=ring_radius(ink, candidate.center, candidate.radius),
+    )
+
+
 def detect_face_shapes_with_evidence(
     image: GrayImage,
     config: DetectionConfig,
     bridge_reach: float = 0.0,
+    labels: tuple[tuple[float, float, float, float], ...] = (),
+    arcs: tuple[ArcCandidate, ...] = (),
 ) -> ShapeDetectionEvidence:
     """Detect closed shapes from the paper regions the strokes enclose.
 
@@ -1677,7 +1765,10 @@ def detect_face_shapes_with_evidence(
     variant: a variant tuned to make faint lines visible also makes graph
     paper visible, and its rails would cut every part into grid cells.
     `bridge_reach` is the least gap a stroke end may be bridged across; the
-    sheet's own size usually asks for more.
+    sheet's own size usually asks for more. `labels` are the boxes of text
+    read on the sheet, which keep a dimension line's gap from being bridged.
+    An open curve encloses no face, so `arcs` found by the contour path are
+    carried along and deduplicated with the faces' circles.
     """
     if not config.detect_closed_shapes:
         return ShapeDetectionEvidence(())
@@ -1694,7 +1785,16 @@ def detect_face_shapes_with_evidence(
         round(minimum_side * settings.bridge_branch_ratio),
         settings.bridge_direction_span,
     )
-    guided = with_stroke_bridges(parts, ends, reach, settings.bridge_thickness)
+    guided = with_stroke_bridges(
+        parts,
+        ends,
+        reach,
+        settings.bridge_thickness,
+        FacingReach(
+            reach=max(reach, minimum_side * settings.facing_reach_ratio),
+            labels=labels,
+        ),
+    )
     part_close = round(minimum_side * settings.part_close_ratio)
     # Paper meeting the backdrop at a photograph's edge encloses wedges of
     # its own; nothing drawn sits that close to the frame.
@@ -1716,7 +1816,19 @@ def detect_face_shapes_with_evidence(
                 continue
             parsed = face_shape(face, settings, minimum_side)
             if parsed is not None:
-                candidates.append(parsed)
+                candidates.append(
+                    (
+                        parsed[0],
+                        _ring_sized(
+                            parsed[1],
+                            features,
+                            minimum_side * settings.small_feature_ratio / 2.0,
+                        ),
+                    ),
+                )
+    # Faces sort first, so a circle read from a face wins over the arc the
+    # contour path found along the same ring.
+    candidates.extend((0.0, arc) for arc in arcs)
     return _shape_evidence(
         candidates,
         width,

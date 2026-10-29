@@ -13,15 +13,24 @@ happens to follow a rail is dark, joined to the rest of the drawing, or both,
 and stays.
 """
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from cadraw.models import LineEntity, Orientation, Point
+from cadraw.models import (
+    ArcEntity,
+    CircleEntity,
+    LineEntity,
+    Orientation,
+    Point,
+    PolylineEntity,
+)
 
 type Bounds = tuple[float, float, float, float]
 type StrokeIntensity = Callable[[Point, Point], float]
 
 _MIN_EDGE_OVERLAP_RATIO = 0.50
+_PRINTED_RULE_WOBBLE = 0.6
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +122,95 @@ def _on_rail(line: LineEntity, rails: RulingRails) -> bool:
     else:
         return False
     return any(abs(offset - rail) <= rails.band_width for rail in family)
+
+
+def _segment_distance(point: Point, start: Point, end: Point) -> float:
+    """Return the distance from a point to a line segment."""
+    delta_x = end.x - start.x
+    delta_y = end.y - start.y
+    length_squared = delta_x * delta_x + delta_y * delta_y
+    if length_squared == 0.0:
+        return point.distance_to(start)
+    along = (
+        (point.x - start.x) * delta_x + (point.y - start.y) * delta_y
+    ) / length_squared
+    along = max(0.0, min(1.0, along))
+    return point.distance_to(
+        Point(start.x + along * delta_x, start.y + along * delta_y),
+    )
+
+
+def _on_arc(point: Point, arc: ArcEntity, snap_distance: float) -> bool:
+    """Return whether a point lies on an open arc's curve."""
+    if abs(point.distance_to(arc.center) - arc.radius) > snap_distance:
+        return False
+    angle = math.degrees(
+        math.atan2(point.y - arc.center.y, point.x - arc.center.x),
+    )
+    sweep = (arc.end_angle_degrees - arc.start_angle_degrees) % 360.0
+    # The snap distance also reaches a little past either end of the arc.
+    slack = math.degrees(snap_distance / max(arc.radius, 1.0))
+    return (angle - arc.start_angle_degrees + slack) % 360.0 <= sweep + 2.0 * slack
+
+
+def _touches_shape(
+    point: Point,
+    shapes: tuple[PolylineEntity | CircleEntity | ArcEntity, ...],
+    snap_distance: float,
+) -> bool:
+    """Return whether a point lies on a shape's outline or on an arc."""
+    for shape in shapes:
+        if isinstance(shape, ArcEntity):
+            if _on_arc(point, shape, snap_distance):
+                return True
+            continue
+        if isinstance(shape, CircleEntity):
+            if abs(point.distance_to(shape.center) - shape.radius) <= snap_distance:
+                return True
+            continue
+        corners = shape.points
+        if any(
+            _segment_distance(
+                point, corners[index], corners[(index + 1) % len(corners)]
+            )
+            <= snap_distance
+            for index in range(len(corners))
+        ):
+            return True
+    return False
+
+
+def without_printed_rules(
+    lines: tuple[LineEntity, ...],
+    shapes: tuple[PolylineEntity | CircleEntity | ArcEntity, ...],
+    snap_distance: float,
+    minimum_length: float,
+    wobble: StrokeIntensity,
+) -> tuple[LineEntity, ...]:
+    """Drop long, isolated lines whose ink is as straight as print.
+
+    A form's header and footer rules can sit anywhere on the sheet, so the
+    page-edge test misses most of them. What gives them away is their
+    straightness: a printed rule stays within a fraction of a pixel of one
+    line along its whole length, while a hand-drawn stroke of that length
+    wanders by a pixel or more even when drawn against a ruler. A line joined
+    to the rest of the drawing stays, however straight: a printed rule meets
+    no drawn stroke at its ends, neither another line, a closed outline, nor
+    an arc such as a rounded corner.
+    """
+    return tuple(
+        line
+        for line in lines
+        if not (
+            line.length >= minimum_length
+            and _is_isolated(line, lines, snap_distance)
+            and not any(
+                _touches_shape(point, shapes, snap_distance)
+                for point in (line.start, line.end)
+            )
+            and wobble(line.start, line.end) <= _PRINTED_RULE_WOBBLE
+        )
+    )
 
 
 def without_ruling_remnants(

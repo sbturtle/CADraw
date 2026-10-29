@@ -1,3 +1,5 @@
+import math
+
 import cv2
 import numpy as np
 
@@ -6,6 +8,7 @@ from cadraw.detection import (
     DrawingFieldConfig,
     detect_line_candidates,
     detect_shape_candidates,
+    stroke_wobble,
 )
 from cadraw.models import ArcCandidate, CircleCandidate, Point, PolylineCandidate
 
@@ -304,3 +307,28 @@ def _extent_of(candidate: CircleCandidate | PolylineCandidate) -> float:
     xs = [point.x for point in candidate.points]
     ys = [point.y for point in candidate.points]
     return max(max(xs) - min(xs), max(ys) - min(ys))
+
+
+def test_print_is_measured_straighter_than_a_pen_stroke() -> None:
+    # Given a printed rule and a pen stroke of the same length on one page
+    page = np.full((300, 900), 255, dtype=np.uint8)
+    _ = cv2.line(page, (40, 80), (860, 80), 40, 2)
+    wobbling = np.asarray(
+        [[x, 220 + round(2.0 * math.sin(x / 37.0))] for x in range(40, 861, 4)],
+        dtype=np.int32,
+    ).reshape(-1, 1, 2)
+    _ = cv2.polylines(page, [wobbling], isClosed=False, color=40, thickness=2)
+
+    # When their straightness is measured
+    printed = stroke_wobble(page, Point(40.0, 80.0), Point(860.0, 80.0))
+    drawn = stroke_wobble(page, Point(40.0, 220.0), Point(860.0, 220.0))
+
+    # Then the rule stays within a fraction of a pixel and the stroke does not
+    assert printed < 0.3
+    assert drawn > 1.0
+
+
+def test_a_line_over_blank_paper_has_no_measurable_straightness() -> None:
+    page = np.full((100, 400), 255, dtype=np.uint8)
+
+    assert stroke_wobble(page, Point(20.0, 50.0), Point(380.0, 50.0)) == float("inf")
