@@ -165,6 +165,14 @@ def _illumination_flattened(
     )
 
 
+def illumination_flattened(
+    image: GrayImage,
+    config: PreprocessingConfig | None = None,
+) -> GrayImage:
+    """Return the image divided by its slowly varying paper background."""
+    return _illumination_flattened(image, config or PreprocessingConfig())
+
+
 def _shadow_removed(
     image: GrayImage,
     config: PreprocessingConfig,

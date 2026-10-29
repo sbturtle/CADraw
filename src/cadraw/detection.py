@@ -13,6 +13,16 @@ from cadraw.arbitration import (
     CandidateArbitrationConfig,
     arbitrate_line_candidates,
 )
+from cadraw.faces import (
+    FaceConfig,
+    enclosed_faces,
+    face_shape,
+    flattened_ink,
+    stroke_ends,
+    stroke_width,
+    thinned,
+    with_stroke_bridges,
+)
 from cadraw.grid_filter import (
     filter_periodic_grid_candidates,
     inspect_periodic_grid_shapes,
@@ -27,6 +37,7 @@ from cadraw.models import (
     PolylineCandidate,
     ShapeCandidate,
 )
+from cadraw.preprocessing import illumination_flattened
 from cadraw.table_filter import (
     TableFilterConfig,
     inspect_printed_table_shapes,
@@ -57,6 +68,7 @@ _MIN_ARC_SPAN_DEGREES = 50.0
 _MAX_ARC_SPAN_DEGREES = 320.0
 _MAX_ARC_TO_BOX_RADIUS_RATIO = 3.0
 _FRAME_RULE_AXIS_SLOPE = 0.09
+_THINNING_SLACK_ITERATIONS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +139,7 @@ class DetectionConfig:
     )
     drawing_field: DrawingFieldConfig = field(default_factory=DrawingFieldConfig)
     printed_table: TableFilterConfig = field(default_factory=TableFilterConfig)
+    faces: FaceConfig = field(default_factory=FaceConfig)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1479,14 +1492,20 @@ def _without_nested_duplicates(
     none of them is a duplicate of another.
     """
     unique: list[ShapeCandidate] = []
+    # Every duplicate pair has nearly overlapping boxes, so the box test spares
+    # the full comparison for the many shapes that lie apart on a busy sheet.
+    unique_bounds: list[tuple[float, float, float, float]] = []
     for candidate in candidates:
+        bounds = _shape_bounds(candidate)
         matches = [
             index
             for index, existing in enumerate(unique)
-            if _shape_duplicate(existing, candidate)
+            if _bounds_overlap(unique_bounds[index], bounds)
+            and _shape_duplicate(existing, candidate)
         ]
         if not matches:
             unique.append(candidate)
+            unique_bounds.append(bounds)
             continue
         # A round mark is described best by its circle; when the polygon of
         # the same ring arrived first, the circle takes its place.
@@ -1495,7 +1514,26 @@ def _without_nested_duplicates(
             PolylineCandidate,
         ):
             unique[matches[0]] = candidate
+            unique_bounds[matches[0]] = bounds
     return tuple(unique)
+
+
+def _bounds_overlap(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+) -> bool:
+    """Return whether two boxes come within a duplicate circle's offset.
+
+    Two tiny circles may count as one while their boxes stay just apart, so
+    the boxes are compared with that offset as slack.
+    """
+    slack = _MIN_DUPLICATE_CIRCLE_DISTANCE
+    return (
+        first[0] <= second[2] + slack
+        and second[0] <= first[2] + slack
+        and first[1] <= second[3] + slack
+        and second[1] <= first[3] + slack
+    )
 
 
 def detect_shape_candidates_with_evidence(
@@ -1543,6 +1581,49 @@ def detect_shape_candidates_with_evidence(
             )
         )
     ]
+    return _shape_evidence(candidates, prepared.width, prepared.height, config)
+
+
+def _shape_extent(candidate: ShapeCandidate) -> float:
+    """Return the larger side of a candidate's bounding box."""
+    min_x, min_y, max_x, max_y = _shape_bounds(candidate)
+    return max(max_x - min_x, max_y - min_y)
+
+
+def settle_shape_roles(
+    candidates: tuple[ShapeCandidate, ...],
+    isolated_mark_extent: float | None = None,
+) -> tuple[ShapeCandidate, ...]:
+    """Classify holes afresh and, if asked, drop small isolated marks.
+
+    Roles depend on which other shapes survive, so they are settled again
+    whenever a later filter removes a candidate that another one sat inside.
+    """
+    classified = classify_shape_holes(candidates)
+    if isolated_mark_extent is None:
+        return classified
+    return tuple(
+        candidate
+        for candidate in classified
+        if candidate.role is GeometryRole.HOLE
+        or _shape_extent(candidate) >= isolated_mark_extent
+    )
+
+
+def _shape_evidence(
+    candidates: list[tuple[float, ShapeCandidate]],
+    width: int,
+    height: int,
+    config: DetectionConfig,
+    isolated_mark_extent: float | None = None,
+) -> ShapeDetectionEvidence:
+    """Prove paper structure away, then deduplicate, classify, and number.
+
+    With `isolated_mark_extent`, a closed mark smaller than that which lies
+    inside no other shape is dropped: a part is never that small on its sheet,
+    while the loops of handwritten digits and syllables always are, and a
+    small drilled hole is kept because it sits inside its part.
+    """
     candidates.sort(
         key=lambda item: (
             -item[0],
@@ -1552,15 +1633,15 @@ def detect_shape_candidates_with_evidence(
     )
     grid_evidence = inspect_periodic_grid_shapes(
         tuple(candidate for _, candidate in candidates),
-        prepared.width,
-        prepared.height,
+        width,
+        height,
         config.arbitration.grid,
     )
     deduplicated = _without_nested_duplicates(grid_evidence.candidates)
     table_evidence = inspect_printed_table_shapes(
         deduplicated,
-        prepared.width,
-        prepared.height,
+        width,
+        height,
         config.printed_table,
     )
     retained_ids = {id(candidate) for candidate in table_evidence.candidates}
@@ -1569,7 +1650,7 @@ def detect_shape_candidates_with_evidence(
         for candidate in deduplicated
         if id(candidate) not in retained_ids
     )
-    classified = classify_shape_holes(table_evidence.candidates)
+    classified = settle_shape_roles(table_evidence.candidates, isolated_mark_extent)
     limited = classified[: config.maximum_shape_candidates]
     return ShapeDetectionEvidence(
         candidates=tuple(
@@ -1582,6 +1663,66 @@ def detect_shape_candidates_with_evidence(
         table_candidate_count=table_evidence.removed_count,
         candidate_limit_reached=len(classified) > config.maximum_shape_candidates,
         table_cell_bounds=table_cell_bounds,
+    )
+
+
+def detect_face_shapes_with_evidence(
+    image: GrayImage,
+    config: DetectionConfig,
+    bridge_reach: float = 0.0,
+) -> ShapeDetectionEvidence:
+    """Detect closed shapes from the paper regions the strokes enclose.
+
+    `image` is the analysis frame's own grayscale, not a preprocessing
+    variant: a variant tuned to make faint lines visible also makes graph
+    paper visible, and its rails would cut every part into grid cells.
+    `bridge_reach` is the least gap a stroke end may be bridged across; the
+    sheet's own size usually asks for more.
+    """
+    if not config.detect_closed_shapes:
+        return ShapeDetectionEvidence(())
+    settings = config.faces
+    height, width = cast("tuple[int, int]", image.shape[:2])
+    minimum_side = min(width, height)
+    flattened = illumination_flattened(image)
+    features = flattened_ink(flattened, settings)
+    parts = flattened_ink(flattened, settings, sensitive=True)
+    grow = round(stroke_width(features) / 2.0)
+    reach = max(bridge_reach, minimum_side * settings.bridge_reach_ratio)
+    ends = stroke_ends(
+        thinned(parts, round(stroke_width(parts)) + _THINNING_SLACK_ITERATIONS),
+        round(minimum_side * settings.bridge_branch_ratio),
+        settings.bridge_direction_span,
+    )
+    guided = with_stroke_bridges(parts, ends, reach, settings.bridge_thickness)
+    part_close = round(minimum_side * settings.part_close_ratio)
+    # Paper meeting the backdrop at a photograph's edge encloses wedges of
+    # its own; nothing drawn sits that close to the frame.
+    border = max(1.0, minimum_side * settings.border_margin_ratio)
+    candidates: list[tuple[float, ShapeCandidate]] = []
+    scales = (
+        (features, settings.feature_close_size),
+        (guided, settings.feature_close_size),
+        (guided, part_close),
+    )
+    for mask, close_size in scales:
+        for face in enclosed_faces(mask, close_size, settings.minimum_face_area, grow):
+            x, y, box_width, box_height = cv2.boundingRect(face.contour)
+            if (
+                box_width > width * settings.maximum_extent_ratio
+                or box_height > height * settings.maximum_extent_ratio
+                or min(x, y, width - x - box_width, height - y - box_height) <= border
+            ):
+                continue
+            parsed = face_shape(face, settings, minimum_side)
+            if parsed is not None:
+                candidates.append(parsed)
+    return _shape_evidence(
+        candidates,
+        width,
+        height,
+        config,
+        isolated_mark_extent=minimum_side * settings.isolated_mark_ratio,
     )
 
 

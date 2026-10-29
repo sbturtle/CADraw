@@ -130,6 +130,32 @@ def test_proved_paper_grid_is_removed_and_reported_instead_of_blocking(
     )
 
 
+def test_a_plate_with_many_slots_is_not_treated_as_noise(tmp_path: Path) -> None:
+    # Given one plate outline holding two rows of equal slots and nothing else
+    image = np.full((900, 1200), 236, dtype=np.uint8)
+    _ = cv2.rectangle(image, (280, 230), (920, 670), 30, 3)
+    for row in (330, 530):
+        for left in range(340, 840, 100):
+            _ = cv2.rectangle(image, (left, row), (left + 50, row + 60), 30, 2)
+    image_path = tmp_path / "slotted-plate.png"
+    Image.fromarray(image).save(image_path)
+
+    # When the shipped detection settings analyze it as an already flat page
+    analysis = analyze_image(
+        image_path,
+        replace(PipelineConfig.from_detection_defaults(), perspective_correction=False),
+    )
+
+    # Then the slots are the plate's holes and export is not held back
+    holes = [
+        entity
+        for entity in analysis.entities
+        if isinstance(entity, PolylineEntity) and entity.role.value == "hole"
+    ]
+    assert len(holes) == 10
+    assert analysis.status is not AnalysisStatus.TOO_MUCH_NOISE
+
+
 def test_analysis_keeps_missing_dimensions_explicit(tmp_path: Path) -> None:
     # Given a saved sketch with two connected structural strokes
     image = np.full((240, 320), 255, dtype=np.uint8)

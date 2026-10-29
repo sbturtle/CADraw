@@ -13,8 +13,10 @@ drawn notch can look like a glyph. Two further tests make the removal safe.
    that region. A label touching the outline shares its ink component with the
    outline, which then reaches outside the box and keeps the stroke.
 
-Circles are never removed. A drilled hole is the one closed shape that sits
-inside a label legitimately, as in `o←Ø14`, where it is the thing labelled.
+A circle is judged differently, because a drilled hole is the one closed
+shape that sits inside a label legitimately, as in `o←Ø14`, where it is the
+thing labelled and OCR reads it as the label's first glyph. A small circle
+inside a proved label is a digit's loop unless it leads the reading order.
 """
 
 import math
@@ -56,6 +58,7 @@ class TextStrokeConfig:
     region_padding_ratio: float = 0.25
     minimum_region_padding: float = 4.0
     ink_search_band: int = 2
+    leading_glyph_fraction: float = 0.3
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +116,67 @@ def proved_text_regions(
         if candidate.confidence >= config.minimum_confidence
         and _digit_count(candidate.text) >= config.minimum_digits
     )
+
+
+def _reading_axis(quad: Quad) -> tuple[Point, Point]:
+    """Return the midpoints of a text quad's leading and trailing edges."""
+    top_left, top_right, bottom_right, bottom_left = quad
+    return (
+        Point((top_left.x + bottom_left.x) / 2.0, (top_left.y + bottom_left.y) / 2.0),
+        Point(
+            (top_right.x + bottom_right.x) / 2.0,
+            (top_right.y + bottom_right.y) / 2.0,
+        ),
+    )
+
+
+def _proved_axes(
+    candidates: tuple[TextCandidate, ...],
+    config: TextStrokeConfig,
+) -> tuple[tuple[Region, Point, Point], ...]:
+    """Pair each proved region with the reading axis of its text."""
+    return tuple(
+        (_expanded_region(quad, config), *_reading_axis(quad))
+        for candidate in candidates
+        if candidate.confidence >= config.minimum_confidence
+        and _digit_count(candidate.text) >= config.minimum_digits
+        for quad in (_candidate_quad(candidate),)
+    )
+
+
+def _is_glyph_loop(
+    circle: CircleCandidate,
+    axes: tuple[tuple[Region, Point, Point], ...],
+    config: TextStrokeConfig,
+) -> bool:
+    """Return whether a small circle is a digit's loop inside a proved label.
+
+    A drilled hole is usually labelled by an arrow and a size written right
+    after it, so OCR reads hole and label as one string such as `0149`, with
+    the hole as its leading glyph. Every loop further along the reading
+    direction belongs to the written number itself.
+    """
+    center = circle.center
+    corners = (
+        Point(center.x - circle.radius, center.y - circle.radius),
+        Point(center.x + circle.radius, center.y - circle.radius),
+        Point(center.x + circle.radius, center.y + circle.radius),
+        Point(center.x - circle.radius, center.y + circle.radius),
+    )
+    for region, leading, trailing in axes:
+        if not all(_inside(region, corner) for corner in corners):
+            continue
+        axis_x = trailing.x - leading.x
+        axis_y = trailing.y - leading.y
+        length_squared = axis_x * axis_x + axis_y * axis_y
+        if length_squared <= 0.0:
+            continue
+        along = (
+            (center.x - leading.x) * axis_x + (center.y - leading.y) * axis_y
+        ) / length_squared
+        if along > config.leading_glyph_fraction:
+            return True
+    return False
 
 
 def _inside(region: Region, point: Point) -> bool:
@@ -271,9 +335,15 @@ def without_text_strokes(
             removed.append(line.entity_id)
         else:
             kept_lines.append(line)
+    axes = _proved_axes(text_candidates, config)
     kept_shapes: list[ShapeCandidate] = []
     for shape in shapes:
-        if _is_lettering(_outline_samples(shape), regions, ink):
+        lettering = (
+            _is_glyph_loop(shape, axes, config)
+            if isinstance(shape, CircleCandidate)
+            else _is_lettering(_outline_samples(shape), regions, ink)
+        )
+        if lettering:
             removed.append(shape.entity_id)
         else:
             kept_shapes.append(shape)

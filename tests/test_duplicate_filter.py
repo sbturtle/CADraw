@@ -1,5 +1,16 @@
-from cadraw.duplicate_filter import without_polygon_edge_lines
-from cadraw.models import EntityId, LineEntity, Orientation, Point, PolylineEntity
+from cadraw.duplicate_filter import (
+    without_lines_through_features,
+    without_polygon_edge_lines,
+)
+from cadraw.models import (
+    CircleEntity,
+    EntityId,
+    GeometryRole,
+    LineEntity,
+    Orientation,
+    Point,
+    PolylineEntity,
+)
 
 
 def _line(name: str, start: Point, end: Point, orientation: Orientation) -> LineEntity:
@@ -50,6 +61,57 @@ def test_a_line_that_leaves_the_outline_is_kept() -> None:
 
     # Then both stay: one leaves the boundary, the other crosses the interior
     assert kept == (member, chord)
+
+
+def _hole() -> CircleEntity:
+    return CircleEntity(
+        entity_id=EntityId("hole"),
+        center=Point(300.0, 200.0),
+        radius=20.0,
+        confidence=0.9,
+        role=GeometryRole.HOLE,
+    )
+
+
+def test_a_line_through_a_blank_hole_is_dropped() -> None:
+    # Given a detector line bridging strokes straight across a hole
+    crossing = _line(
+        "crossing", Point(250.0, 200.0), Point(350.0, 200.0), Orientation.HORIZONTAL
+    )
+
+    # Then it cannot be ink: a stroke there would have split the hole's face
+    assert without_lines_through_features((crossing,), (_hole(),), 3.0) == ()
+
+
+def test_a_leader_touching_a_hole_edge_is_kept() -> None:
+    # Given a leader line that ends on the hole's rim
+    leader = _line(
+        "leader", Point(400.0, 200.0), Point(321.0, 200.0), Orientation.HORIZONTAL
+    )
+
+    # Then it stays, since it never runs into the blank interior
+    assert without_lines_through_features((leader,), (_hole(),), 3.0) == (leader,)
+
+
+def test_a_line_through_a_slot_is_dropped() -> None:
+    # Given a slot and a line drawn along its blank middle
+    slot = PolylineEntity(
+        entity_id=EntityId("slot"),
+        points=(
+            Point(200.0, 180.0),
+            Point(320.0, 180.0),
+            Point(320.0, 220.0),
+            Point(200.0, 220.0),
+        ),
+        closed=True,
+        confidence=0.9,
+        role=GeometryRole.HOLE,
+    )
+    crossing = _line(
+        "crossing", Point(150.0, 200.0), Point(370.0, 200.0), Orientation.HORIZONTAL
+    )
+
+    assert without_lines_through_features((crossing,), (slot,), 3.0) == ()
 
 
 def test_an_open_polyline_is_not_an_outline() -> None:

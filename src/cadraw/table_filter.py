@@ -16,9 +16,10 @@ legitimately sit anywhere on the sheet.
 
 from dataclasses import dataclass
 
-from cadraw.models import PolylineCandidate, ShapeCandidate
+from cadraw.models import ArcCandidate, PolylineCandidate, ShapeCandidate
 
 _MIN_BAND_OVERLAP_RATIO = 0.45
+_ENCLOSURE_SLACK_RATIO = 0.10
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +83,23 @@ def _cells(
             ),
         )
     return tuple(sorted(cells, key=lambda cell: cell.low))
+
+
+def _encloses(outer: _Cell, inner: _Cell) -> bool:
+    """Return whether one cell's box lies inside a strictly larger one.
+
+    A glyph traced from inside a printed cell can poke a pixel or two past the
+    cell's own traced edge, so the containment allows a sliver of the depth.
+    """
+    slack = _ENCLOSURE_SLACK_RATIO * outer.depth
+    return (
+        outer.low - slack <= inner.low
+        and inner.high <= outer.high + slack
+        and outer.band_low - slack <= inner.band_low
+        and inner.band_high <= outer.band_high + slack
+        and (outer.high - outer.low) * outer.depth
+        > (inner.high - inner.low) * inner.depth
+    )
 
 
 def _shares_band(first: _Cell, second: _Cell) -> bool:
@@ -187,10 +205,87 @@ def _table_member_ids(
 ) -> set[int]:
     """Return candidate ids proved to belong to a table on one axis."""
     cells = _cells(candidates, horizontal=horizontal)
-    proved = _proved_chains(cells, along_gap, maximum_depth, settings)
+    # A glyph traced inside a printed cell sits between two of the row's
+    # cells in the run and breaks it, so a row that fails to prove itself is
+    # tried again without the shapes enclosed by another. The first attempt
+    # keeps them, because a table's own outline encloses whole cells.
+    proved = _proved_chains(
+        cells,
+        along_gap,
+        maximum_depth,
+        settings,
+    ) or _proved_chains(
+        tuple(
+            cell
+            for cell in cells
+            if not any(other is not cell and _encloses(other, cell) for other in cells)
+        ),
+        along_gap,
+        maximum_depth,
+        settings,
+    )
     if not proved:
         return set()
     return {id(cell.candidate) for cell in cells if _belongs_to_table(cell, proved)}
+
+
+def _box(candidate: ShapeCandidate) -> tuple[float, float, float, float]:
+    """Return a candidate's axis-aligned bounding box."""
+    if isinstance(candidate, PolylineCandidate):
+        xs = [point.x for point in candidate.points]
+        ys = [point.y for point in candidate.points]
+        return min(xs), min(ys), max(xs), max(ys)
+    center = candidate.center
+    return (
+        center.x - candidate.radius,
+        center.y - candidate.radius,
+        center.x + candidate.radius,
+        center.y + candidate.radius,
+    )
+
+
+def _drawn_inside_retained(
+    candidates: tuple[ShapeCandidate, ...],
+    removed_ids: set[int],
+) -> set[int]:
+    """Return removed candidates that sit inside a shape the proof kept.
+
+    Band membership reaches across the whole sheet, so on a photograph with a
+    ruled page beside the drawing it can claim a part's slots. A box drawn
+    inside a part outline is that part's feature; a printed cell never sits
+    inside a shape that is not itself stationery. A kept shape enclosing every
+    removed one is a frame around the sheet, not a part, and restores nothing.
+    """
+    removed = [candidate for candidate in candidates if id(candidate) in removed_ids]
+    restored: set[int] = set()
+    for outer in candidates:
+        if (
+            id(outer) in removed_ids
+            or isinstance(outer, ArcCandidate)
+            or (isinstance(outer, PolylineCandidate) and not outer.closed)
+        ):
+            continue
+        inside = {
+            id(candidate)
+            for candidate in removed
+            if _box_inside(_box(candidate), _box(outer))
+        }
+        if len(inside) < len(removed):
+            restored |= inside
+    return restored
+
+
+def _box_inside(
+    inner: tuple[float, float, float, float],
+    outer: tuple[float, float, float, float],
+) -> bool:
+    """Return whether one box lies strictly inside another."""
+    return (
+        outer[0] < inner[0]
+        and outer[1] < inner[1]
+        and inner[2] < outer[2]
+        and inner[3] < outer[3]
+    )
 
 
 def inspect_printed_table_shapes(
@@ -216,6 +311,7 @@ def inspect_printed_table_shapes(
         settings,
         horizontal=False,
     )
+    removed_ids -= _drawn_inside_retained(candidates, removed_ids)
     if not removed_ids:
         return TableFilterResult(candidates)
     return TableFilterResult(

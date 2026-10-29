@@ -95,6 +95,16 @@ polyline 조립은 proximity connection을 다시 사용하지 않습니다. bra
 `PipelineConfig.from_detection_defaults()`가 이를 켜므로 앱에서도 동작합니다.
 `scripts/run_poc.py`는 자체 설정을 만들어 `--detect-shapes`로 제어합니다.
 
+`from_detection_defaults()`는 `FaceConfig(enabled=True)`도 켭니다. 이때 닫힌
+도형은 전처리 variant의 잉크 윤곽이 아니라 분석 프레임에서 획이 둘러싼 종이
+영역(면)으로 읽습니다(`faces`, ADR-0019). 외곽선은 바깥에 붙은 치수선·글자와
+분리되고, 그 안의 구멍과 슬롯은 각자 면이 됩니다. 획이 모서리나 맞은편 획
+조금 앞에서 멈춘 틈은 면 마스크에서만 획 방향으로 이어 주며, 그 연결은 선이나
+도형이 되지 않습니다. 면 경로에서는 다른 도형 안에 있지 않은 작은 닫힌
+표시를 버리고, 구멍·슬롯의 빈 안쪽을 가로지르는 선
+(`duplicate_filter.without_lines_through_features`)을 제거합니다.
+`scripts/run_reference_benchmark.py`가 따라 그린 정답으로 이 경로를 잽니다.
+
 도형 크기 하한은 절대값과 비례값 중 큰 쪽입니다
 (`max(minimum_shape_span, min(width, height) * 0.02)`). 절대값만으로는
 해상도에 따라 의미가 달라져, 2560픽셀 높이 사진에서 30픽셀 표시는 손글씨
@@ -141,7 +151,8 @@ polyline 조립은 proximity connection을 다시 사용하지 않습니다. bra
 정해진 직후, 선 정규화 전에 실행됩니다. `text_filter.without_text_strokes`가
 숫자 두 개 이상으로 읽힌 상자 안에 후보와 그 밑의 잉크 성분이 모두 들어 있는
 선·다각형·호 후보를 제거하고 `TEXT_STROKES_REMOVED`를 남깁니다. 원은 구멍일
-수 있으므로 남깁니다. `CADRAW_VISION_MODEL`이 설정되면 각 값의 크롭을 로컬
+수 있으므로, 상자 안에 통째로 들어가고 읽는 방향 앞쪽 30% 밖에 있는 작은
+원(숫자의 고리)만 제거합니다(ADR-0019). `CADRAW_VISION_MODEL`이 설정되면 각 값의 크롭을 로컬
 Ollama 비전 모델이 다시 읽고, 다르게 읽힌 값은 `UNCERTAIN`과
 `UNCERTAIN_TEXT` 경고가 됩니다(ADR-0018).
 `association.suggest_dimension_target`이 텍스트 상자와 같은 물리적 종류의
