@@ -923,23 +923,30 @@ def _without_printed_rules(
     source_image: GrayImage,
     snap_distance: float,
     *,
-    shapes_drawn: bool,
+    shapes: tuple[GeometryEntity, ...],
 ) -> tuple[LineEntity, ...]:
     """Drop isolated lines as straight as print, measured on the source page.
 
-    A form's rule is furniture beside a drawing. When removing the rules
-    would leave the sheet with no geometry at all, the lines are the drawing,
-    however straight, and all of them stay.
+    A line touching a shape's outline is part of the drawing. A form's rule
+    is furniture beside a drawing, so when removing the rules would leave the
+    sheet with no geometry at all, the lines are the drawing, however
+    straight, and all of them stay.
     """
     height, width = cast("tuple[int, int]", source_image.shape[:2])
     flattened = illumination_flattened(source_image)
     kept = without_printed_rules(
         lines,
+        tuple(
+            shape
+            for shape in shapes
+            if isinstance(shape, CircleEntity)
+            or (isinstance(shape, PolylineEntity) and shape.closed)
+        ),
         snap_distance,
         min(width, height) * _PRINTED_RULE_LENGTH_RATIO,
         lambda start, end: stroke_wobble(flattened, start, end),
     )
-    return kept if kept or shapes_drawn else lines
+    return kept if kept or shapes else lines
 
 
 def _suggest_ocr_dimension_targets(
@@ -1369,6 +1376,11 @@ def analyze_image(
             normalization.component_length_ratio,
             _largest_shape_perimeter(shape_entities),
         )
+    restored_shapes = _restore_source_coordinates(
+        shape_entities,
+        offset,
+        inverse_matrix,
+    )
     restored_lines = _without_printed_rules(
         without_ruling_remnants(
             tuple(
@@ -1399,12 +1411,7 @@ def analyze_image(
         ),
         source_image,
         normalization.endpoint_snap_distance,
-        shapes_drawn=bool(shape_entities),
-    )
-    restored_shapes = _restore_source_coordinates(
-        shape_entities,
-        offset,
-        inverse_matrix,
+        shapes=restored_shapes,
     )
     entities = (*restored_lines, *restored_shapes)
     if ocr_result is None or not ocr_result.dimensions:

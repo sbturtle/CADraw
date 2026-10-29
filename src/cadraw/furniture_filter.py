@@ -16,7 +16,7 @@ and stays.
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from cadraw.models import LineEntity, Orientation, Point
+from cadraw.models import CircleEntity, LineEntity, Orientation, Point, PolylineEntity
 
 type Bounds = tuple[float, float, float, float]
 type StrokeIntensity = Callable[[Point, Point], float]
@@ -116,8 +116,48 @@ def _on_rail(line: LineEntity, rails: RulingRails) -> bool:
     return any(abs(offset - rail) <= rails.band_width for rail in family)
 
 
+def _segment_distance(point: Point, start: Point, end: Point) -> float:
+    """Return the distance from a point to a line segment."""
+    delta_x = end.x - start.x
+    delta_y = end.y - start.y
+    length_squared = delta_x * delta_x + delta_y * delta_y
+    if length_squared == 0.0:
+        return point.distance_to(start)
+    along = (
+        (point.x - start.x) * delta_x + (point.y - start.y) * delta_y
+    ) / length_squared
+    along = max(0.0, min(1.0, along))
+    return point.distance_to(
+        Point(start.x + along * delta_x, start.y + along * delta_y),
+    )
+
+
+def _touches_shape(
+    point: Point,
+    shapes: tuple[PolylineEntity | CircleEntity, ...],
+    snap_distance: float,
+) -> bool:
+    """Return whether a point lies on the boundary of a closed shape."""
+    for shape in shapes:
+        if isinstance(shape, CircleEntity):
+            if abs(point.distance_to(shape.center) - shape.radius) <= snap_distance:
+                return True
+            continue
+        corners = shape.points
+        if any(
+            _segment_distance(
+                point, corners[index], corners[(index + 1) % len(corners)]
+            )
+            <= snap_distance
+            for index in range(len(corners))
+        ):
+            return True
+    return False
+
+
 def without_printed_rules(
     lines: tuple[LineEntity, ...],
+    shapes: tuple[PolylineEntity | CircleEntity, ...],
     snap_distance: float,
     minimum_length: float,
     wobble: StrokeIntensity,
@@ -129,8 +169,8 @@ def without_printed_rules(
     straightness: a printed rule stays within a fraction of a pixel of one
     line along its whole length, while a hand-drawn stroke of that length
     wanders by a pixel or more even when drawn against a ruler. A line joined
-    to the rest of the drawing stays, however straight, because a printed
-    rule meets no drawn stroke at its ends.
+    to the rest of the drawing stays, however straight: a printed rule meets
+    no drawn stroke at its ends, neither another line nor a shape's outline.
     """
     return tuple(
         line
@@ -138,6 +178,10 @@ def without_printed_rules(
         if not (
             line.length >= minimum_length
             and _is_isolated(line, lines, snap_distance)
+            and not any(
+                _touches_shape(point, shapes, snap_distance)
+                for point in (line.start, line.end)
+            )
             and wobble(line.start, line.end) <= _PRINTED_RULE_WOBBLE
         )
     )
