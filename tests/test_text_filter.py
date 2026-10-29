@@ -127,6 +127,100 @@ def test_holes_survive_while_letter_blobs_and_arcs_are_removed() -> None:
     assert set(removal.removed_ids) == {EntityId("blob"), EntityId("curve")}
 
 
+def test_a_loop_past_the_leading_glyph_is_a_digit_not_a_hole() -> None:
+    # Given the loop of the `0` in a written `100`, found as a small circle
+    loop = CircleCandidate(EntityId("loop"), Point(165.0, 120.0), 6.0, 0.9)
+    leading = CircleCandidate(EntityId("hole"), Point(112.0, 120.0), 6.0, 0.9)
+
+    # When shapes are checked against the proved label
+    removal = without_text_strokes(
+        (),
+        (loop, leading),
+        (_label("100"),),
+        _mask_with(),
+        TextStrokeConfig(),
+    )
+
+    # Then the trailing loop goes and the leading glyph, a possible hole, stays
+    assert removal.shapes == (leading,)
+    assert removal.removed_ids == (EntityId("loop"),)
+
+
+def test_a_hole_read_as_a_letter_after_the_label_is_kept() -> None:
+    # Given a hole drawn after its size, read together with it as `14O`
+    hole = CircleCandidate(EntityId("hole"), Point(165.0, 120.0), 6.0, 0.9)
+
+    # When shapes are checked against the label
+    removal = without_text_strokes(
+        (),
+        (hole,),
+        (_label("14O"),),
+        _mask_with(),
+        TextStrokeConfig(),
+    )
+
+    # Then nothing in the reading accounts for a loop there, so it stays
+    assert removal.shapes == (hole,)
+
+
+def test_only_as_many_loops_as_the_digit_has_are_removed() -> None:
+    # Given `10` and two small circles both in the share of its `0`
+    circles = tuple(
+        CircleCandidate(EntityId(f"circle_{index}"), Point(x, 120.0), 5.0, 0.9)
+        for index, x in enumerate((145.0, 170.0))
+    )
+
+    # When shapes are checked against the label
+    removal = without_text_strokes(
+        (),
+        circles,
+        (_label("10"),),
+        _mask_with(),
+        TextStrokeConfig(),
+    )
+
+    # Then the one loop a zero has goes, the one nearest its share's middle
+    assert removal.shapes == (circles[0],)
+
+
+def test_a_hole_read_after_a_number_keeps_its_place() -> None:
+    # Given `100` and a hole drawn right after it, read together as `100O`
+    zeros = tuple(
+        CircleCandidate(EntityId(f"zero_{index}"), Point(x, 120.0), 5.0, 0.9)
+        for index, x in enumerate((130.0, 150.0))
+    )
+    hole = CircleCandidate(EntityId("hole"), Point(170.0, 120.0), 5.0, 0.9)
+
+    # When shapes are checked against the label
+    removal = without_text_strokes(
+        (),
+        (*zeros, hole),
+        (_label("100O"),),
+        _mask_with(),
+        TextStrokeConfig(),
+    )
+
+    # Then the zeros' loops go and the hole in the `O` share stays
+    assert removal.shapes == (hole,)
+
+
+def test_a_circle_under_an_uncertain_label_is_kept() -> None:
+    # Given the same loop under a label read with low confidence
+    loop = CircleCandidate(EntityId("loop"), Point(165.0, 120.0), 6.0, 0.9)
+
+    # When shapes are checked
+    removal = without_text_strokes(
+        (),
+        (loop,),
+        (_label("100", confidence=0.3),),
+        _mask_with(),
+        TextStrokeConfig(),
+    )
+
+    # Then nothing is removed on an unproved reading
+    assert removal.shapes == (loop,)
+
+
 def test_disabled_filter_or_missing_ink_keeps_everything() -> None:
     # Given a stroke inside a label but no ink under it in the mask
     stroke = _line("phantom", Point(110.0, 110.0), Point(110.0, 135.0))

@@ -16,15 +16,23 @@ from cadraw.detection import (
     GrayImage,
     ShapeDetectionEvidence,
     automatic_source_region,
+    detect_face_shapes_with_evidence,
     detect_line_candidates,
     detect_shape_candidates_with_evidence,
     is_page_frame_rule,
     load_grayscale_image,
+    settle_shape_roles,
     stroke_intensity,
+    stroke_wobble,
 )
-from cadraw.duplicate_filter import without_polygon_edge_lines
+from cadraw.duplicate_filter import (
+    without_lines_through_features,
+    without_polygon_edge_lines,
+)
+from cadraw.faces import FaceConfig, drawing_ink, stroke_width
 from cadraw.furniture_filter import (
     RulingRails,
+    without_printed_rules,
     without_ruling_remnants,
     without_table_edge_lines,
 )
@@ -41,6 +49,7 @@ from cadraw.models import (
     DimensionStatus,
     DrawingAnalysis,
     GeometryEntity,
+    GeometryRole,
     LineCandidate,
     LineEntity,
     PerspectiveTransform,
@@ -81,12 +90,17 @@ from cadraw.preprocessing import (
     PreprocessingResult,
     PreprocessingVariant,
     ScoreContext,
+    illumination_flattened,
     preprocess_variants,
     score_candidates,
     write_debug_outputs,
 )
-from cadraw.stroke_evidence import ink_between_factory, ink_mask_from_grayscale
-from cadraw.text_filter import TextStrokeConfig, without_text_strokes
+from cadraw.stroke_evidence import (
+    ink_between_factory,
+    ink_mask_from_grayscale,
+    without_lettering_crossings,
+)
+from cadraw.text_filter import TextStrokeConfig, TextStrokeRemoval, without_text_strokes
 
 type VariantEvaluation = tuple[
     PreprocessingResult,
@@ -139,6 +153,7 @@ class PipelineConfig:
                 maximum_line_gap=28,
                 maximum_candidates=64,
                 detect_closed_shapes=True,
+                faces=FaceConfig(enabled=True),
             ),
             normalization=NormalizationConfig(
                 horizontal_angle_tolerance_degrees=7.0,
@@ -206,6 +221,8 @@ class _AnalysisQualityContext:
 _PAGE_EDGE_DOMINANCE_RATIO = 0.50
 _RAIL_REMNANT_PERIOD_RATIO = 0.25
 _POLYGON_EDGE_TOLERANCE = 12.0
+_FEATURE_PENETRATION_MARGIN = 3.0
+_PRINTED_RULE_LENGTH_RATIO = 0.15
 _POLYGON_EDGE_TOLERANCE_RATIO = 0.012
 _MIN_GRID_LIKE_SHAPES = 8
 _MIN_SHAPES_PER_LINE = 4
@@ -729,11 +746,21 @@ def _add_analysis_quality_warnings(
                 message="배경 잡음이 많아 도면 후보를 확인해야 합니다.",
             ),
         )
+    # Holes and slots drawn inside a part are that part's features, so a
+    # plate with a ring of slots is not a swarm however few lines it has.
+    loose_shapes = (
+        0
+        if shape_evidence is None
+        else sum(
+            candidate.role is not GeometryRole.HOLE
+            for candidate in shape_evidence.candidates
+        )
+    )
     shape_dominated = (
         shape_evidence is not None
-        and len(shape_evidence.candidates) >= _MIN_GRID_LIKE_SHAPES
+        and loose_shapes >= _MIN_GRID_LIKE_SHAPES
         and shape_evidence.grid_like_count >= _MIN_GRID_LIKE_SHAPES
-        and len(shape_evidence.candidates)
+        and loose_shapes
         >= _MIN_SHAPES_PER_LINE
         * max(
             1,
@@ -895,6 +922,55 @@ def _without_page_frame_rules(
     )
 
 
+def _stroke_lines(
+    lines: tuple[LineEntity, ...],
+    ink_mask: GrayImage,
+    *,
+    enabled: bool,
+) -> tuple[tuple[LineEntity, ...], int]:
+    """Keep the lines that follow a pen stroke, not a row of lettering.
+
+    This is lettering removal too, so it follows the lettering switch and is
+    counted in its warning. It needs the face path's ink mask, which keeps
+    strokes at their drawn width. Returns the kept lines and how many went.
+    """
+    if not enabled:
+        return lines, 0
+    kept = without_lettering_crossings(lines, ink_mask, stroke_width(ink_mask))
+    return kept, len(lines) - len(kept)
+
+
+def _without_printed_rules(
+    lines: tuple[LineEntity, ...],
+    source_image: GrayImage,
+    snap_distance: float,
+    *,
+    shapes: tuple[GeometryEntity, ...],
+) -> tuple[LineEntity, ...]:
+    """Drop isolated lines as straight as print, measured on the source page.
+
+    A line touching a shape's outline is part of the drawing. A form's rule
+    is furniture beside a drawing, so when removing the rules would leave the
+    sheet with no geometry at all, the lines are the drawing, however
+    straight, and all of them stay.
+    """
+    height, width = cast("tuple[int, int]", source_image.shape[:2])
+    flattened = illumination_flattened(source_image)
+    kept = without_printed_rules(
+        lines,
+        tuple(
+            shape
+            for shape in shapes
+            if isinstance(shape, (CircleEntity, ArcEntity))
+            or (isinstance(shape, PolylineEntity) and shape.closed)
+        ),
+        snap_distance,
+        min(width, height) * _PRINTED_RULE_LENGTH_RATIO,
+        lambda start, end: stroke_wobble(flattened, start, end),
+    )
+    return kept if kept or shapes else lines
+
+
 def _suggest_ocr_dimension_targets(
     ocr_result: OcrResult | None,
     entities: tuple[GeometryEntity, ...],
@@ -971,14 +1047,17 @@ def _without_lettering(
     ocr_result: OcrResult | None,
     ink_mask: GrayImage,
     config: TextStrokeConfig,
-) -> tuple[
-    tuple[LineCandidate, ...],
-    ShapeDetectionEvidence,
-    AnalysisWarning | None,
-]:
+) -> tuple[tuple[LineCandidate, ...], ShapeDetectionEvidence, TextStrokeRemoval]:
     """Drop candidates proved to be the pen strokes of a text label."""
     if ocr_result is None or not ocr_result.candidates:
-        return candidates, shape_detection, None
+        return (
+            candidates,
+            shape_detection,
+            TextStrokeRemoval(
+                candidates,
+                shape_detection.candidates,
+            ),
+        )
     removal = without_text_strokes(
         candidates,
         shape_detection.candidates,
@@ -986,21 +1065,125 @@ def _without_lettering(
         ink_mask,
         config,
     )
-    warning = (
-        AnalysisWarning(
-            code=WarningCode.TEXT_STROKES_REMOVED,
-            message=(
-                f"숫자로 읽힌 글자 영역 {removal.region_count}곳 안에만 있는 "
-                f"획 후보 {len(removal.removed_ids)}개를 도형에서 제외했습니다."
-            ),
-        )
-        if removal.removed_ids
-        else None
-    )
     return (
         removal.lines,
         replace(shape_detection, candidates=removal.shapes),
-        warning,
+        removal,
+    )
+
+
+def _lettering_warning(
+    removals: tuple[TextStrokeRemoval, ...],
+    crossings: int,
+) -> AnalysisWarning | None:
+    """Report how many candidates lettering removal took out, if any."""
+    removed = sum(len(removal.removed_ids) for removal in removals)
+    if not removed and not crossings:
+        return None
+    regions = max(removal.region_count for removal in removals)
+    parts = (
+        *(
+            (f"숫자로 읽힌 글자 영역 {regions}곳 안에만 있는 획 후보 {removed}개",)
+            if removed
+            else ()
+        ),
+        *((f"글자 줄을 관통한 선 {crossings}개",) if crossings else ()),
+    )
+    return AnalysisWarning(
+        code=WarningCode.TEXT_STROKES_REMOVED,
+        message=f"{', '.join(parts)}를 도형에서 제외했습니다.",
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _ShapeContext:
+    """Everything closed-shape detection and its lettering removal need."""
+
+    analysis_image: GrayImage
+    detection_image: GrayImage
+    detection: DetectionConfig
+    ink_mask: GrayImage
+    ocr_result: OcrResult | None
+    text_strokes: TextStrokeConfig
+    snap_distance: float
+    lines: tuple[LineEntity, ...] = ()
+
+
+def _joins_lines(arc: ArcCandidate, context: _ShapeContext) -> bool:
+    """Return whether both ends of an open arc meet the end of a line.
+
+    An open curve that belongs to a part, such as a rounded corner, runs from
+    one straight edge to another. A curve standing alone, such as part of a
+    written number or a scribble around a price, meets no line.
+    """
+    reach = 2.0 * context.snap_distance
+    ends = tuple(point for line in context.lines for point in (line.start, line.end))
+    return all(
+        any(point.distance_to(end) <= reach for end in ends)
+        for point in _arc_endpoints(arc)
+    )
+
+
+def _arc_endpoints(arc: ArcCandidate) -> tuple[Point, Point]:
+    """Return the start and end points of an arc in image coordinates."""
+    start = math.radians(arc.start_angle_degrees)
+    end = math.radians(arc.end_angle_degrees)
+    return (
+        Point(
+            arc.center.x + arc.radius * math.cos(start),
+            arc.center.y + arc.radius * math.sin(start),
+        ),
+        Point(
+            arc.center.x + arc.radius * math.cos(end),
+            arc.center.y + arc.radius * math.sin(end),
+        ),
+    )
+
+
+def _lettering_free_shapes(
+    context: _ShapeContext,
+) -> tuple[ShapeDetectionEvidence, TextStrokeRemoval]:
+    """Detect closed shapes, drop lettering, and settle the hole roles."""
+    _, shapes, removal = _without_lettering(
+        (),
+        _closed_shapes(context),
+        context.ocr_result,
+        context.ink_mask,
+        context.text_strokes,
+    )
+    if not context.detection.faces.enabled:
+        return shapes, removal
+    height, width = cast("tuple[int, int]", context.analysis_image.shape[:2])
+    return (
+        replace(
+            shapes,
+            candidates=settle_shape_roles(
+                shapes.candidates,
+                min(width, height) * context.detection.faces.isolated_mark_ratio,
+            ),
+        ),
+        removal,
+    )
+
+
+def _closed_shapes(context: _ShapeContext) -> ShapeDetectionEvidence:
+    """Detect closed shapes from enclosed faces, or from variant contours."""
+    config = context.detection
+    contours = detect_shape_candidates_with_evidence(context.detection_image, config)
+    if not config.faces.enabled:
+        return contours
+    return detect_face_shapes_with_evidence(
+        context.analysis_image,
+        config,
+        context.snap_distance,
+        ()
+        if context.ocr_result is None
+        else tuple(candidate.bounds for candidate in context.ocr_result.candidates),
+        tuple(
+            candidate
+            for candidate in contours.candidates
+            if isinstance(candidate, ArcCandidate) and _joins_lines(candidate, context)
+        ),
     )
 
 
@@ -1135,35 +1318,55 @@ def analyze_image(
         frame_width,
         frame_height,
     )
-    ink_mask = _ink_mask_for(detection_stream)
+    ink_mask = (
+        drawing_ink(analysis_image, detection_config.faces)
+        if detection_config.faces.enabled
+        else _ink_mask_for(detection_stream)
+    )
     ocr_result = (
         _read_text(analysis_image, config, ocr_backend, second_reader, warnings)
         if config.ocr_enabled
         else None
     )
-    shape_detection = detect_shape_candidates_with_evidence(
-        detection_image,
-        detection_config,
-    )
-    candidates, shape_detection, lettering_warning = _without_lettering(
+    candidates, _, line_lettering = _without_lettering(
         candidates,
-        shape_detection,
+        ShapeDetectionEvidence(()),
         ocr_result,
         ink_mask,
         config.text_strokes,
     )
+    lines, crossings_removed = _stroke_lines(
+        _without_page_frame_rules(
+            normalize_lines(
+                candidates,
+                normalization,
+                _ink_between_for(ink_mask, config),
+            ),
+            analysis_image,
+            detection_config,
+            normalization.endpoint_snap_distance,
+        ),
+        ink_mask,
+        enabled=detection_config.faces.enabled and config.text_strokes.enabled,
+    )
+    shape_detection, shape_lettering = _lettering_free_shapes(
+        _ShapeContext(
+            analysis_image=analysis_image,
+            detection_image=detection_image,
+            detection=detection_config,
+            ink_mask=ink_mask,
+            ocr_result=ocr_result,
+            text_strokes=config.text_strokes,
+            snap_distance=normalization.endpoint_snap_distance,
+            lines=lines,
+        ),
+    )
+    lettering_warning = _lettering_warning(
+        (line_lettering, shape_lettering),
+        crossings_removed,
+    )
     if lettering_warning is not None:
         warnings.append(lettering_warning)
-    lines = _without_page_frame_rules(
-        normalize_lines(
-            candidates,
-            normalization,
-            _ink_between_for(ink_mask, config),
-        ),
-        analysis_image,
-        detection_config,
-        normalization.endpoint_snap_distance,
-    )
     lines = without_table_edge_lines(
         lines,
         shape_detection.table_cell_bounds,
@@ -1177,15 +1380,26 @@ def analyze_image(
         _shape_candidate_to_entity(candidate)
         for candidate in shape_detection.candidates
     )
-    lines = without_polygon_edge_lines(
-        lines,
+    lines = without_lines_through_features(
+        without_polygon_edge_lines(
+            lines,
+            tuple(
+                entity
+                for entity in shape_entities
+                if isinstance(entity, PolylineEntity)
+            ),
+            max(
+                _POLYGON_EDGE_TOLERANCE,
+                min(frame_width, frame_height) * _POLYGON_EDGE_TOLERANCE_RATIO,
+            ),
+        ),
         tuple(
-            entity for entity in shape_entities if isinstance(entity, PolylineEntity)
+            entity
+            for entity in shape_entities
+            if isinstance(entity, (CircleEntity, PolylineEntity))
+            and entity.role is GeometryRole.HOLE
         ),
-        max(
-            _POLYGON_EDGE_TOLERANCE,
-            min(frame_width, frame_height) * _POLYGON_EDGE_TOLERANCE_RATIO,
-        ),
+        _FEATURE_PENETRATION_MARGIN,
     )
     if (
         normalization.keep_largest_connected_component
@@ -1197,37 +1411,42 @@ def analyze_image(
             normalization.component_length_ratio,
             _largest_shape_perimeter(shape_entities),
         )
-    restored_lines = without_ruling_remnants(
-        tuple(
-            entity
-            for entity in _restore_source_coordinates(
-                lines,
-                offset,
-                inverse_matrix,
-            )
-            if isinstance(entity, LineEntity)
-        ),
-        RulingRails(
-            horizontal=cleanup.horizontal_rails,
-            vertical=cleanup.vertical_rails,
-            # A skewed scan drifts a rail off its median row by more than the
-            # erasure band over the sheet, so remnants are matched within a
-            # quarter period; the ink test keeps a stroke drawn on a rail.
-            band_width=max(
-                config.page_cleanup.rail_band_width,
-                _RAIL_REMNANT_PERIOD_RATIO * (cleanup.grid_period or 0.0),
-            ),
-            maximum_intensity=(
-                detection_config.arbitration.grid.maximum_grid_intensity
-            ),
-        ),
-        normalization.endpoint_snap_distance,
-        lambda start, end: stroke_intensity(source_image, start, end),
-    )
     restored_shapes = _restore_source_coordinates(
         shape_entities,
         offset,
         inverse_matrix,
+    )
+    restored_lines = _without_printed_rules(
+        without_ruling_remnants(
+            tuple(
+                entity
+                for entity in _restore_source_coordinates(
+                    lines,
+                    offset,
+                    inverse_matrix,
+                )
+                if isinstance(entity, LineEntity)
+            ),
+            RulingRails(
+                horizontal=cleanup.horizontal_rails,
+                vertical=cleanup.vertical_rails,
+                # A skewed scan drifts a rail off its median row by more than the
+                # erasure band over the sheet, so remnants are matched within a
+                # quarter period; the ink test keeps a stroke drawn on a rail.
+                band_width=max(
+                    config.page_cleanup.rail_band_width,
+                    _RAIL_REMNANT_PERIOD_RATIO * (cleanup.grid_period or 0.0),
+                ),
+                maximum_intensity=(
+                    detection_config.arbitration.grid.maximum_grid_intensity
+                ),
+            ),
+            normalization.endpoint_snap_distance,
+            lambda start, end: stroke_intensity(source_image, start, end),
+        ),
+        source_image,
+        normalization.endpoint_snap_distance,
+        shapes=restored_shapes,
     )
     entities = (*restored_lines, *restored_shapes)
     if ocr_result is None or not ocr_result.dimensions:

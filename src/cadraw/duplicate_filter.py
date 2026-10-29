@@ -13,7 +13,10 @@ continues past the outline, keeps one of those three points away from the
 boundary and stays.
 """
 
-from cadraw.models import LineEntity, Point, PolylineEntity
+from cadraw.models import CircleEntity, LineEntity, Point, PolylineEntity
+
+_PENETRATION_STEP = 2.0
+_MINIMUM_PENETRATION = 4.0
 
 
 def _segment_distance(point: Point, start: Point, end: Point) -> float:
@@ -66,4 +69,76 @@ def without_polygon_edge_lines(
         line
         for line in lines
         if not any(_retraces(line, polygon, tolerance) for polygon in closed)
+    )
+
+
+def _penetration(
+    line: LineEntity,
+    feature: CircleEntity | PolylineEntity,
+    margin: float,
+) -> float:
+    """Return how far a line runs inside a feature's blank interior."""
+    length = line.length
+    count = max(2, round(length / _PENETRATION_STEP) + 1)
+    inside = 0
+    for index in range(count):
+        fraction = index / (count - 1)
+        point = Point(
+            line.start.x + (line.end.x - line.start.x) * fraction,
+            line.start.y + (line.end.y - line.start.y) * fraction,
+        )
+        if isinstance(feature, CircleEntity):
+            inside += point.distance_to(feature.center) <= feature.radius - margin
+        else:
+            inside += _strictly_inside(point, feature, margin)
+    return length * inside / count
+
+
+def _strictly_inside(point: Point, polygon: PolylineEntity, margin: float) -> bool:
+    """Return whether a point lies inside a polygon and away from its edge."""
+    points = polygon.points
+    crossings = False
+    for index in range(len(points)):
+        first = points[index]
+        second = points[(index + 1) % len(points)]
+        if (first.y > point.y) != (second.y > point.y):
+            crossing_x = first.x + (point.y - first.y) * (second.x - first.x) / (
+                second.y - first.y
+            )
+            if point.x < crossing_x:
+                crossings = not crossings
+    return crossings and _boundary_distance(point, polygon) > margin
+
+
+def _feature_extent(feature: CircleEntity | PolylineEntity) -> float:
+    """Return the smaller extent of a hole or slot."""
+    if isinstance(feature, CircleEntity):
+        return 2.0 * feature.radius
+    return min(feature.width, feature.height)
+
+
+def without_lines_through_features(
+    lines: tuple[LineEntity, ...],
+    features: tuple[CircleEntity | PolylineEntity, ...],
+    margin: float,
+) -> tuple[LineEntity, ...]:
+    """Drop lines that cross the blank interior of a detected hole or slot.
+
+    A hole or slot is detected as one unbroken face of paper, so no ink runs
+    across its inside; a drawn line that did would have split the face in
+    two. A line found crossing one is therefore the line detector bridging
+    separate strokes across blank paper, as it does through a ring of radial
+    slots. A leader line that only touches a hole's edge never gets past the
+    margin and stays.
+    """
+    if not features:
+        return lines
+    return tuple(
+        line
+        for line in lines
+        if not any(
+            _penetration(line, feature, margin)
+            >= max(_MINIMUM_PENETRATION, 0.25 * _feature_extent(feature))
+            for feature in features
+        )
     )

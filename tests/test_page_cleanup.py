@@ -51,6 +51,22 @@ def test_drawn_strokes_survive_the_ruling_they_are_drawn_over() -> None:
         assert int(cast("int", result.image[y, x])) < _STROKE_LIMIT
 
 
+def test_a_pencil_line_drawn_along_a_rule_is_kept() -> None:
+    # Given a thin pencil line, darker than the ruling, traced along one rule
+    image = _ruled_sheet()
+    rail = 40 + 5 * _PITCH
+    _ = cv2.line(image, (100, rail), (500, rail), 90, 1)
+
+    # When the page is cleaned
+    result = clean_page(image)
+
+    # Then the ruling goes but the drawn line survives on top of its rule
+    assert result.grid_period is not None
+    for x in (150, 300, 450):
+        assert int(cast("int", result.image[rail, x])) < _STROKE_LIMIT
+    assert int(cast("int", result.image[rail, 580])) > _RULING_VALUE
+
+
 def test_a_lone_straight_line_is_never_mistaken_for_printed_ruling() -> None:
     # Given one long thin straight line with no periodic family behind it
     image = np.full((680, 680), 252, dtype=np.uint8)

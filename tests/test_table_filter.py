@@ -110,6 +110,40 @@ def test_nested_drawing_profiles_are_not_read_as_a_table() -> None:
     assert result.candidates == candidates
 
 
+def test_a_glyph_inside_a_cell_does_not_break_the_row_proof() -> None:
+    # Given a printed row with a written character traced inside one cell
+    glyph = _box("glyph", 300.0, 110.0, 330.0, 128.0)
+    profile = _box("profile", 150.0, 500.0, 820.0, 1000.0)
+
+    # When the proof runs
+    result = inspect_printed_table_shapes(
+        (*_header_row(), glyph, profile),
+        _WIDTH,
+        _HEIGHT,
+    )
+
+    # Then the row still proves itself and takes the glyph with it
+    assert result.table_detected is True
+    assert result.candidates == (profile,)
+
+
+def test_features_inside_a_kept_outline_are_not_stationery() -> None:
+    # Given a proved row and, in the same band, a slot inside a part outline
+    outline = _box("outline", 1000.0, 60.0, 1400.0, 300.0)
+    slot = _box("slot", 1100.0, 110.0, 1200.0, 130.0)
+
+    # When the proof runs
+    result = inspect_printed_table_shapes(
+        (*_header_row(), outline, slot),
+        _WIDTH,
+        _HEIGHT,
+    )
+
+    # Then the row goes, while the part keeps the slot drawn inside it
+    assert result.table_detected is True
+    assert result.candidates == (outline, slot)
+
+
 def test_circles_are_never_table_cells() -> None:
     # Given a proved row and a drilled hole sitting in the same band
     hole = CircleCandidate(

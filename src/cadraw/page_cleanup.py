@@ -28,6 +28,7 @@ type GrayImage = NDArray[np.uint8]
 
 _MIN_RAIL_KERNEL = 15
 _PAPER_VALUE = 255
+_MAD_TO_SIGMA = 1.4826
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +44,7 @@ class PageCleanupConfig:
     background_kernel_ratio: float = 0.08
     minimum_background_kernel: int = 31
     maximum_background_kernel: int = 301
+    minimum_rail_darkness_margin: float = 25.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,14 +88,45 @@ def _background(image: GrayImage, config: PageCleanupConfig) -> GrayImage:
     )
 
 
+def _flattened(image: GrayImage, background: GrayImage) -> GrayImage:
+    """Divide out the paper background so ink darkness is comparable."""
+    return np.asarray(
+        cv2.divide(image, np.maximum(background, 1), scale=_PAPER_VALUE),
+        dtype=np.uint8,
+    )
+
+
 def _ink_mask(image: GrayImage, config: PageCleanupConfig) -> GrayImage:
     """Mark every pixel darker than the flattened paper, however faint."""
-    background = _background(image, config)
-    flattened = cv2.divide(image, np.maximum(background, 1), scale=_PAPER_VALUE)
+    flattened = _flattened(image, _background(image, config))
     return np.asarray(
         (np.asarray(flattened) < config.ink_value_cut).astype(np.uint8) * _PAPER_VALUE,
         dtype=np.uint8,
     )
+
+
+def _faint_rail_pixels(
+    rails: NDArray[np.bool_],
+    flattened: GrayImage,
+    config: PageCleanupConfig,
+) -> NDArray[np.bool_]:
+    """Keep, of the rail mask, only the pixels as faint as printed ruling.
+
+    A pen stroke drawn along a rail is as thin as the rule it covers, so the
+    thickness test alone erased it wherever the two coincided, cutting a part
+    outline into dashes at every grid line. Printed ruling is uniformly faint;
+    a rail pixel markedly darker than the rail's own typical darkness is the
+    drawing passing over it, and it stays.
+    """
+    values: NDArray[np.float64] = np.asarray(flattened[rails], dtype=np.float64)
+    if values.size == 0:
+        return rails
+    median = float(np.median(values))
+    deviations: NDArray[np.float64] = np.abs(np.subtract(values, median))
+    spread = float(np.median(deviations)) * _MAD_TO_SIGMA
+    cut = median - max(config.minimum_rail_darkness_margin, 4.0 * spread)
+    darker: NDArray[np.bool_] = np.less(flattened, cut)
+    return np.logical_and(rails, np.logical_not(darker))
 
 
 def _thin_rails(
@@ -225,11 +258,16 @@ def clean_page(
     ruling = _periodic_rails(ink, settings)
     if ruling is None:
         return PageCleanupResult(source, 0.0, 0, 0, None)
-    removal_mask = np.asarray(ruling.mask) > 0
+    background = _background(source, settings)
+    removal_mask = _faint_rail_pixels(
+        np.asarray(ruling.mask) > 0,
+        _flattened(source, background),
+        settings,
+    )
     ink_mask = np.asarray(ink) > 0
     ink_pixels = max(1, int(np.count_nonzero(ink_mask)))
     cleaned = source.copy()
-    cleaned[removal_mask] = _background(source, settings)[removal_mask]
+    cleaned[removal_mask] = background[removal_mask]
     return PageCleanupResult(
         image=np.asarray(cleaned, dtype=np.uint8),
         removed_ink_ratio=int(np.count_nonzero(removal_mask & ink_mask)) / ink_pixels,
