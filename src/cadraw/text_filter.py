@@ -135,29 +135,24 @@ def _reading_axis(quad: Quad) -> tuple[Point, Point]:
 
 @dataclass(frozen=True, slots=True)
 class _ReadLabel:
-    """A proved label region, its reading axis, and the loops its text has."""
+    """A proved label region, its reading axis, and the text read there."""
 
     region: Region
     leading: Point
     trailing: Point
-    loops: int
-
-
-def _trailing_loops(text: str) -> int:
-    """Count the closed loops the glyphs after a label's first one contain."""
-    return sum(_GLYPH_LOOPS.get(character, 0) for character in text[1:])
+    text: str
 
 
 def _read_labels(
     candidates: tuple[TextCandidate, ...],
     config: TextStrokeConfig,
 ) -> tuple[_ReadLabel, ...]:
-    """Pair each proved region with its reading axis and loop count."""
+    """Pair each proved region with its reading axis and text."""
     return tuple(
         _ReadLabel(
             _expanded_region(quad, config),
             *_reading_axis(quad),
-            loops=_trailing_loops(candidate.text),
+            text=candidate.text,
         )
         for candidate in candidates
         if candidate.confidence >= config.minimum_confidence
@@ -194,28 +189,37 @@ def _glyph_loop_ids(
 ) -> set[EntityId]:
     """Return the small circles that are the loops of a label's own digits.
 
-    A drilled hole is usually labelled by an arrow and a size written right
-    after it, so OCR reads hole and label as one string such as `0149`, with
-    the hole as its leading glyph; a circle there always stays. A circle
-    further along goes only while the text itself explains it: `160` has two
-    looped digits after its first, so at most two circles inside it are its
-    loops. A hole the reading does not account for, such as one read as the
-    letter `O`, stays.
+    OCR gives no position per glyph, so each glyph of the reading is given an
+    equal share of the label along its reading axis. A circle goes only when
+    it sits in the share of a looped digit, and no more of them than that
+    digit has loops: in `160` the circles in the `6` and `0` shares go. The
+    first glyph and the leading part of the label are never taken, because a
+    drilled hole is usually labelled by an arrow and a size written right
+    after it, so OCR reads hole and label as one string such as `0149`. A
+    hole read as the letter `O`, as in `100O`, sits in a share no digit
+    explains and stays.
     """
     circles = tuple(shape for shape in shapes if isinstance(shape, CircleCandidate))
     removed: set[EntityId] = set()
     for label in labels:
-        trailing = sorted(
-            (
-                (position, circle.entity_id)
-                for circle in circles
-                if circle.entity_id not in removed
-                and (position := _position_along(circle, label)) is not None
-                and position > config.leading_glyph_fraction
-            ),
-            reverse=True,
+        count = len(label.text)
+        placed = tuple(
+            (position, circle.entity_id)
+            for circle in circles
+            if (position := _position_along(circle, label)) is not None
+            and position > config.leading_glyph_fraction
         )
-        removed.update(entity_id for _, entity_id in trailing[: label.loops])
+        for index, character in enumerate(label.text):
+            loops = _GLYPH_LOOPS.get(character, 0)
+            if index == 0 or not loops:
+                continue
+            low, high = index / count, (index + 1) / count
+            in_share = sorted(
+                (abs(position - (low + high) / 2.0), entity_id)
+                for position, entity_id in placed
+                if low <= position <= high and entity_id not in removed
+            )
+            removed.update(entity_id for _, entity_id in in_share[:loops])
     return removed
 
 

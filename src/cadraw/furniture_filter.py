@@ -13,10 +13,18 @@ happens to follow a rail is dark, joined to the rest of the drawing, or both,
 and stays.
 """
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from cadraw.models import CircleEntity, LineEntity, Orientation, Point, PolylineEntity
+from cadraw.models import (
+    ArcEntity,
+    CircleEntity,
+    LineEntity,
+    Orientation,
+    Point,
+    PolylineEntity,
+)
 
 type Bounds = tuple[float, float, float, float]
 type StrokeIntensity = Callable[[Point, Point], float]
@@ -132,13 +140,30 @@ def _segment_distance(point: Point, start: Point, end: Point) -> float:
     )
 
 
+def _on_arc(point: Point, arc: ArcEntity, snap_distance: float) -> bool:
+    """Return whether a point lies on an open arc's curve."""
+    if abs(point.distance_to(arc.center) - arc.radius) > snap_distance:
+        return False
+    angle = math.degrees(
+        math.atan2(point.y - arc.center.y, point.x - arc.center.x),
+    )
+    sweep = (arc.end_angle_degrees - arc.start_angle_degrees) % 360.0
+    # The snap distance also reaches a little past either end of the arc.
+    slack = math.degrees(snap_distance / max(arc.radius, 1.0))
+    return (angle - arc.start_angle_degrees + slack) % 360.0 <= sweep + 2.0 * slack
+
+
 def _touches_shape(
     point: Point,
-    shapes: tuple[PolylineEntity | CircleEntity, ...],
+    shapes: tuple[PolylineEntity | CircleEntity | ArcEntity, ...],
     snap_distance: float,
 ) -> bool:
-    """Return whether a point lies on the boundary of a closed shape."""
+    """Return whether a point lies on a shape's outline or on an arc."""
     for shape in shapes:
+        if isinstance(shape, ArcEntity):
+            if _on_arc(point, shape, snap_distance):
+                return True
+            continue
         if isinstance(shape, CircleEntity):
             if abs(point.distance_to(shape.center) - shape.radius) <= snap_distance:
                 return True
@@ -157,7 +182,7 @@ def _touches_shape(
 
 def without_printed_rules(
     lines: tuple[LineEntity, ...],
-    shapes: tuple[PolylineEntity | CircleEntity, ...],
+    shapes: tuple[PolylineEntity | CircleEntity | ArcEntity, ...],
     snap_distance: float,
     minimum_length: float,
     wobble: StrokeIntensity,
@@ -170,7 +195,8 @@ def without_printed_rules(
     line along its whole length, while a hand-drawn stroke of that length
     wanders by a pixel or more even when drawn against a ruler. A line joined
     to the rest of the drawing stays, however straight: a printed rule meets
-    no drawn stroke at its ends, neither another line nor a shape's outline.
+    no drawn stroke at its ends, neither another line, a closed outline, nor
+    an arc such as a rounded corner.
     """
     return tuple(
         line

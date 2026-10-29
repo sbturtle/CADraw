@@ -4,7 +4,14 @@ from cadraw.furniture_filter import (
     without_ruling_remnants,
     without_table_edge_lines,
 )
-from cadraw.models import EntityId, LineEntity, Orientation, Point, PolylineEntity
+from cadraw.models import (
+    ArcEntity,
+    EntityId,
+    LineEntity,
+    Orientation,
+    Point,
+    PolylineEntity,
+)
 
 
 def _line(name: str, start: Point, end: Point, orientation: Orientation) -> LineEntity:
@@ -122,6 +129,27 @@ def test_a_straight_line_touching_a_closed_outline_is_kept() -> None:
 
     # Then meeting the outline makes it part of the drawing
     assert kept == (member,)
+
+
+def test_straight_lines_meeting_a_rounded_corner_are_kept() -> None:
+    # Given two ruler-straight edges joined by an open quarter-circle corner
+    corner = ArcEntity(
+        entity_id=EntityId("corner"),
+        center=Point(400.0, 300.0),
+        radius=50.0,
+        start_angle_degrees=270.0,
+        end_angle_degrees=360.0,
+        confidence=0.9,
+    )
+    top = _line("top", Point(100.0, 250.0), Point(400.0, 250.0), Orientation.HORIZONTAL)
+    side = _line("side", Point(450.0, 300.0), Point(450.0, 600.0), Orientation.VERTICAL)
+
+    kept = without_printed_rules(
+        (top, side), (corner,), 10.0, 150.0, lambda _s, _e: 0.2
+    )
+
+    # Then the arc joins both to the drawing
+    assert kept == (top, side)
 
 
 def test_a_long_isolated_line_as_straight_as_print_is_a_form_rule() -> None:

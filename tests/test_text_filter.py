@@ -163,24 +163,45 @@ def test_a_hole_read_as_a_letter_after_the_label_is_kept() -> None:
     assert removal.shapes == (hole,)
 
 
-def test_only_as_many_loops_as_the_digits_have_are_removed() -> None:
-    # Given `100` and three small circles past its first glyph
+def test_only_as_many_loops_as_the_digit_has_are_removed() -> None:
+    # Given `10` and two small circles both in the share of its `0`
     circles = tuple(
         CircleCandidate(EntityId(f"circle_{index}"), Point(x, 120.0), 5.0, 0.9)
-        for index, x in enumerate((135.0, 150.0, 168.0))
+        for index, x in enumerate((145.0, 170.0))
     )
 
     # When shapes are checked against the label
     removal = without_text_strokes(
         (),
         circles,
-        (_label("100"),),
+        (_label("10"),),
         _mask_with(),
         TextStrokeConfig(),
     )
 
-    # Then the two zeros' loops go and the circle nearest the start stays
+    # Then the one loop a zero has goes, the one nearest its share's middle
     assert removal.shapes == (circles[0],)
+
+
+def test_a_hole_read_after_a_number_keeps_its_place() -> None:
+    # Given `100` and a hole drawn right after it, read together as `100O`
+    zeros = tuple(
+        CircleCandidate(EntityId(f"zero_{index}"), Point(x, 120.0), 5.0, 0.9)
+        for index, x in enumerate((130.0, 150.0))
+    )
+    hole = CircleCandidate(EntityId("hole"), Point(170.0, 120.0), 5.0, 0.9)
+
+    # When shapes are checked against the label
+    removal = without_text_strokes(
+        (),
+        (*zeros, hole),
+        (_label("100O"),),
+        _mask_with(),
+        TextStrokeConfig(),
+    )
+
+    # Then the zeros' loops go and the hole in the `O` share stays
+    assert removal.shapes == (hole,)
 
 
 def test_a_circle_under_an_uncertain_label_is_kept() -> None:

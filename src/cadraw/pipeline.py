@@ -961,7 +961,7 @@ def _without_printed_rules(
         tuple(
             shape
             for shape in shapes
-            if isinstance(shape, CircleEntity)
+            if isinstance(shape, (CircleEntity, ArcEntity))
             or (isinstance(shape, PolylineEntity) and shape.closed)
         ),
         snap_distance,
