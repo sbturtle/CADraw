@@ -29,7 +29,7 @@ from cadraw.duplicate_filter import (
     without_lines_through_features,
     without_polygon_edge_lines,
 )
-from cadraw.faces import FaceConfig, drawing_ink
+from cadraw.faces import FaceConfig, drawing_ink, stroke_width
 from cadraw.furniture_filter import (
     RulingRails,
     without_printed_rules,
@@ -95,7 +95,11 @@ from cadraw.preprocessing import (
     score_candidates,
     write_debug_outputs,
 )
-from cadraw.stroke_evidence import ink_between_factory, ink_mask_from_grayscale
+from cadraw.stroke_evidence import (
+    ink_between_factory,
+    ink_mask_from_grayscale,
+    without_lettering_crossings,
+)
 from cadraw.text_filter import TextStrokeConfig, TextStrokeRemoval, without_text_strokes
 
 type VariantEvaluation = tuple[
@@ -918,6 +922,24 @@ def _without_page_frame_rules(
     )
 
 
+def _stroke_lines(
+    lines: tuple[LineEntity, ...],
+    ink_mask: GrayImage,
+    *,
+    enabled: bool,
+) -> tuple[tuple[LineEntity, ...], int]:
+    """Keep the lines that follow a pen stroke, not a row of lettering.
+
+    This is lettering removal too, so it follows the lettering switch and is
+    counted in its warning. It needs the face path's ink mask, which keeps
+    strokes at their drawn width. Returns the kept lines and how many went.
+    """
+    if not enabled:
+        return lines, 0
+    kept = without_lettering_crossings(lines, ink_mask, stroke_width(ink_mask))
+    return kept, len(lines) - len(kept)
+
+
 def _without_printed_rules(
     lines: tuple[LineEntity, ...],
     source_image: GrayImage,
@@ -1052,18 +1074,24 @@ def _without_lettering(
 
 def _lettering_warning(
     removals: tuple[TextStrokeRemoval, ...],
+    crossings: int,
 ) -> AnalysisWarning | None:
     """Report how many candidates lettering removal took out, if any."""
     removed = sum(len(removal.removed_ids) for removal in removals)
-    if not removed:
+    if not removed and not crossings:
         return None
     regions = max(removal.region_count for removal in removals)
+    parts = (
+        *(
+            (f"숫자로 읽힌 글자 영역 {regions}곳 안에만 있는 획 후보 {removed}개",)
+            if removed
+            else ()
+        ),
+        *((f"글자 줄을 관통한 선 {crossings}개",) if crossings else ()),
+    )
     return AnalysisWarning(
         code=WarningCode.TEXT_STROKES_REMOVED,
-        message=(
-            f"숫자로 읽힌 글자 영역 {regions}곳 안에만 있는 "
-            f"획 후보 {removed}개를 도형에서 제외했습니다."
-        ),
+        message=f"{', '.join(parts)}를 도형에서 제외했습니다.",
     )
 
 
@@ -1307,15 +1335,19 @@ def analyze_image(
         ink_mask,
         config.text_strokes,
     )
-    lines = _without_page_frame_rules(
-        normalize_lines(
-            candidates,
-            normalization,
-            _ink_between_for(ink_mask, config),
+    lines, crossings_removed = _stroke_lines(
+        _without_page_frame_rules(
+            normalize_lines(
+                candidates,
+                normalization,
+                _ink_between_for(ink_mask, config),
+            ),
+            analysis_image,
+            detection_config,
+            normalization.endpoint_snap_distance,
         ),
-        analysis_image,
-        detection_config,
-        normalization.endpoint_snap_distance,
+        ink_mask,
+        enabled=detection_config.faces.enabled and config.text_strokes.enabled,
     )
     shape_detection, shape_lettering = _lettering_free_shapes(
         _ShapeContext(
@@ -1329,7 +1361,10 @@ def analyze_image(
             lines=lines,
         ),
     )
-    lettering_warning = _lettering_warning((line_lettering, shape_lettering))
+    lettering_warning = _lettering_warning(
+        (line_lettering, shape_lettering),
+        crossings_removed,
+    )
     if lettering_warning is not None:
         warnings.append(lettering_warning)
     lines = without_table_edge_lines(
