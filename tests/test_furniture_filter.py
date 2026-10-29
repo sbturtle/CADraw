@@ -1,5 +1,6 @@
 from cadraw.furniture_filter import (
     RulingRails,
+    without_printed_rules,
     without_ruling_remnants,
     without_table_edge_lines,
 )
@@ -98,3 +99,39 @@ def test_light_line_off_every_rail_is_kept() -> None:
     kept = without_ruling_remnants((faint,), _rails(), 10.0, lambda _s, _e: 190.0)
 
     assert kept == (faint,)
+
+
+def test_a_long_isolated_line_as_straight_as_print_is_a_form_rule() -> None:
+    # Given a header rule, measured as straight to a fraction of a pixel
+    rule = _line(
+        "rule", Point(10.0, 373.0), Point(870.0, 373.0), Orientation.HORIZONTAL
+    )
+
+    kept = without_printed_rules((rule,), 10.0, 150.0, lambda _s, _e: 0.25)
+
+    assert kept == ()
+
+
+def test_a_hand_drawn_line_of_the_same_length_is_kept() -> None:
+    # Given an isolated stroke that wanders a pixel or more, as a pen does
+    stroke = _line(
+        "stroke", Point(10.0, 373.0), Point(870.0, 373.0), Orientation.HORIZONTAL
+    )
+
+    kept = without_printed_rules((stroke,), 10.0, 150.0, lambda _s, _e: 1.4)
+
+    assert kept == (stroke,)
+
+
+def test_a_straight_line_joined_to_the_drawing_or_short_is_kept() -> None:
+    # Given a ruler-straight edge meeting another member, and a short tick
+    edge = _line(
+        "edge", Point(100.0, 300.0), Point(700.0, 300.0), Orientation.HORIZONTAL
+    )
+    side = _line("side", Point(700.0, 300.0), Point(700.0, 600.0), Orientation.VERTICAL)
+    tick = _line("tick", Point(900.0, 50.0), Point(980.0, 50.0), Orientation.HORIZONTAL)
+
+    kept = without_printed_rules((edge, side, tick), 10.0, 150.0, lambda _s, _e: 0.2)
+
+    # Then neither is taken for print
+    assert kept == (edge, side, tick)

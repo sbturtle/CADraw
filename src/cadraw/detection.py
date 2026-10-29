@@ -1,7 +1,7 @@
 """OpenCV image preparation and deterministic line candidate detection."""
 
 from dataclasses import dataclass, field, replace
-from math import atan2, degrees, hypot, isfinite, pi, sqrt
+from math import atan2, degrees, hypot, inf, isfinite, pi, sqrt
 from pathlib import Path
 from typing import cast, final, override
 
@@ -70,6 +70,11 @@ _MAX_ARC_SPAN_DEGREES = 320.0
 _MAX_ARC_TO_BOX_RADIUS_RATIO = 3.0
 _FRAME_RULE_AXIS_SLOPE = 0.09
 _THINNING_SLACK_ITERATIONS = 3
+_PAPER_LEVEL = 255
+_WOBBLE_STEP = 3.0
+_WOBBLE_HALF_BAND = 6.0
+_WOBBLE_MINIMUM_DARKNESS = 60.0
+_WOBBLE_MINIMUM_SAMPLES = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,6 +332,58 @@ def stroke_intensity(image: GrayImage, start: Point, end: Point) -> float:
         ]
         values.append(min(band_values))
     return float(np.median(np.asarray(values, dtype=np.float32)))
+
+
+def stroke_wobble(flattened: GrayImage, start: Point, end: Point) -> float:
+    """Return how far a stroke's ink strays from one straight line, in pixels.
+
+    Every few pixels along the line, the darkness-weighted centre of the ink
+    across it is measured; the RMS of those centres about their own best-fit
+    line is the wobble. `flattened` is an illumination-flattened page, so
+    paper contributes nothing. A line with too little ink under it to measure
+    returns infinity.
+    """
+    length = start.distance_to(end)
+    if length <= 0.0:
+        return inf
+    direction_x = (end.x - start.x) / length
+    direction_y = (end.y - start.y) / length
+    height, width = cast("tuple[int, int]", flattened.shape[:2])
+    along = np.arange(0.0, length, _WOBBLE_STEP)
+    across = np.arange(-_WOBBLE_HALF_BAND, _WOBBLE_HALF_BAND + 1.0)
+    xs = np.clip(
+        np.rint(
+            start.x + direction_x * along[:, None] - direction_y * across[None, :],
+        ).astype(np.int64),
+        0,
+        width - 1,
+    )
+    ys = np.clip(
+        np.rint(
+            start.y + direction_y * along[:, None] + direction_x * across[None, :],
+        ).astype(np.int64),
+        0,
+        height - 1,
+    )
+    darkness = np.subtract(
+        float(_PAPER_LEVEL),
+        np.asarray(flattened[ys, xs], dtype=np.float64),
+    )
+    weights: NDArray[np.float64] = np.clip(darkness, 0.0, None)
+    totals: NDArray[np.float64] = weights.sum(axis=1)
+    inked = totals >= _WOBBLE_MINIMUM_DARKNESS
+    if int(np.count_nonzero(inked)) < _WOBBLE_MINIMUM_SAMPLES:
+        return inf
+    centres: NDArray[np.float64] = (weights[inked] * across[None, :]).sum(
+        axis=1,
+    ) / totals[inked]
+    positions: NDArray[np.float64] = along[inked]
+    slope, intercept = cast(
+        "list[float]",
+        np.polyfit(positions, centres, 1).tolist(),
+    )
+    residual = centres - (slope * positions + intercept)
+    return sqrt(float(np.mean(residual * residual)))
 
 
 def _line_local_contrast(

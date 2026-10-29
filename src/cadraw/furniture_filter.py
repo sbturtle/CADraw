@@ -22,6 +22,7 @@ type Bounds = tuple[float, float, float, float]
 type StrokeIntensity = Callable[[Point, Point], float]
 
 _MIN_EDGE_OVERLAP_RATIO = 0.50
+_PRINTED_RULE_WOBBLE = 0.6
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +114,33 @@ def _on_rail(line: LineEntity, rails: RulingRails) -> bool:
     else:
         return False
     return any(abs(offset - rail) <= rails.band_width for rail in family)
+
+
+def without_printed_rules(
+    lines: tuple[LineEntity, ...],
+    snap_distance: float,
+    minimum_length: float,
+    wobble: StrokeIntensity,
+) -> tuple[LineEntity, ...]:
+    """Drop long, isolated lines whose ink is as straight as print.
+
+    A form's header and footer rules can sit anywhere on the sheet, so the
+    page-edge test misses most of them. What gives them away is their
+    straightness: a printed rule stays within a fraction of a pixel of one
+    line along its whole length, while a hand-drawn stroke of that length
+    wanders by a pixel or more even when drawn against a ruler. A line joined
+    to the rest of the drawing stays, however straight, because a printed
+    rule meets no drawn stroke at its ends.
+    """
+    return tuple(
+        line
+        for line in lines
+        if not (
+            line.length >= minimum_length
+            and _is_isolated(line, lines, snap_distance)
+            and wobble(line.start, line.end) <= _PRINTED_RULE_WOBBLE
+        )
+    )
 
 
 def without_ruling_remnants(

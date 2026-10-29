@@ -23,6 +23,7 @@ from cadraw.detection import (
     load_grayscale_image,
     settle_shape_roles,
     stroke_intensity,
+    stroke_wobble,
 )
 from cadraw.duplicate_filter import (
     without_lines_through_features,
@@ -31,6 +32,7 @@ from cadraw.duplicate_filter import (
 from cadraw.faces import FaceConfig, drawing_ink
 from cadraw.furniture_filter import (
     RulingRails,
+    without_printed_rules,
     without_ruling_remnants,
     without_table_edge_lines,
 )
@@ -88,6 +90,7 @@ from cadraw.preprocessing import (
     PreprocessingResult,
     PreprocessingVariant,
     ScoreContext,
+    illumination_flattened,
     preprocess_variants,
     score_candidates,
     write_debug_outputs,
@@ -215,6 +218,7 @@ _PAGE_EDGE_DOMINANCE_RATIO = 0.50
 _RAIL_REMNANT_PERIOD_RATIO = 0.25
 _POLYGON_EDGE_TOLERANCE = 12.0
 _FEATURE_PENETRATION_MARGIN = 3.0
+_PRINTED_RULE_LENGTH_RATIO = 0.15
 _POLYGON_EDGE_TOLERANCE_RATIO = 0.012
 _MIN_GRID_LIKE_SHAPES = 8
 _MIN_SHAPES_PER_LINE = 4
@@ -914,6 +918,30 @@ def _without_page_frame_rules(
     )
 
 
+def _without_printed_rules(
+    lines: tuple[LineEntity, ...],
+    source_image: GrayImage,
+    snap_distance: float,
+    *,
+    shapes_drawn: bool,
+) -> tuple[LineEntity, ...]:
+    """Drop isolated lines as straight as print, measured on the source page.
+
+    A form's rule is furniture beside a drawing. When removing the rules
+    would leave the sheet with no geometry at all, the lines are the drawing,
+    however straight, and all of them stay.
+    """
+    height, width = cast("tuple[int, int]", source_image.shape[:2])
+    flattened = illumination_flattened(source_image)
+    kept = without_printed_rules(
+        lines,
+        snap_distance,
+        min(width, height) * _PRINTED_RULE_LENGTH_RATIO,
+        lambda start, end: stroke_wobble(flattened, start, end),
+    )
+    return kept if kept or shapes_drawn else lines
+
+
 def _suggest_ocr_dimension_targets(
     ocr_result: OcrResult | None,
     entities: tuple[GeometryEntity, ...],
@@ -1304,32 +1332,37 @@ def analyze_image(
             normalization.component_length_ratio,
             _largest_shape_perimeter(shape_entities),
         )
-    restored_lines = without_ruling_remnants(
-        tuple(
-            entity
-            for entity in _restore_source_coordinates(
-                lines,
-                offset,
-                inverse_matrix,
-            )
-            if isinstance(entity, LineEntity)
-        ),
-        RulingRails(
-            horizontal=cleanup.horizontal_rails,
-            vertical=cleanup.vertical_rails,
-            # A skewed scan drifts a rail off its median row by more than the
-            # erasure band over the sheet, so remnants are matched within a
-            # quarter period; the ink test keeps a stroke drawn on a rail.
-            band_width=max(
-                config.page_cleanup.rail_band_width,
-                _RAIL_REMNANT_PERIOD_RATIO * (cleanup.grid_period or 0.0),
+    restored_lines = _without_printed_rules(
+        without_ruling_remnants(
+            tuple(
+                entity
+                for entity in _restore_source_coordinates(
+                    lines,
+                    offset,
+                    inverse_matrix,
+                )
+                if isinstance(entity, LineEntity)
             ),
-            maximum_intensity=(
-                detection_config.arbitration.grid.maximum_grid_intensity
+            RulingRails(
+                horizontal=cleanup.horizontal_rails,
+                vertical=cleanup.vertical_rails,
+                # A skewed scan drifts a rail off its median row by more than the
+                # erasure band over the sheet, so remnants are matched within a
+                # quarter period; the ink test keeps a stroke drawn on a rail.
+                band_width=max(
+                    config.page_cleanup.rail_band_width,
+                    _RAIL_REMNANT_PERIOD_RATIO * (cleanup.grid_period or 0.0),
+                ),
+                maximum_intensity=(
+                    detection_config.arbitration.grid.maximum_grid_intensity
+                ),
             ),
+            normalization.endpoint_snap_distance,
+            lambda start, end: stroke_intensity(source_image, start, end),
         ),
+        source_image,
         normalization.endpoint_snap_distance,
-        lambda start, end: stroke_intensity(source_image, start, end),
+        shapes_drawn=bool(shape_entities),
     )
     restored_shapes = _restore_source_coordinates(
         shape_entities,
