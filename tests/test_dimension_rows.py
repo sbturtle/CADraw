@@ -1,4 +1,6 @@
 from cadraw.models import (
+    Dimension,
+    DimensionId,
     DimensionKind,
     DimensionStatus,
     EntityId,
@@ -72,3 +74,30 @@ def test_axis_angles_are_auto_confirmed_and_diagonal_angles_stay_open() -> None:
     )
     assert diagonal_rows[-1].kind is DimensionKind.ANGLE
     assert diagonal_rows[-1].status is DimensionStatus.UNSET
+
+
+def test_a_value_read_without_a_target_keeps_its_own_row() -> None:
+    # Given one line and a read value that measures nothing on the sheet
+    unlinked = Dimension(
+        dimension_id=DimensionId("ocr_001"),
+        raw_text="40mm",
+        kind=DimensionKind.LENGTH,
+        parsed_value=40.0,
+        unit="mm",
+        target_entity_ids=(),
+        confidence=0.98,
+        status=DimensionStatus.NEEDS_REVIEW,
+    )
+
+    # When the review rows are built
+    dimensions = manual_dimensions(
+        (_line("edge", Point(0.0, 0.0), Point(100.0, 0.0), Orientation.HORIZONTAL),),
+        (unlinked,),
+    )
+
+    # Then the value is still listed for review after the line's own rows
+    assert dimensions[-1] == unlinked
+    assert all(
+        dimension.target_entity_ids == (EntityId("edge"),)
+        for dimension in dimensions[:-1]
+    )

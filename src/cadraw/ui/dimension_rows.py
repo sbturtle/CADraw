@@ -62,7 +62,10 @@ def manual_dimensions(
     entities: tuple[GeometryEntity, ...],
     existing_dimensions: tuple[Dimension, ...] = (),
 ) -> tuple[Dimension, ...]:
-    """Create stable length/angle/diameter/radius rows for every entity."""
+    """Create stable length/angle/diameter/radius rows for every entity.
+
+    Read values that found no target follow the entity rows, unlinked.
+    """
     existing_by_key = {
         (dimension.target_entity_ids[0], dimension.kind): dimension
         for dimension in existing_dimensions
@@ -149,4 +152,11 @@ def manual_dimensions(
             )
         )
         dimensions.append(angle)
+    # A value read with nothing to measure has no entity row; it keeps a row of
+    # its own, so the reviewer still sees what was read and can enter it.
+    dimensions.extend(
+        dimension
+        for dimension in existing_dimensions
+        if not dimension.target_entity_ids and dimension.parsed_value is not None
+    )
     return tuple(dimensions)
