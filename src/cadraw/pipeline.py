@@ -36,6 +36,7 @@ from cadraw.faces import (
     without_interstitial_holes,
 )
 from cadraw.furniture_filter import (
+    RuleLengths,
     RulingRails,
     is_printed_row,
     without_printed_rules,
@@ -229,6 +230,7 @@ _RAIL_REMNANT_PERIOD_RATIO = 0.25
 _POLYGON_EDGE_TOLERANCE = 12.0
 _FEATURE_PENETRATION_MARGIN = 3.0
 _PRINTED_RULE_LENGTH_RATIO = 0.15
+_PRINTED_RULE_SPAN_RATIO = 0.5
 _INTERSTITIAL_STROKES = 3.0
 _POLYGON_EDGE_TOLERANCE_RATIO = 0.012
 _MIN_GRID_LIKE_SHAPES = 8
@@ -972,7 +974,10 @@ def _without_printed_rules(
             or (isinstance(shape, PolylineEntity) and shape.closed)
         ),
         snap_distance,
-        min(width, height) * _PRINTED_RULE_LENGTH_RATIO,
+        RuleLengths(
+            single=min(width, height) * _PRINTED_RULE_LENGTH_RATIO,
+            spanning=width * _PRINTED_RULE_SPAN_RATIO,
+        ),
         lambda start, end: stroke_wobble(flattened, start, end),
     )
     return kept if kept or shapes else lines

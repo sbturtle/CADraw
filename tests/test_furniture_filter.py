@@ -1,4 +1,5 @@
 from cadraw.furniture_filter import (
+    RuleLengths,
     RulingRails,
     is_printed_row,
     without_printed_rules,
@@ -13,6 +14,8 @@ from cadraw.models import (
     Point,
     PolylineEntity,
 )
+
+_LENGTHS = RuleLengths(single=150.0, spanning=500.0)
 
 
 def _line(name: str, start: Point, end: Point, orientation: Orientation) -> LineEntity:
@@ -126,7 +129,9 @@ def test_a_straight_line_touching_a_closed_outline_is_kept() -> None:
         "member", Point(400.0, 200.0), Point(800.0, 200.0), Orientation.HORIZONTAL
     )
 
-    kept = without_printed_rules((member,), (plate,), 10.0, 150.0, lambda _s, _e: 0.2)
+    kept = without_printed_rules(
+        (member,), (plate,), 10.0, _LENGTHS, lambda _s, _e: 0.2
+    )
 
     # Then meeting the outline makes it part of the drawing
     assert kept == (member,)
@@ -195,7 +200,7 @@ def test_a_straight_edge_with_a_hand_drawn_branch_is_kept() -> None:
         (edge, branch),
         (),
         10.0,
-        150.0,
+        _LENGTHS,
         lambda start, _e: 1.4 if start == branch.start else 0.2,
     )
 
@@ -212,7 +217,9 @@ def test_a_printed_t_of_rules_goes_together() -> None:
         "divider", Point(450.0, 260.0), Point(450.0, 300.0), Orientation.VERTICAL
     )
 
-    kept = without_printed_rules((rule, divider), (), 10.0, 150.0, lambda _s, _e: 0.2)
+    kept = without_printed_rules(
+        (rule, divider), (), 10.0, _LENGTHS, lambda _s, _e: 0.2
+    )
 
     # Then the joint proves nothing and both are print
     assert kept == ()
@@ -232,7 +239,7 @@ def test_straight_lines_meeting_a_rounded_corner_are_kept() -> None:
     side = _line("side", Point(450.0, 300.0), Point(450.0, 600.0), Orientation.VERTICAL)
 
     kept = without_printed_rules(
-        (top, side), (corner,), 10.0, 150.0, lambda _s, _e: 0.2
+        (top, side), (corner,), 10.0, _LENGTHS, lambda _s, _e: 0.2
     )
 
     # Then the arc joins both to the drawing
@@ -245,7 +252,7 @@ def test_a_long_isolated_line_as_straight_as_print_is_a_form_rule() -> None:
         "rule", Point(10.0, 373.0), Point(870.0, 373.0), Orientation.HORIZONTAL
     )
 
-    kept = without_printed_rules((rule,), (), 10.0, 150.0, lambda _s, _e: 0.25)
+    kept = without_printed_rules((rule,), (), 10.0, _LENGTHS, lambda _s, _e: 0.25)
 
     assert kept == ()
 
@@ -256,7 +263,7 @@ def test_a_hand_drawn_line_of_the_same_length_is_kept() -> None:
         "stroke", Point(10.0, 373.0), Point(870.0, 373.0), Orientation.HORIZONTAL
     )
 
-    kept = without_printed_rules((stroke,), (), 10.0, 150.0, lambda _s, _e: 1.4)
+    kept = without_printed_rules((stroke,), (), 10.0, _LENGTHS, lambda _s, _e: 1.4)
 
     assert kept == (stroke,)
 
@@ -280,9 +287,20 @@ def test_straight_lines_joined_to_drawn_or_slanted_ones_and_short_ones_stay() ->
         (edge, side, base, chamfer, tick),
         (),
         10.0,
-        150.0,
+        _LENGTHS,
         lambda start, _e: 1.4 if start == side.start else 0.2,
     )
 
     # Then none of them is taken for print
     assert kept == (edge, side, base, chamfer, tick)
+
+
+def test_a_ruler_drawn_open_corner_is_kept() -> None:
+    # Given an open right angle drawn against a ruler, shorter than the form
+    top = _line("top", Point(200.0, 300.0), Point(600.0, 300.0), Orientation.HORIZONTAL)
+    side = _line("side", Point(600.0, 300.0), Point(600.0, 600.0), Orientation.VERTICAL)
+
+    kept = without_printed_rules((top, side), (), 10.0, _LENGTHS, lambda _s, _e: 0.2)
+
+    # Then the corner is part of the drawing, however straight
+    assert kept == (top, side)

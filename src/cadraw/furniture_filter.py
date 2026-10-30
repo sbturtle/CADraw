@@ -188,11 +188,24 @@ def _touches_shape(
     return False
 
 
+@dataclass(frozen=True, slots=True)
+class RuleLengths:
+    """How long a printed rule must be, alone or among others it touches.
+
+    `single` is the least length of a lone rule. A group of touching rules
+    needs one at least `spanning` long: a form's ruled T crosses the form,
+    while the straight corner of a part drawn against a ruler does not.
+    """
+
+    single: float
+    spanning: float
+
+
 def without_printed_rules(
     lines: tuple[LineEntity, ...],
     shapes: tuple[PolylineEntity | CircleEntity | ArcEntity, ...],
     snap_distance: float,
-    minimum_length: float,
+    lengths: RuleLengths,
     wobble: StrokeIntensity,
 ) -> tuple[LineEntity, ...]:
     """Drop groups of touching lines that are all as straight as print.
@@ -205,10 +218,12 @@ def without_printed_rules(
 
     Lines are judged in groups that touch anywhere, end to end or at a T, so
     a form's ruled T goes as one piece. A group goes only when every line in
-    it is as straight as print and runs along the page's axes, one of them is
-    at least `minimum_length` long, and none of them meets a closed outline
-    or an arc. One wavering stroke or one slanted edge in the group makes it
-    part of the drawing.
+    it is as straight as print and runs along the page's axes, none of them
+    meets a closed outline or an arc, and it is long enough for print: a lone
+    line `lengths.single` long, or a group with a line `lengths.spanning`
+    long. One wavering stroke or one slanted edge makes the group part of the
+    drawing, and so does a straight corner of lines too short to cross the
+    form.
     """
     straight = {
         id(line): wobble(line.start, line.end) <= _PRINTED_RULE_WOBBLE
@@ -217,9 +232,10 @@ def without_printed_rules(
     }
     printed: set[int] = set()
     for group in _touching_groups(lines, snap_distance):
+        needed = lengths.single if len(group) == 1 else lengths.spanning
         if (
             all(straight[id(line)] for line in group)
-            and any(line.length >= minimum_length for line in group)
+            and any(line.length >= needed for line in group)
             and not any(
                 _touches_shape(point, shapes, snap_distance)
                 for line in group
