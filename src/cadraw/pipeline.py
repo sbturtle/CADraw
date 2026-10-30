@@ -96,6 +96,7 @@ from cadraw.preprocessing import (
     PreprocessingResult,
     PreprocessingVariant,
     ScoreContext,
+    backdrop_mask,
     illumination_flattened,
     preprocess_variants,
     score_candidates,
@@ -947,6 +948,59 @@ def _stroke_lines(
     return kept, len(lines) - len(kept)
 
 
+def _entity_centre(entity: GeometryEntity) -> Point:
+    """Return a representative point of an entity: its centre or midpoint."""
+    if isinstance(entity, LineEntity):
+        return Point(
+            (entity.start.x + entity.end.x) / 2.0,
+            (entity.start.y + entity.end.y) / 2.0,
+        )
+    if isinstance(entity, (CircleEntity, ArcEntity)):
+        return entity.center
+    count = max(1, len(entity.points))
+    return Point(
+        sum(point.x for point in entity.points) / count,
+        sum(point.y for point in entity.points) / count,
+    )
+
+
+def _on_paper(
+    entities: tuple[GeometryEntity, ...],
+    source_image: GrayImage,
+    warnings: list[AnalysisWarning],
+) -> tuple[GeometryEntity, ...]:
+    """Drop geometry read off the desk around the paper, and report it.
+
+    Nothing drawn lies on the dark desk, bag, or mug a photograph shows
+    beside the sheet, so an entity centred there is clutter. A scan shows no
+    backdrop and keeps everything.
+    """
+    backdrop = backdrop_mask(source_image)
+    if backdrop is None:
+        return entities
+    height, width = cast("tuple[int, int]", backdrop.shape[:2])
+
+    def on_backdrop(point: Point) -> bool:
+        row = min(height - 1, max(0, round(point.y)))
+        column = min(width - 1, max(0, round(point.x)))
+        return bool(cast("bool", backdrop[row, column]))
+
+    kept = tuple(
+        entity for entity in entities if not on_backdrop(_entity_centre(entity))
+    )
+    removed = len(entities) - len(kept)
+    if removed:
+        warnings.append(
+            AnalysisWarning(
+                code=WarningCode.BACKDROP_GEOMETRY_REMOVED,
+                message=(
+                    f"종이 밖 어두운 배경에서 읽힌 형상 {removed}개를 제외했습니다."
+                ),
+            ),
+        )
+    return kept
+
+
 def _without_printed_rules(
     lines: tuple[LineEntity, ...],
     source_image: GrayImage,
@@ -1537,7 +1591,7 @@ def analyze_image(
         normalization.endpoint_snap_distance,
         shapes=restored_shapes,
     )
-    entities = (*restored_lines, *restored_shapes)
+    entities = _on_paper((*restored_lines, *restored_shapes), source_image, warnings)
     if ocr_result is None or not ocr_result.dimensions:
         warnings.append(
             AnalysisWarning(

@@ -23,6 +23,10 @@ _DUPLICATE_LENGTH_RATIO = 0.70
 _MIN_COMPONENT_AREA = 9
 _PAPER_SHAPE_TOLERANCE = 12.0
 _PAPER_SHAPE_SATURATION = 120.0
+_BACKDROP_SCALE = 0.25
+_BACKDROP_SMOOTHING = 15
+_BACKDROP_DARKNESS = 0.5
+_MINIMUM_BACKDROP_SHARE = 0.02
 _DEFAULT_VARIANT_ORDER = (
     "grayscale_adaptive",
     "clahe_adaptive",
@@ -171,6 +175,42 @@ def illumination_flattened(
 ) -> GrayImage:
     """Return the image divided by its slowly varying paper background."""
     return _illumination_flattened(image, config or PreprocessingConfig())
+
+
+def backdrop_mask(image: GrayImage) -> NDArray[np.bool_] | None:
+    """Return where a photograph shows the desk around the paper, if anywhere.
+
+    Paper, even in shadow, stays more than half as bright as the paper's
+    typical level, while a desk, a bag, or a mug beside it is darker than
+    that. The page is first smoothed far beyond a pen stroke, so ink never
+    counts as backdrop. A scan, or a photo filled by paper, shows too little
+    backdrop to report any.
+    """
+    height, width = cast("tuple[int, int]", image.shape[:2])
+    small = np.asarray(
+        cv2.resize(
+            image,
+            None,
+            fx=_BACKDROP_SCALE,
+            fy=_BACKDROP_SCALE,
+            interpolation=cv2.INTER_AREA,
+        ),
+        dtype=np.uint8,
+    )
+    smoothed = np.asarray(cv2.medianBlur(small, _BACKDROP_SMOOTHING), dtype=np.uint8)
+    otsu, _ = cv2.threshold(smoothed, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    paper = smoothed[smoothed > otsu]
+    if paper.size == 0:
+        return None
+    paper_level = float(np.median(np.asarray(paper, dtype=np.float64)))
+    backdrop = np.asarray(
+        np.less_equal(smoothed, _BACKDROP_DARKNESS * paper_level),
+        dtype=np.uint8,
+    )
+    if int(np.count_nonzero(backdrop)) < _MINIMUM_BACKDROP_SHARE * backdrop.size:
+        return None
+    full = cv2.resize(backdrop, (width, height), interpolation=cv2.INTER_NEAREST)
+    return np.greater(np.asarray(full, dtype=np.uint8), 0)
 
 
 def _shadow_removed(

@@ -113,6 +113,10 @@ polyline 조립은 proximity connection을 다시 사용하지 않습니다. bra
 선을 인쇄 양식의 괘선으로 보고 지웁니다(`furniture_filter.without_printed_rules`,
 ADR-0020).
 
+사진에서 종이 옆 책상이나 물건이 보이면, 종이 밝기의 절반보다 어두운 배경
+위에 중심이 놓인 형상을 지우고 `BACKDROP_GEOMETRY_REMOVED`로 보고합니다
+(`preprocessing.backdrop_mask`, ADR-0022). 그림자 진 종이는 그보다 밝아 남습니다.
+
 도형 크기 하한은 절대값과 비례값 중 큰 쪽입니다
 (`max(minimum_shape_span, min(width, height) * 0.02)`). 절대값만으로는
 해상도에 따라 의미가 달라져, 2560픽셀 높이 사진에서 30픽셀 표시는 손글씨
