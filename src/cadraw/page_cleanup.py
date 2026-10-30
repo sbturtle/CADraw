@@ -23,6 +23,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from cadraw.grid_filter import base_period_rails
+from cadraw.preprocessing import paper_background
 
 type GrayImage = NDArray[np.uint8]
 
@@ -81,11 +82,7 @@ def _background(image: GrayImage, config: PageCleanupConfig) -> GrayImage:
             max(config.minimum_background_kernel, scaled),
         ),
     )
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
-    return np.asarray(
-        cv2.morphologyEx(image, cv2.MORPH_CLOSE, kernel),
-        dtype=np.uint8,
-    )
+    return paper_background(image, size)
 
 
 def _flattened(image: GrayImage, background: GrayImage) -> GrayImage:

@@ -29,8 +29,8 @@ _BACKDROP_SCALE = 0.25
 _BACKDROP_SMOOTHING = 15
 _BACKDROP_DARKNESS = 0.5
 _MINIMUM_BACKDROP_SHARE = 0.02
-_FLATTENED_CACHE_SIZE = 4
-_FLATTENED_CACHE: OrderedDict[tuple[bytes, tuple[int, ...], int], GrayImage] = (
+_BACKGROUND_CACHE_SIZE = 4
+_BACKGROUND_CACHE: OrderedDict[tuple[bytes, tuple[int, ...], int], GrayImage] = (
     OrderedDict()
 )
 _DEFAULT_VARIANT_ORDER = (
@@ -157,42 +157,50 @@ def _contrast_stretch(image: GrayImage) -> GrayImage:
     return stretched
 
 
-def _illumination_flattened(
-    image: GrayImage,
-    config: PreprocessingConfig,
-) -> GrayImage:
-    """Divide out slow illumination so absolute ink darkness stays comparable.
+def paper_background(image: GrayImage, kernel_size: int) -> GrayImage:
+    """Return the slowly varying paper brightness behind the ink.
 
-    The preprocessing variants, the face detector, and the furniture filters
-    each flatten the same analysis frame, and the closing with a kernel a
-    fair share of the page wide is the costliest step on a photograph. The
-    last few results are kept by the image's digest and the kernel size,
-    which is all the result depends on, and handed out as copies.
+    It is the image closed with an elliptical kernel a fair share of the page
+    wide, the costliest step on a photograph, and the page cleanup, the
+    preprocessing variants, the face detector, and the furniture filters all
+    ask for it on the same frame. The last few results are kept by the
+    image's digest and the kernel size, which is all the result depends on,
+    and handed out as copies so no caller can alter another's.
     """
-    kernel_size = _scaled_kernel_size(image, config)
     key = (
         blake2b(np.ascontiguousarray(image).tobytes(), digest_size=16).digest(),
         cast("tuple[int, ...]", image.shape),
         kernel_size,
     )
-    cached = _FLATTENED_CACHE.get(key)
+    cached = _BACKGROUND_CACHE.get(key)
     if cached is not None:
-        _FLATTENED_CACHE.move_to_end(key)
+        _BACKGROUND_CACHE.move_to_end(key)
         return cached.copy()
     kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE,
         (kernel_size, kernel_size),
     )
-    background = cv2.morphologyEx(image, cv2.MORPH_CLOSE, kernel)
+    background = np.asarray(
+        cv2.morphologyEx(image, cv2.MORPH_CLOSE, kernel),
+        dtype=np.uint8,
+    )
+    _BACKGROUND_CACHE[key] = background.copy()
+    if len(_BACKGROUND_CACHE) > _BACKGROUND_CACHE_SIZE:
+        _ = _BACKGROUND_CACHE.popitem(last=False)
+    return background
+
+
+def _illumination_flattened(
+    image: GrayImage,
+    config: PreprocessingConfig,
+) -> GrayImage:
+    """Divide out slow illumination so absolute ink darkness stays comparable."""
+    background = paper_background(image, _scaled_kernel_size(image, config))
     safe_background = np.maximum(background, 1).astype(np.uint8)
-    flattened = np.asarray(
+    return np.asarray(
         cv2.divide(image, safe_background, scale=255),
         dtype=np.uint8,
     )
-    _FLATTENED_CACHE[key] = flattened.copy()
-    if len(_FLATTENED_CACHE) > _FLATTENED_CACHE_SIZE:
-        _ = _FLATTENED_CACHE.popitem(last=False)
-    return flattened
 
 
 def illumination_flattened(
