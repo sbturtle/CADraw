@@ -181,7 +181,15 @@ real_11·17·18 세 장은 `samples/pen2step/`에 두고 회귀 테스트로 씁
 
 ```powershell
 uv run python scripts/run_reference_benchmark.py
-uv run python scripts/run_reference_benchmark.py --ground-truth <사진 정답 JSON>
+uv run python scripts/run_reference_benchmark.py --ground-truth docs/experiments/photo-geometry-ground-truth.json
 ```
 
 결과는 `artifacts/reference_benchmark.json`에 저장됩니다.
+
+`photo-geometry-ground-truth.json`은 스캔 정답을 사진으로 옮긴 근사 정답입니다.
+1·2·3·5·6번은 SIFT 호모그래피로 옮겼습니다. 4·7번은 SIFT 정렬이 실패해서, 정답의
+구멍 중심과 외곽 꼭짓점을 검출된 원·다각형 꼭짓점에 짝지어 RANSAC 호모그래피를
+반복해 다시 맞췄습니다(4번은 외곽선 상자로 시작). 검출 결과에 맞춰 정렬했으므로
+4·7번 수치는 낙관적일 수 있습니다. 이 정답으로 잰 현재 사진 결과는 F1 0.484, 외곽선
+8/18, 구멍 10/26, 슬롯·컷아웃 16/19, 오검출 100입니다. 4번의 남은 오검출 35개는 위에
+놓인 다른 양식의 표 칸입니다.
