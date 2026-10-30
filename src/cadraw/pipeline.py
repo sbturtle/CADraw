@@ -240,6 +240,7 @@ _MIN_GRID_LIKE_SHAPES = 8
 _MIN_SHAPES_PER_LINE = 4
 _FULL_TURN_DEGREES = 360.0
 _RIM_SAMPLES = 36
+_COLLINEAR_DETERMINANT = 1e-6
 
 
 def _select_detection_stream(
@@ -362,7 +363,7 @@ def _restore_source_coordinates(
 ) -> tuple[GeometryEntity, ...]:
     """Map analyzed geometry back to source-image coordinates."""
     return tuple(
-        _restore_source_geometry(entity, offset, inverse_matrix) for entity in entities
+        restore_source_geometry(entity, offset, inverse_matrix) for entity in entities
     )
 
 
@@ -415,12 +416,50 @@ def _restored_radius(
     ) / len(rim)
 
 
+def _circle_through(
+    first: Point,
+    second: Point,
+    third: Point,
+) -> tuple[Point, float] | None:
+    """Return the circle through three points, or `None` when they align."""
+    determinant = 2.0 * (
+        first.x * (second.y - third.y)
+        + second.x * (third.y - first.y)
+        + third.x * (first.y - second.y)
+    )
+    if abs(determinant) < _COLLINEAR_DETERMINANT:
+        return None
+    first_square = first.x * first.x + first.y * first.y
+    second_square = second.x * second.x + second.y * second.y
+    third_square = third.x * third.x + third.y * third.y
+    centre = Point(
+        (
+            first_square * (second.y - third.y)
+            + second_square * (third.y - first.y)
+            + third_square * (first.y - second.y)
+        )
+        / determinant,
+        (
+            first_square * (third.x - second.x)
+            + second_square * (first.x - third.x)
+            + third_square * (second.x - first.x)
+        )
+        / determinant,
+    )
+    return centre, centre.distance_to(first)
+
+
 def _restored_arc(
     arc: ArcEntity,
     offset: Point,
     inverse_matrix: tuple[float, ...] | None,
 ) -> ArcEntity:
-    """Map an arc's centre, radius, and end angles back to the photograph."""
+    """Map an arc back to the photograph through its two ends and middle.
+
+    The warp scales each direction differently, so no circle fits the whole
+    mapped arc; the one through its mapped ends and middle keeps the ends
+    exactly where the lines joining them meet the arc.
+    """
     centre = _restore_point(arc.center, offset, inverse_matrix)
     if inverse_matrix is None:
         return replace(arc, center=centre)
@@ -428,20 +467,26 @@ def _restored_arc(
     sweep = sweep or _FULL_TURN_DEGREES
     rim = _rim_points(arc.center, arc.radius, arc.start_angle_degrees, sweep)
     first = _restore_point(rim[0], offset, inverse_matrix)
+    middle = _restore_point(rim[len(rim) // 2], offset, inverse_matrix)
     last = _restore_point(rim[-1], offset, inverse_matrix)
+    circle = _circle_through(first, middle, last)
+    if circle is None:
+        radius = _restored_radius(rim, centre, offset, inverse_matrix)
+    else:
+        centre, radius = circle
     start = math.degrees(math.atan2(first.y - centre.y, first.x - centre.x))
     end = math.degrees(math.atan2(last.y - centre.y, last.x - centre.x))
     restored_sweep = (end - start) % _FULL_TURN_DEGREES or sweep
     return replace(
         arc,
         center=centre,
-        radius=_restored_radius(rim, centre, offset, inverse_matrix),
+        radius=radius,
         start_angle_degrees=start,
         end_angle_degrees=start + restored_sweep,
     )
 
 
-def _restore_source_geometry(
+def restore_source_geometry(
     entity: GeometryEntity,
     offset: Point,
     inverse_matrix: tuple[float, ...] | None,

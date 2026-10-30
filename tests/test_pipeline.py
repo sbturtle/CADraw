@@ -1,3 +1,4 @@
+import math
 from dataclasses import replace
 from pathlib import Path
 
@@ -9,9 +10,11 @@ from PIL import Image
 from cadraw.detection import DetectionConfig
 from cadraw.models import (
     AnalysisStatus,
+    ArcEntity,
     CircleEntity,
     DimensionKind,
     DimensionStatus,
+    EntityId,
     LineEntity,
     Point,
     PolylineEntity,
@@ -19,7 +22,8 @@ from cadraw.models import (
     WarningCode,
 )
 from cadraw.normalization import NormalizationConfig
-from cadraw.pipeline import PipelineConfig, analyze_image
+from cadraw.perspective import transform_point
+from cadraw.pipeline import PipelineConfig, analyze_image, restore_source_geometry
 from cadraw.text_filter import TextStrokeConfig
 
 
@@ -628,3 +632,33 @@ def test_a_circle_on_a_skewed_page_keeps_its_photographed_radius(
     assert len(circles) == 1
     assert circles[0].center.distance_to(Point(380.0, 140.0)) <= 4.0
     assert abs(circles[0].radius - 30.0) <= 3.0
+
+
+def test_a_restored_arc_ends_where_its_mapped_ends_land() -> None:
+    # Given an arc on a flattened page and a steep warp back to the photograph
+    arc = ArcEntity(
+        entity_id=EntityId("arc"),
+        center=Point(200.0, 200.0),
+        radius=80.0,
+        start_angle_degrees=0.0,
+        end_angle_degrees=90.0,
+        confidence=0.9,
+    )
+    warp = (0.6, -0.2, 140.0, 0.05, 0.9, 30.0, 0.0006, 0.0004, 1.0)
+
+    # When it is restored to source coordinates
+    restored = restore_source_geometry(arc, Point(0.0, 0.0), warp)
+
+    # Then both of its ends lie where the page's arc ends map to, so a line
+    # that met an end on the page still meets it in the photograph
+    assert isinstance(restored, ArcEntity)
+    for angle, original in (
+        (restored.start_angle_degrees, Point(280.0, 200.0)),
+        (restored.end_angle_degrees, Point(200.0, 280.0)),
+    ):
+        mapped = transform_point(original, warp)
+        end = Point(
+            restored.center.x + restored.radius * math.cos(math.radians(angle)),
+            restored.center.y + restored.radius * math.sin(math.radians(angle)),
+        )
+        assert end.distance_to(mapped) <= 0.01
