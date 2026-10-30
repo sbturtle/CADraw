@@ -1,3 +1,4 @@
+import math
 from dataclasses import replace
 from pathlib import Path
 
@@ -9,9 +10,11 @@ from PIL import Image
 from cadraw.detection import DetectionConfig
 from cadraw.models import (
     AnalysisStatus,
+    ArcEntity,
     CircleEntity,
     DimensionKind,
     DimensionStatus,
+    EntityId,
     LineEntity,
     Point,
     PolylineEntity,
@@ -19,7 +22,8 @@ from cadraw.models import (
     WarningCode,
 )
 from cadraw.normalization import NormalizationConfig
-from cadraw.pipeline import PipelineConfig, analyze_image
+from cadraw.perspective import transform_point
+from cadraw.pipeline import PipelineConfig, analyze_image, restore_source_geometry
 from cadraw.text_filter import TextStrokeConfig
 
 
@@ -598,6 +602,86 @@ def test_workbench_config_reads_labels_and_the_optional_vision_model(
     assert plain.ocr_enabled
     assert plain.ocr_cross_check_model is None
     assert checked.ocr_cross_check_model == "qwen3-vl:2b-instruct"
+
+
+def test_a_circle_on_a_skewed_page_keeps_its_photographed_radius(
+    tmp_path: Path,
+) -> None:
+    # Given a page photographed steeply, with a 30 px circle near its far edge
+    image = np.full((560, 760), 30, dtype=np.uint8)
+    quad = np.array([(250, 40), (510, 40), (700, 520), (60, 520)], dtype=np.int32)
+    _ = cv2.fillConvexPoly(image, quad, 240)
+    _ = cv2.polylines(image, [quad], isClosed=True, color=0, thickness=6)
+    _ = cv2.circle(image, (380, 140), 30, 0, 3)
+    _ = cv2.rectangle(image, (230, 300), (530, 460), 0, 4)
+    image_path = tmp_path / "steep-page.png"
+    Image.fromarray(image).save(image_path)
+    config = replace(
+        PipelineConfig.from_detection_defaults(),
+        perspective_correction=True,
+    )
+
+    # When the page is flattened, analyzed, and mapped back to the photograph
+    analysis = analyze_image(image_path, config)
+
+    # Then the circle has the size it has in the photograph, not the flat page
+    assert analysis.perspective_transform is not None
+    circles = [
+        entity for entity in analysis.entities if isinstance(entity, CircleEntity)
+    ]
+    assert len(circles) == 1
+    assert circles[0].center.distance_to(Point(380.0, 140.0)) <= 4.0
+    assert abs(circles[0].radius - 30.0) <= 3.0
+
+
+def test_a_restored_arc_ends_where_its_mapped_ends_land() -> None:
+    # Given an arc on a flattened page and a steep warp back to the photograph
+    arc = ArcEntity(
+        entity_id=EntityId("arc"),
+        center=Point(200.0, 200.0),
+        radius=80.0,
+        start_angle_degrees=0.0,
+        end_angle_degrees=90.0,
+        confidence=0.9,
+    )
+    warp = (0.6, -0.2, 140.0, 0.05, 0.9, 30.0, 0.0006, 0.0004, 1.0)
+
+    # When it is restored to source coordinates
+    restored = restore_source_geometry(arc, Point(0.0, 0.0), warp)
+
+    # Then both of its ends lie where the page's arc ends map to, so a line
+    # that met an end on the page still meets it in the photograph
+    assert isinstance(restored, ArcEntity)
+    for angle, original in (
+        (restored.start_angle_degrees, Point(280.0, 200.0)),
+        (restored.end_angle_degrees, Point(200.0, 280.0)),
+    ):
+        mapped = transform_point(original, warp)
+        end = Point(
+            restored.center.x + restored.radius * math.cos(math.radians(angle)),
+            restored.center.y + restored.radius * math.sin(math.radians(angle)),
+        )
+        assert end.distance_to(mapped) <= 0.01
+
+
+def test_a_long_arc_no_circle_follows_after_the_warp_stays_an_arc() -> None:
+    # Given a three-quarter arc and a warp squashing one direction tenfold
+    arc = ArcEntity(
+        entity_id=EntityId("arc"),
+        center=Point(0.0, 0.0),
+        radius=100.0,
+        start_angle_degrees=0.0,
+        end_angle_degrees=270.0,
+        confidence=0.9,
+    )
+    squash = (1.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 1.0)
+
+    # When it is restored to source coordinates
+    restored = restore_source_geometry(arc, Point(0.0, 0.0), squash)
+
+    # Then no huge circle through three of its points replaces it: it stays
+    # the same arc around its mapped centre, so its radius can be confirmed
+    assert restored == arc
 
 
 class _DimensionValueOcrBackend:

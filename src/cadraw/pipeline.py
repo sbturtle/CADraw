@@ -244,6 +244,11 @@ _LEADING_GLYPH_SHARE = 0.3
 _POLYGON_EDGE_TOLERANCE_RATIO = 0.012
 _MIN_GRID_LIKE_SHAPES = 8
 _MIN_SHAPES_PER_LINE = 4
+_FULL_TURN_DEGREES = 360.0
+_RIM_SAMPLES = 36
+_COLLINEAR_DETERMINANT = 1e-6
+_ARC_FIT_PIXELS = 2.0
+_ARC_FIT_RATIO = 0.02
 _DIMENSION_LINE_SOURCE = "dimension_line"
 
 
@@ -367,7 +372,7 @@ def _restore_source_coordinates(
 ) -> tuple[GeometryEntity, ...]:
     """Map analyzed geometry back to source-image coordinates."""
     return tuple(
-        _restore_source_geometry(entity, offset, inverse_matrix) for entity in entities
+        restore_source_geometry(entity, offset, inverse_matrix) for entity in entities
     )
 
 
@@ -383,7 +388,141 @@ def _restore_point(
     return transform_point(translated, inverse_matrix)
 
 
-def _restore_source_geometry(
+def _rim_points(
+    center: Point,
+    radius: float,
+    start_angle: float,
+    sweep: float,
+) -> tuple[Point, ...]:
+    """Return evenly spaced points along a circle or arc in image coordinates."""
+    count = _RIM_SAMPLES
+    return tuple(
+        Point(
+            center.x
+            + radius * math.cos(math.radians(start_angle + sweep * step / count)),
+            center.y
+            + radius * math.sin(math.radians(start_angle + sweep * step / count)),
+        )
+        for step in range(count + 1)
+    )
+
+
+def _restored_radius(
+    rim: tuple[Point, ...],
+    restored_centre: Point,
+    offset: Point,
+    inverse_matrix: tuple[float, ...] | None,
+) -> float:
+    """Return the mean distance of a restored rim from its restored centre.
+
+    A perspective warp scales the page unevenly, so a circle's radius in the
+    flattened frame is not its radius in the photograph; the rim is mapped
+    back point by point instead.
+    """
+    return sum(
+        _restore_point(point, offset, inverse_matrix).distance_to(restored_centre)
+        for point in rim
+    ) / len(rim)
+
+
+def _circle_through(
+    first: Point,
+    second: Point,
+    third: Point,
+) -> tuple[Point, float] | None:
+    """Return the circle through three points, or `None` when they align."""
+    determinant = 2.0 * (
+        first.x * (second.y - third.y)
+        + second.x * (third.y - first.y)
+        + third.x * (first.y - second.y)
+    )
+    if abs(determinant) < _COLLINEAR_DETERMINANT:
+        return None
+    first_square = first.x * first.x + first.y * first.y
+    second_square = second.x * second.x + second.y * second.y
+    third_square = third.x * third.x + third.y * third.y
+    centre = Point(
+        (
+            first_square * (second.y - third.y)
+            + second_square * (third.y - first.y)
+            + third_square * (first.y - second.y)
+        )
+        / determinant,
+        (
+            first_square * (third.x - second.x)
+            + second_square * (first.x - third.x)
+            + third_square * (second.x - first.x)
+        )
+        / determinant,
+    )
+    return centre, centre.distance_to(first)
+
+
+def _fits_arc(circle: tuple[Point, float], mapped: tuple[Point, ...]) -> bool:
+    """Return whether a circle runs along a mapped arc, the same way round.
+
+    Every mapped point must lie near the circle, within a share of the
+    arc's own extent, and the arc's middle must fall inside the sweep from
+    its first point to its last; a steep warp can bend an arc so far that
+    the circle through three of its points is much larger and sweeps the
+    other way round.
+    """
+    centre, radius = circle
+    xs = [point.x for point in mapped]
+    ys = [point.y for point in mapped]
+    extent = math.hypot(max(xs) - min(xs), max(ys) - min(ys))
+    tolerance = max(_ARC_FIT_PIXELS, _ARC_FIT_RATIO * extent)
+    if any(abs(point.distance_to(centre) - radius) > tolerance for point in mapped):
+        return False
+
+    def angle(point: Point) -> float:
+        return math.degrees(math.atan2(point.y - centre.y, point.x - centre.x))
+
+    start = angle(mapped[0])
+    sweep = (angle(mapped[-1]) - start) % _FULL_TURN_DEGREES
+    middle = (angle(mapped[len(mapped) // 2]) - start) % _FULL_TURN_DEGREES
+    return 0.0 < middle < sweep
+
+
+def _restored_arc(
+    arc: ArcEntity,
+    offset: Point,
+    inverse_matrix: tuple[float, ...] | None,
+) -> ArcEntity:
+    """Map an arc back to the photograph through its two ends and middle.
+
+    The warp scales each direction differently, so in general no circle
+    fits the whole mapped arc. The one through its mapped ends and middle
+    keeps the ends exactly where the lines joining them meet the arc, and
+    is used while every mapped point stays near it. When none does, the
+    photograph shows the arc as part of an ellipse that no circle follows;
+    the arc then keeps its flat-page radius and angles around its mapped
+    centre, as before, so it stays an arc a radius can be confirmed on.
+    """
+    centre = _restore_point(arc.center, offset, inverse_matrix)
+    if inverse_matrix is None:
+        return replace(arc, center=centre)
+    sweep = (arc.end_angle_degrees - arc.start_angle_degrees) % _FULL_TURN_DEGREES
+    sweep = sweep or _FULL_TURN_DEGREES
+    rim = _rim_points(arc.center, arc.radius, arc.start_angle_degrees, sweep)
+    mapped = tuple(_restore_point(point, offset, inverse_matrix) for point in rim)
+    first, middle, last = mapped[0], mapped[len(mapped) // 2], mapped[-1]
+    circle = _circle_through(first, middle, last)
+    if circle is None or not _fits_arc(circle, mapped):
+        return replace(arc, center=centre)
+    centre, radius = circle
+    start = math.degrees(math.atan2(first.y - centre.y, first.x - centre.x))
+    end = math.degrees(math.atan2(last.y - centre.y, last.x - centre.x))
+    return replace(
+        arc,
+        center=centre,
+        radius=radius,
+        start_angle_degrees=start,
+        end_angle_degrees=start + ((end - start) % _FULL_TURN_DEGREES or sweep),
+    )
+
+
+def restore_source_geometry(
     entity: GeometryEntity,
     offset: Point,
     inverse_matrix: tuple[float, ...] | None,
@@ -410,16 +549,22 @@ def _restore_source_geometry(
                     _restore_point(point, offset, inverse_matrix) for point in points
                 ),
             )
-        case CircleEntity(center=center):
+        case CircleEntity(center=center, radius=radius):
+            restored_centre = _restore_point(center, offset, inverse_matrix)
+            if inverse_matrix is None:
+                return replace(entity, center=restored_centre)
             return replace(
                 entity,
-                center=_restore_point(center, offset, inverse_matrix),
+                center=restored_centre,
+                radius=_restored_radius(
+                    _rim_points(center, radius, 0.0, _FULL_TURN_DEGREES),
+                    restored_centre,
+                    offset,
+                    inverse_matrix,
+                ),
             )
-        case ArcEntity(center=center):
-            return replace(
-                entity,
-                center=_restore_point(center, offset, inverse_matrix),
-            )
+        case ArcEntity():
+            return _restored_arc(entity, offset, inverse_matrix)
 
 
 def _shape_candidate_to_entity(candidate: ShapeCandidate) -> GeometryEntity:
