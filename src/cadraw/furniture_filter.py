@@ -189,23 +189,24 @@ def _touches_shape(
 
 
 @dataclass(frozen=True, slots=True)
-class RuleLengths:
-    """How long a printed rule must be, alone or among others it touches.
+class RuleEvidence:
+    """What proves straight lines to be print, alone or among others.
 
-    `single` is the least length of a lone rule. A group of touching rules
-    needs one at least `spanning` long: a form's ruled T crosses the form,
-    while the straight corner of a part drawn against a ruler does not.
+    `single` is the least length of a lone rule. Touching rules, such as a
+    form's ruled T, go only when they touch one of the `proved_cells` of a
+    table already proved by tiling: straightness and length alone cannot tell
+    them from a corner or a T of a part drawn against a ruler.
     """
 
     single: float
-    spanning: float
+    proved_cells: tuple[Bounds, ...] = ()
 
 
 def without_printed_rules(
     lines: tuple[LineEntity, ...],
     shapes: tuple[PolylineEntity | CircleEntity | ArcEntity, ...],
     snap_distance: float,
-    lengths: RuleLengths,
+    evidence: RuleEvidence,
     wobble: StrokeIntensity,
 ) -> tuple[LineEntity, ...]:
     """Drop groups of touching lines that are all as straight as print.
@@ -219,11 +220,11 @@ def without_printed_rules(
     Lines are judged in groups that touch anywhere, end to end or at a T, so
     a form's ruled T goes as one piece. A group goes only when every line in
     it is as straight as print and runs along the page's axes, none of them
-    meets a closed outline or an arc, and it is long enough for print: a lone
-    line `lengths.single` long, or a group with a line `lengths.spanning`
-    long. One wavering stroke or one slanted edge makes the group part of the
-    drawing, and so does a straight corner of lines too short to cross the
-    form.
+    meets a closed outline or an arc, and it is proved print: a lone line at
+    least `evidence.single` long, or a group touching a proved table cell.
+    One wavering stroke or one slanted edge makes the group part of the
+    drawing, and so does any group of straight lines away from a proved
+    table, such as a corner of a part drawn against a ruler.
     """
     straight = {
         id(line): wobble(line.start, line.end) <= _PRINTED_RULE_WOBBLE
@@ -232,10 +233,19 @@ def without_printed_rules(
     }
     printed: set[int] = set()
     for group in _touching_groups(lines, snap_distance):
-        needed = lengths.single if len(group) == 1 else lengths.spanning
+        proved = (
+            any(line.length >= evidence.single for line in group)
+            if len(group) == 1
+            else any(
+                _near_cell(point, cell, snap_distance)
+                for line in group
+                for point in (line.start, line.end)
+                for cell in evidence.proved_cells
+            )
+        )
         if (
-            all(straight[id(line)] for line in group)
-            and any(line.length >= needed for line in group)
+            proved
+            and all(straight[id(line)] for line in group)
             and not any(
                 _touches_shape(point, shapes, snap_distance)
                 for line in group
@@ -244,6 +254,15 @@ def without_printed_rules(
         ):
             printed.update(id(line) for line in group)
     return tuple(line for line in lines if id(line) not in printed)
+
+
+def _near_cell(point: Point, cell: Bounds, snap_distance: float) -> bool:
+    """Return whether a point lies in or within snap distance of a cell's box."""
+    min_x, min_y, max_x, max_y = cell
+    return (
+        min_x - snap_distance <= point.x <= max_x + snap_distance
+        and min_y - snap_distance <= point.y <= max_y + snap_distance
+    )
 
 
 def _axis_aligned(line: LineEntity) -> bool:

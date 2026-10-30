@@ -36,7 +36,7 @@ from cadraw.faces import (
     without_interstitial_holes,
 )
 from cadraw.furniture_filter import (
-    RuleLengths,
+    RuleEvidence,
     RulingRails,
     is_printed_row,
     without_printed_rules,
@@ -230,7 +230,6 @@ _RAIL_REMNANT_PERIOD_RATIO = 0.25
 _POLYGON_EDGE_TOLERANCE = 12.0
 _FEATURE_PENETRATION_MARGIN = 3.0
 _PRINTED_RULE_LENGTH_RATIO = 0.15
-_PRINTED_RULE_SPAN_RATIO = 0.5
 _INTERSTITIAL_STROKES = 3.0
 _POLYGON_EDGE_TOLERANCE_RATIO = 0.012
 _MIN_GRID_LIKE_SHAPES = 8
@@ -955,6 +954,7 @@ def _without_printed_rules(
     snap_distance: float,
     *,
     shapes: tuple[GeometryEntity, ...],
+    proved_cells: tuple[tuple[float, float, float, float], ...],
 ) -> tuple[LineEntity, ...]:
     """Drop isolated lines as straight as print, measured on the source page.
 
@@ -974,9 +974,9 @@ def _without_printed_rules(
             or (isinstance(shape, PolylineEntity) and shape.closed)
         ),
         snap_distance,
-        RuleLengths(
+        RuleEvidence(
             single=min(width, height) * _PRINTED_RULE_LENGTH_RATIO,
-            spanning=width * _PRINTED_RULE_SPAN_RATIO,
+            proved_cells=proved_cells,
         ),
         lambda start, end: stroke_wobble(flattened, start, end),
     )
@@ -1541,6 +1541,14 @@ def analyze_image(
         source_image,
         normalization.endpoint_snap_distance,
         shapes=restored_shapes,
+        # Cells are proved in the analysis frame; a warped page has no simple
+        # map back, so there no group of rules is removed.
+        proved_cells=()
+        if inverse_matrix is not None
+        else tuple(
+            (min_x + offset.x, min_y + offset.y, max_x + offset.x, max_y + offset.y)
+            for min_x, min_y, max_x, max_y in shape_detection.table_cell_bounds
+        ),
     )
     entities = (*restored_lines, *restored_shapes)
     if ocr_result is None or not ocr_result.dimensions:

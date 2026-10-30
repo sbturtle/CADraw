@@ -1,5 +1,5 @@
 from cadraw.furniture_filter import (
-    RuleLengths,
+    RuleEvidence,
     RulingRails,
     is_printed_row,
     without_printed_rules,
@@ -15,7 +15,7 @@ from cadraw.models import (
     PolylineEntity,
 )
 
-_LENGTHS = RuleLengths(single=150.0, spanning=500.0)
+_LENGTHS = RuleEvidence(single=150.0)
 
 
 def _line(name: str, start: Point, end: Point, orientation: Orientation) -> LineEntity:
@@ -208,21 +208,44 @@ def test_a_straight_edge_with_a_hand_drawn_branch_is_kept() -> None:
     assert kept == (edge, branch)
 
 
-def test_a_printed_t_of_rules_goes_together() -> None:
-    # Given a long printed rule and a short printed divider ruled onto it
-    rule = _line(
-        "rule", Point(40.0, 300.0), Point(1000.0, 300.0), Orientation.HORIZONTAL
-    )
-    divider = _line(
-        "divider", Point(450.0, 260.0), Point(450.0, 300.0), Orientation.VERTICAL
-    )
-
-    kept = without_printed_rules(
-        (rule, divider), (), 10.0, _LENGTHS, lambda _s, _e: 0.2
+def _printed_t() -> tuple[LineEntity, LineEntity]:
+    """Return a long straight rule and a straight divider ruled onto it."""
+    return (
+        _line("rule", Point(40.0, 300.0), Point(1000.0, 300.0), Orientation.HORIZONTAL),
+        _line(
+            "divider", Point(450.0, 260.0), Point(450.0, 300.0), Orientation.VERTICAL
+        ),
     )
 
-    # Then the joint proves nothing and both are print
+
+def test_a_t_of_rules_on_a_proved_table_goes_together() -> None:
+    # Given a printed T whose divider bounds a cell of a proved table
+    evidence = RuleEvidence(single=150.0, proved_cells=((300.0, 260.0, 450.0, 298.0),))
+
+    kept = without_printed_rules(_printed_t(), (), 10.0, evidence, lambda _s, _e: 0.2)
+
+    # Then both rules are the table's print
     assert kept == ()
+
+
+def test_a_long_straight_corner_away_from_a_table_is_kept() -> None:
+    # Given the same straight lines, or a ruler-drawn L wider than half the
+    # page, with no proved table anywhere near
+    long_top = _line(
+        "long_top", Point(40.0, 700.0), Point(900.0, 700.0), Orientation.HORIZONTAL
+    )
+    long_side = _line(
+        "long_side", Point(900.0, 700.0), Point(900.0, 950.0), Orientation.VERTICAL
+    )
+
+    t_kept = without_printed_rules(_printed_t(), (), 10.0, _LENGTHS, lambda _s, _e: 0.2)
+    l_kept = without_printed_rules(
+        (long_top, long_side), (), 10.0, _LENGTHS, lambda _s, _e: 0.2
+    )
+
+    # Then nothing proves them print
+    assert t_kept == _printed_t()
+    assert l_kept == (long_top, long_side)
 
 
 def test_straight_lines_meeting_a_rounded_corner_are_kept() -> None:
