@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from cadraw.calculator import calculate_document
+from cadraw.detection import load_grayscale_image
 from cadraw.export import validate_dxf
 from cadraw.models import (
     CadResolutionStatus,
@@ -34,7 +35,7 @@ from cadraw.models import (
 )
 from cadraw.normalization import build_connections
 from cadraw.preview import PreviewConfig, render_preview
-from cadraw.ui.main_window import MainWindow
+from cadraw.ui.main_window import MainWindow, oriented_pixmap
 from cadraw.ui.preview_widget import PreviewWidget
 
 
@@ -1108,3 +1109,28 @@ def test_a_second_extent_that_disagrees_is_reported_not_applied(
     assert any(
         warning.code is WarningCode.CONSTRAINT_MISMATCH for warning in document.warnings
     )
+
+
+def test_a_phone_photo_is_shown_upright_like_the_analysis_reads_it(
+    tmp_path: Path,
+) -> None:
+    # Given a portrait phone photo stored as landscape pixels with EXIF rotation
+    _ = _application()
+    image_path = tmp_path / "portrait.jpg"
+    exif = Image.Exif()
+    exif[0x0112] = 6
+    Image.fromarray(np.full((40, 60), 200, dtype=np.uint8)).save(
+        image_path,
+        exif=exif,
+    )
+
+    # When the workbench loads it for the source view
+    pixmap = oriented_pixmap(image_path)
+
+    # Then it has the analysis frame's upright size
+    analysis_frame = load_grayscale_image(image_path)
+    assert (pixmap.width(), pixmap.height()) == (
+        analysis_frame.shape[1],
+        analysis_frame.shape[0],
+    )
+    assert (pixmap.width(), pixmap.height()) == (40, 60)

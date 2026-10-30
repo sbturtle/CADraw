@@ -15,6 +15,7 @@ from cadraw.models import (
 
 _NUMBER = r"(?P<value>(?:\d+(?:[.,]\d*)?|[.,]\d+))"
 _MAX_DIMENSION_VALUE: Final = 1_000_000_000.0
+_GROUPED_DIGITS = re.compile(r"\d[.,]\d{3,}")
 _MAX_ANGLE_DEGREES: Final = 180.0
 _SIZED_KINDS: Final = frozenset(
     {
@@ -40,7 +41,15 @@ _ANGLE_PATTERN = re.compile(
 
 
 def _numeric_value(raw_value: str) -> float | None:
-    """Parse a positive decimal using dot or comma notation."""
+    """Parse a positive decimal using dot or comma notation.
+
+    A fabrication size never carries three decimals, so `1,050` or `1.050`
+    is thousands grouping, which the decimal reading would shrink a
+    thousandfold. It is refused rather than guessed, and the reviewer types
+    the plain number.
+    """
+    if _GROUPED_DIGITS.search(raw_value):
+        return None
     try:
         value = float(raw_value.replace(",", "."))
     except ValueError:

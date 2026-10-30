@@ -10,7 +10,9 @@ from cadraw.models import (
     LineEntity,
     Orientation,
     Point,
+    WarningCode,
 )
+from cadraw.normalization import build_connections
 
 
 def _line() -> LineEntity:
@@ -249,4 +251,89 @@ def test_conflicting_confirmed_diameter_is_reported() -> None:
     # Then the disagreement is surfaced instead of silently accepted
     assert any(
         warning.code.value == "CONSTRAINT_MISMATCH" for warning in document.warnings
+    )
+
+
+def _side(name: str, start: Point, end: Point, orientation: Orientation) -> LineEntity:
+    return LineEntity(
+        entity_id=EntityId(name),
+        raw_start=start,
+        raw_end=end,
+        start=start,
+        end=end,
+        orientation=orientation,
+        confidence=0.95,
+    )
+
+
+def _confirmed(name: str, value: float) -> Dimension:
+    return Dimension(
+        dimension_id=DimensionId(f"dim_{name}"),
+        raw_text=str(value),
+        kind=DimensionKind.LENGTH,
+        parsed_value=value,
+        unit="mm",
+        target_entity_ids=(EntityId(name),),
+        confidence=1.0,
+        status=DimensionStatus.CONFIRMED,
+    )
+
+
+def _rectangle() -> tuple[LineEntity, ...]:
+    """Return a hand-drawn rectangle whose left side runs 4 px long."""
+    return (
+        _side("a", Point(0.0, 0.0), Point(200.0, 0.0), Orientation.HORIZONTAL),
+        _side("b", Point(200.0, 0.0), Point(200.0, 100.0), Orientation.VERTICAL),
+        _side("c", Point(200.0, 100.0), Point(0.0, 104.0), Orientation.HORIZONTAL),
+        _side("d", Point(0.0, 0.0), Point(0.0, 104.0), Orientation.VERTICAL),
+    )
+
+
+def test_a_line_closing_a_loop_keeps_the_other_lines_confirmed() -> None:
+    # Given a hand-drawn rectangle with its top and right sides confirmed
+    lines = _rectangle()
+    analysis = DrawingAnalysis(
+        unit="mm",
+        image_size=(300, 300),
+        entities=lines,
+        dimensions=(_confirmed("a", 200.0), _confirmed("b", 100.0)),
+        connections=build_connections(lines, 18.0),
+        warnings=(),
+    )
+
+    # When the loop is solved
+    document = calculate_document(analysis)
+
+    # Then the confirmed right side is still exactly its confirmed length
+    solved = {entity.entity_id: entity for entity in document.entities}
+    right = solved[EntityId("b")]
+    assert isinstance(right, LineEntity)
+    assert abs(right.length - 100.0) < 1e-9
+
+
+def test_a_closing_line_disagreeing_with_its_value_is_reported() -> None:
+    # Given all four sides confirmed, the bottom at a length the loop denies
+    lines = _rectangle()
+    analysis = DrawingAnalysis(
+        unit="mm",
+        image_size=(300, 300),
+        entities=lines,
+        dimensions=(
+            _confirmed("a", 200.0),
+            _confirmed("b", 100.0),
+            _confirmed("c", 180.0),
+            _confirmed("d", 100.0),
+        ),
+        connections=build_connections(lines, 18.0),
+        warnings=(),
+    )
+
+    # When the loop is solved
+    document = calculate_document(analysis)
+
+    # Then the contradiction reaches the reviewer instead of moving a side
+    assert any(
+        warning.code is WarningCode.CONSTRAINT_MISMATCH
+        and EntityId("c") in warning.entity_ids
+        for warning in document.warnings
     )

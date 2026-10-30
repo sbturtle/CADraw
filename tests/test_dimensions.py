@@ -75,3 +75,16 @@ def test_confirmation_requires_explicit_target_and_user_value() -> None:
     assert confirmed.target_entity_ids == (EntityId("line_1"),)
     assert confirmed.parsed_value == 105.0
     assert confirmed.status is DimensionStatus.CONFIRMED
+
+
+@pytest.mark.parametrize("raw_text", ["1,050", "1.050", "2,400mm"])
+def test_thousands_grouping_is_refused_not_shrunk(raw_text: str) -> None:
+    # Given a size typed with a thousands separator
+    row = parse_dimension_text("100", DimensionId("dim_1"))
+
+    # When the reviewer confirms it
+    confirmed = confirm_dimension_text(row, raw_text)
+
+    # Then it is refused, never confirmed a thousand times too small
+    assert confirmed.parsed_value is None
+    assert confirmed.status is DimensionStatus.INVALID

@@ -206,3 +206,74 @@ def test_hole_geometry_is_exported_on_the_hole_layer(tmp_path: Path) -> None:
     exported = tuple(reopened.modelspace())
     assert len(exported) == 1
     assert exported[0].dxf.layer == "HOLE"
+
+
+def test_only_confirmed_dimensions_are_written_as_text(tmp_path: Path) -> None:
+    # Given a line with a confirmed length, an OCR suggestion still under
+    # review, and the workbench's inferred axis angle
+    line = LineEntity(
+        entity_id=EntityId("line_1"),
+        raw_start=Point(0.0, 0.0),
+        raw_end=Point(100.0, 0.0),
+        start=Point(0.0, 0.0),
+        end=Point(100.0, 0.0),
+        orientation=Orientation.HORIZONTAL,
+        confidence=1.0,
+    )
+
+    def dimension(
+        name: str,
+        text: str,
+        kind: DimensionKind,
+        status: DimensionStatus,
+        source: str,
+    ) -> Dimension:
+        return Dimension(
+            dimension_id=DimensionId(name),
+            raw_text=text,
+            kind=kind,
+            parsed_value=float(text.rstrip("°")),
+            unit="deg" if kind is DimensionKind.ANGLE else "mm",
+            target_entity_ids=(EntityId("line_1"),),
+            confidence=1.0,
+            status=status,
+            source=source,
+        )
+
+    document = CadDocument(
+        unit="mm",
+        entities=(line,),
+        dimensions=(
+            dimension(
+                "confirmed",
+                "100",
+                DimensionKind.LENGTH,
+                DimensionStatus.CONFIRMED,
+                "manual",
+            ),
+            dimension(
+                "suggested",
+                "250",
+                DimensionKind.LENGTH,
+                DimensionStatus.NEEDS_REVIEW,
+                "ocr_suggested",
+            ),
+            dimension(
+                "axis",
+                "0°",
+                DimensionKind.ANGLE,
+                DimensionStatus.CONFIRMED,
+                "axis_inference",
+            ),
+        ),
+        warnings=(),
+        scale_mm_per_source_unit=1.0,
+    )
+    output_path = tmp_path / "labels.dxf"
+
+    # When the document is exported
+    summary = export_dxf(document, output_path)
+
+    # Then only the reviewer's own value becomes text
+    assert summary.dimension_text_count == 1
+    assert validate_dxf(output_path).text_values == ("100 mm",)

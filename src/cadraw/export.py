@@ -15,6 +15,7 @@ from cadraw.models import (
     CircleEntity,
     Dimension,
     DimensionKind,
+    DimensionStatus,
     EntityId,
     GeometryEntity,
     GeometryRole,
@@ -32,6 +33,7 @@ _GEOMETRY_LAYER = "GEOMETRY"
 _HOLE_LAYER = "HOLE"
 _DIMENSION_LAYER = "DIMENSION"
 _TEXT_HEIGHT = 3.0
+_AXIS_INFERENCE_SOURCE = "axis_inference"
 _MILLIMETRES = 4
 _NEW_FUNCTION = "new"
 
@@ -226,8 +228,18 @@ def _add_dimension_text(
     dimension: Dimension,
     entities_by_id: dict[EntityId, GeometryEntity],
 ) -> bool:
-    """Write only known dimensions with an explicit target."""
-    if dimension.parsed_value is None or not dimension.target_entity_ids:
+    """Write only reviewer-confirmed dimensions with an explicit target.
+
+    OCR and the dimension-line reading pre-fill a target for the reviewer,
+    and the workbench infers an axis-aligned line's angle; none of those is
+    a measurement anyone confirmed, so none of them is written.
+    """
+    if (
+        dimension.parsed_value is None
+        or not dimension.target_entity_ids
+        or dimension.status is not DimensionStatus.CONFIRMED
+        or dimension.source == _AXIS_INFERENCE_SOURCE
+    ):
         return False
     target = entities_by_id.get(dimension.target_entity_ids[0])
     if target is None:

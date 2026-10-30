@@ -12,6 +12,8 @@ from cadraw.models import (
     DimensionKind,
     DimensionStatus,
     DrawingAnalysis,
+    EntityId,
+    GeometryEntity,
     LineEntity,
     PolylineEntity,
     WarningCode,
@@ -65,10 +67,16 @@ def _append_dimension_warnings(
 def _append_constraint_warnings(
     analysis: DrawingAnalysis,
     scale: float,
+    solved: dict[EntityId, GeometryEntity],
     config: CalculatorConfig,
     warnings: list[AnalysisWarning],
 ) -> None:
-    """Compare every confirmed line length to the first scale."""
+    """Compare every confirmed line length to the geometry it ends up with.
+
+    A connected line is placed by its own confirmed length, so it is checked
+    against its solved CAD length: only a line closing a loop can come out
+    differently. A free line is checked against the first scale.
+    """
     entities = {entity.entity_id: entity for entity in analysis.entities}
     connected_ids = {
         entity_id
@@ -88,9 +96,13 @@ def _append_constraint_warnings(
         target = entities.get(dimension.target_entity_ids[0])
         if not isinstance(target, LineEntity):
             continue
+        solved_line = solved.get(target.entity_id)
         if target.entity_id in connected_ids:
-            continue
-        expected = target.length * scale
+            if not isinstance(solved_line, LineEntity):
+                continue
+            expected = solved_line.length
+        else:
+            expected = target.length * scale
         tolerance = max(
             config.minimum_validation_tolerance_mm,
             dimension.parsed_value * config.validation_tolerance_ratio,
@@ -240,7 +252,13 @@ def calculate_document(
         )
 
     scale = calibration
-    _append_constraint_warnings(analysis, scale, effective_config, warnings)
+    _append_constraint_warnings(
+        analysis,
+        scale,
+        {entity.geometry.entity_id: entity.geometry for entity in cad_entities},
+        effective_config,
+        warnings,
+    )
     _append_circular_constraint_warnings(analysis, scale, effective_config, warnings)
     _append_profile_aspect_warnings(analysis, effective_config, warnings)
     return CadDocument(

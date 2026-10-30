@@ -214,11 +214,17 @@ def _component_geometry(
             length = _value(dimensions, line.entity_id, DimensionKind.LENGTH)
             length = length if length is not None else line.length * scale
             angle = _value(dimensions, line.entity_id, DimensionKind.ANGLE)
+            visited.add(line.entity_id)
+            # A line closing a loop meets a point another line already
+            # placed. Moving that point would silently change the other
+            # line's confirmed length, so the closing line spans the two
+            # placed points and the calculator compares it with its value.
+            if opposite_point in positions:
+                continue
             reverse = line.end == source_point
             positions[opposite_point] = positions[source_point].translated(
                 *_line_vector(line, length, angle, reverse),
             )
-            visited.add(line.entity_id)
             queue.append(opposite_point)
     return {
         line.entity_id: replace(
