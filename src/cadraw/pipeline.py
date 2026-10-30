@@ -29,7 +29,12 @@ from cadraw.duplicate_filter import (
     without_lines_through_features,
     without_polygon_edge_lines,
 )
-from cadraw.faces import FaceConfig, drawing_ink, stroke_width
+from cadraw.faces import (
+    FaceConfig,
+    drawing_ink,
+    stroke_width,
+    without_interstitial_holes,
+)
 from cadraw.furniture_filter import (
     RulingRails,
     is_printed_row,
@@ -224,6 +229,7 @@ _RAIL_REMNANT_PERIOD_RATIO = 0.25
 _POLYGON_EDGE_TOLERANCE = 12.0
 _FEATURE_PENETRATION_MARGIN = 3.0
 _PRINTED_RULE_LENGTH_RATIO = 0.15
+_INTERSTITIAL_STROKES = 3.0
 _POLYGON_EDGE_TOLERANCE_RATIO = 0.012
 _MIN_GRID_LIKE_SHAPES = 8
 _MIN_SHAPES_PER_LINE = 4
@@ -1160,10 +1166,13 @@ def _lettering_free_shapes(
         replace(
             shapes,
             candidates=settle_shape_roles(
-                tuple(
-                    candidate
-                    for candidate in shapes.candidates
-                    if all(candidate is not row for row in rows)
+                without_interstitial_holes(
+                    tuple(
+                        candidate
+                        for candidate in shapes.candidates
+                        if all(candidate is not row for row in rows)
+                    ),
+                    _INTERSTITIAL_STROKES * stroke_width(context.ink_mask),
                 ),
                 min(width, height) * context.detection.faces.isolated_mark_ratio,
             ),

@@ -18,8 +18,15 @@ from cadraw.faces import (
     stroke_ends,
     thinned,
     with_stroke_bridges,
+    without_interstitial_holes,
 )
-from cadraw.models import CircleCandidate, GeometryRole, Point, PolylineCandidate
+from cadraw.models import (
+    CircleCandidate,
+    EntityId,
+    GeometryRole,
+    Point,
+    PolylineCandidate,
+)
 from cadraw.preprocessing import illumination_flattened
 
 type GrayImage = NDArray[np.uint8]
@@ -395,6 +402,57 @@ def test_a_long_facing_gap_is_bridged_only_when_text_was_read() -> None:
     # Then only the read sheet can rule out a dimension gap and close the plate
     assert unread.candidates == ()
     assert len(read.candidates) == 1
+
+
+def _hole_polygon(
+    name: str, corners: tuple[tuple[float, float], ...]
+) -> PolylineCandidate:
+    return PolylineCandidate(
+        entity_id=EntityId(name),
+        points=tuple(Point(x, y) for x, y in corners),
+        closed=True,
+        confidence=0.9,
+        role=GeometryRole.HOLE,
+    )
+
+
+def test_a_pocket_walled_in_by_two_slots_is_not_a_hole() -> None:
+    # Given two slots and the sliver of paper their walls close off between them
+    left = _hole_polygon("left", ((100, 100), (200, 100), (200, 140), (100, 140)))
+    right = _hole_polygon("right", ((100, 150), (200, 150), (200, 190), (100, 190)))
+    pocket = _hole_polygon("pocket", ((150, 141), (200, 141), (200, 149), (150, 149)))
+
+    kept = without_interstitial_holes((left, right, pocket), 6.0)
+
+    # Then the pocket goes and both slots stay
+    assert kept == (left, right)
+
+
+def test_a_slot_inside_a_larger_reading_of_itself_is_kept() -> None:
+    # Given one slot read twice, once along each edge of its stroke
+    outer = _hole_polygon("outer", ((98, 98), (202, 98), (202, 142), (98, 142)))
+    inner = _hole_polygon("inner", ((102, 102), (198, 102), (198, 138), (102, 138)))
+
+    kept = without_interstitial_holes((outer, inner), 6.0)
+
+    # Then the inner reading is not walled in by the outer one
+    assert kept == (outer, inner)
+
+
+def test_a_drilled_hole_beside_a_slot_is_kept() -> None:
+    # Given a small round hole drawn a little apart from a slot
+    slot = _hole_polygon("slot", ((100, 100), (300, 100), (300, 140), (100, 140)))
+    hole = CircleCandidate(
+        EntityId("hole"),
+        Point(200.0, 170.0),
+        10.0,
+        0.9,
+        role=GeometryRole.HOLE,
+    )
+
+    kept = without_interstitial_holes((slot, hole), 6.0)
+
+    assert kept == (slot, hole)
 
 
 def test_face_detection_respects_the_closed_shape_switch() -> None:
