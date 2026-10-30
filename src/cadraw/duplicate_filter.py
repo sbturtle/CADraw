@@ -19,6 +19,8 @@ from cadraw.models import CircleEntity, LineEntity, Point, PolylineEntity
 
 _PENETRATION_STEP = 2.0
 _RADIAL_SHARE = 0.2
+_EDGE_END_SLACK = 2.0
+_PARALLEL_COSINE = 0.96
 _MINIMUM_PENETRATION = 4.0
 
 
@@ -110,38 +112,92 @@ def without_polygon_edge_lines(
     )
 
 
+def _beside_edge(
+    point: Point,
+    polygon: PolylineEntity,
+    direction: tuple[float, float],
+    tolerance: float,
+) -> bool:
+    """Return whether a point lies beside a polygon edge running its way.
+
+    Beside means within the tolerance across an edge roughly parallel to
+    the line and between its two ends along it. A point past an edge's end,
+    in a gap between two outlines, is near a corner and across the end of
+    the crossing edge, but beside no edge the line runs along.
+    """
+    points = polygon.points
+    for index, start in enumerate(points):
+        end = points[(index + 1) % len(points)]
+        delta_x = end.x - start.x
+        delta_y = end.y - start.y
+        length = math.hypot(delta_x, delta_y)
+        if (
+            length == 0.0
+            or abs(delta_x * direction[0] + delta_y * direction[1]) / length
+            < _PARALLEL_COSINE
+        ):
+            continue
+        along = ((point.x - start.x) * delta_x + (point.y - start.y) * delta_y) / length
+        across = abs((point.x - start.x) * delta_y - (point.y - start.y) * delta_x)
+        if (
+            -_EDGE_END_SLACK <= along <= length + _EDGE_END_SLACK
+            and across / length <= tolerance
+        ):
+            return True
+    return False
+
+
 def _along_edges(
     line: LineEntity,
     polygons: tuple[PolylineEntity, ...],
     tolerance: float,
 ) -> bool:
-    """Return whether the whole line runs near some polygon's edge.
+    """Return whether a line runs beside polygon edges for its whole length.
 
-    A point's distance to the edges changes no faster than the point moves,
-    so points half a tolerance apart that are all within the tolerance
-    leave nothing between them farther than a quarter more; a stretch the
-    edges leave uncovered, such as a short member joining two outlines,
-    cannot slip between the points.
+    Points are taken every half tolerance along the line, so no stretch an
+    edge leaves uncovered is longer than that and slips between them. A
+    hand-drawn line may run on past the corner it ends at, so an overrun no
+    longer than the tolerance is allowed at either end; anywhere else, a
+    point beside no edge, such as one in the gap a short member spans
+    between two outlines, keeps the line.
     """
     near = tuple(
         polygon for polygon in polygons if _boxes_meet(line, polygon, tolerance)
     )
     if not near:
         return False
-    steps = max(1, math.ceil(line.length / (tolerance / 2.0)))
-    return all(
+    length = line.length
+    if length == 0.0:
+        return False
+    direction = (
+        (line.end.x - line.start.x) / length,
+        (line.end.y - line.start.y) / length,
+    )
+    steps = max(1, math.ceil(length / (tolerance / 2.0)))
+    covered = [
         any(
-            _boundary_distance(
+            _beside_edge(
                 Point(
                     line.start.x + (line.end.x - line.start.x) * index / steps,
                     line.start.y + (line.end.y - line.start.y) * index / steps,
                 ),
                 polygon,
+                direction,
+                tolerance,
             )
-            <= tolerance
             for polygon in near
         )
         for index in range(steps + 1)
+    ]
+    overrun = 2
+    if not any(covered[overrun : len(covered) - overrun]):
+        return False
+    first = covered.index(True)
+    last = len(covered) - 1 - covered[::-1].index(True)
+    return (
+        first <= overrun
+        and last >= len(covered) - 1 - overrun
+        and all(covered[first : last + 1])
     )
 
 

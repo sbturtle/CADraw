@@ -220,7 +220,7 @@ def test_a_bend_line_inside_an_outline_is_kept() -> None:
 
 
 def test_a_short_member_joining_two_outlines_is_kept() -> None:
-    # Given two outlines one above the other, 40 px apart, and a line down
+    # Given two outlines one above the other, 10 px apart, and a line down
     # their right sides that also spans the gap between them
     upper = PolylineEntity(
         entity_id=EntityId("upper"),
@@ -236,8 +236,8 @@ def test_a_short_member_joining_two_outlines_is_kept() -> None:
     lower = PolylineEntity(
         entity_id=EntityId("lower"),
         points=(
-            Point(100.0, 550.0),
-            Point(500.0, 550.0),
+            Point(100.0, 520.0),
+            Point(500.0, 520.0),
             Point(500.0, 1100.0),
             Point(100.0, 1100.0),
         ),
