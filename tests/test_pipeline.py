@@ -598,3 +598,83 @@ def test_workbench_config_reads_labels_and_the_optional_vision_model(
     assert plain.ocr_enabled
     assert plain.ocr_cross_check_model is None
     assert checked.ocr_cross_check_model == "qwen3-vl:2b-instruct"
+
+
+class _DimensionValueOcrBackend:
+    def recognize(self, image: np.ndarray) -> tuple[TextCandidate, ...]:
+        assert image.ndim == 2
+        return (
+            TextCandidate(
+                text="150",
+                bounds=(140.0, 196.0, 40.0, 16.0),
+                confidence=0.9,
+            ),
+        )
+
+
+def test_a_drawn_dimension_line_is_not_geometry_and_not_a_target(
+    tmp_path: Path,
+) -> None:
+    # Given a plate edge and, below it, a ticked dimension line with its value
+    image = np.full((260, 320), 255, dtype=np.uint8)
+    _ = cv2.line(image, (40, 60), (280, 60), 0, 5)
+    _ = cv2.line(image, (40, 180), (280, 180), 0, 3)
+    _ = cv2.line(image, (40, 170), (40, 190), 0, 3)
+    _ = cv2.line(image, (280, 170), (280, 190), 0, 3)
+    image_path = tmp_path / "dimensioned-edge.png"
+    Image.fromarray(image).save(image_path)
+    config = _single_line_config()
+    config = replace(
+        config,
+        normalization=replace(
+            config.normalization,
+            keep_largest_connected_component=False,
+        ),
+    )
+
+    # When the production pipeline runs with OCR enabled
+    analysis = analyze_image(image_path, config, _DimensionValueOcrBackend())
+
+    # Then only the edge is geometry, and the value goes to it, not its own line
+    lines = tuple(
+        entity for entity in analysis.entities if isinstance(entity, LineEntity)
+    )
+    assert len(lines) == 1
+    assert abs(lines[0].start.y - 60.0) <= 4.0
+    assert any(
+        warning.code is WarningCode.DIMENSION_LINES_REMOVED
+        for warning in analysis.warnings
+    )
+    assert analysis.dimensions[0].target_entity_ids == (lines[0].entity_id,)
+    assert analysis.dimensions[0].status is DimensionStatus.NEEDS_REVIEW
+
+
+def test_a_dimension_line_measuring_nothing_leaves_its_value_unlinked(
+    tmp_path: Path,
+) -> None:
+    # Given a ticked dimension line longer than the only edge near it
+    image = np.full((260, 320), 255, dtype=np.uint8)
+    _ = cv2.line(image, (40, 100), (200, 100), 0, 5)
+    _ = cv2.line(image, (40, 180), (280, 180), 0, 3)
+    _ = cv2.line(image, (40, 170), (40, 190), 0, 3)
+    _ = cv2.line(image, (280, 170), (280, 190), 0, 3)
+    image_path = tmp_path / "unmatched-dimension.png"
+    Image.fromarray(image).save(image_path)
+    config = _single_line_config()
+    config = replace(
+        config,
+        normalization=replace(
+            config.normalization,
+            keep_largest_connected_component=False,
+        ),
+    )
+
+    # When the production pipeline runs with OCR enabled
+    analysis = analyze_image(image_path, config, _DimensionValueOcrBackend())
+
+    # Then the value is not handed to the nearby edge, and the reviewer is told
+    assert analysis.dimensions[0].target_entity_ids == ()
+    assert any(
+        warning.code is WarningCode.UNCONNECTED_DIMENSION and "150" in warning.message
+        for warning in analysis.warnings
+    )

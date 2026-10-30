@@ -25,6 +25,11 @@ from cadraw.detection import (
     stroke_intensity,
     stroke_wobble,
 )
+from cadraw.dimension_lines import (
+    DimensionLine,
+    DimensionText,
+    find_dimension_lines,
+)
 from cadraw.duplicate_filter import (
     without_circle_chords,
     without_lines_through_features,
@@ -55,6 +60,7 @@ from cadraw.models import (
     Dimension,
     DimensionStatus,
     DrawingAnalysis,
+    EntityId,
     GeometryEntity,
     GeometryRole,
     LineCandidate,
@@ -238,6 +244,7 @@ _LEADING_GLYPH_SHARE = 0.3
 _POLYGON_EDGE_TOLERANCE_RATIO = 0.012
 _MIN_GRID_LIKE_SHAPES = 8
 _MIN_SHAPES_PER_LINE = 4
+_DIMENSION_LINE_SOURCE = "dimension_line"
 
 
 def _select_detection_stream(
@@ -1047,27 +1054,149 @@ def _without_printed_rules(
     return kept if kept or shapes else lines
 
 
+def _edge_tolerance(frame_width: int, frame_height: int) -> float:
+    """Return how near a line must run to an outline to re-trace it."""
+    return max(
+        _POLYGON_EDGE_TOLERANCE,
+        min(frame_width, frame_height) * _POLYGON_EDGE_TOLERANCE_RATIO,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _RestoreFrame:
+    """How analysis-frame coordinates map back to the source photograph."""
+
+    offset: Point
+    inverse_matrix: tuple[float, ...] | None
+
+
+def _without_dimension_lines(
+    lines: tuple[LineEntity, ...],
+    shapes: tuple[GeometryEntity, ...],
+    ocr_result: OcrResult | None,
+    ink_mask: GrayImage,
+    warnings: list[AnalysisWarning],
+) -> tuple[tuple[LineEntity, ...], tuple[DimensionLine, ...]]:
+    """Take drawn dimension lines out of the geometry and report them.
+
+    Only a value the OCR read can make a line a dimension line, so without a
+    reading every line stays geometry.
+    """
+    if ocr_result is None or not ocr_result.dimensions:
+        return lines, ()
+    found = find_dimension_lines(
+        lines,
+        tuple(
+            DimensionText(dimension=dimension, bounds=source.bounds)
+            for dimension, source in zip(
+                ocr_result.dimensions,
+                ocr_result.dimension_sources,
+                strict=True,
+            )
+        ),
+        (*lines, *shapes),
+        ink_mask,
+        stroke_width(ink_mask),
+    )
+    if not found:
+        return lines, ()
+    removed = {dimension_line.line_id for dimension_line in found}
+    warnings.append(
+        AnalysisWarning(
+            code=WarningCode.DIMENSION_LINES_REMOVED,
+            message=(
+                f"양 끝에 눈금이 있고 치수가 적힌 선 {len(removed)}개를 형상이 아닌 "
+                "치수선으로 보고 제외했습니다."
+            ),
+            entity_ids=tuple(sorted(removed, key=str)),
+        ),
+    )
+    return tuple(line for line in lines if line.entity_id not in removed), found
+
+
+def _measured_dimension(
+    dimension: Dimension,
+    dimension_line: DimensionLine,
+    entity_ids: frozenset[EntityId],
+) -> Dimension:
+    """Give a value read beside a dimension line the geometry it measures.
+
+    The target must still be in the analysis; otherwise the value stays
+    unresolved for the reviewer rather than going to the nearest line.
+    """
+    target = dimension_line.target_id
+    if dimension.parsed_value is None or target is None or target not in entity_ids:
+        return dimension
+    return replace(
+        dimension,
+        kind=dimension_line.kind,
+        target_entity_ids=(target,),
+        source=_DIMENSION_LINE_SOURCE,
+    )
+
+
+def _unmeasured_warnings(
+    dimensions: tuple[Dimension, ...],
+    dimension_lines: tuple[DimensionLine, ...],
+) -> tuple[AnalysisWarning, ...]:
+    """Name the values read beside dimension lines that measure nothing yet.
+
+    Such a value has no entity to show it on, so this warning is what tells
+    the reviewer it was read and still needs a target.
+    """
+    unmeasured = tuple(
+        dimensions[dimension_line.dimension_index].raw_text
+        for dimension_line in dimension_lines
+        if not dimensions[dimension_line.dimension_index].target_entity_ids
+    )
+    if not unmeasured:
+        return ()
+    return (
+        AnalysisWarning(
+            code=WarningCode.UNCONNECTED_DIMENSION,
+            message=(
+                f"치수선 옆 값 {', '.join(unmeasured)}의 측정 대상을 정하지 "
+                "못했습니다. 사진을 보고 직접 입력해 주세요."
+            ),
+            entity_ids=tuple(
+                dimension_line.line_id
+                for dimension_line in dimension_lines
+                if not dimensions[dimension_line.dimension_index].target_entity_ids
+            ),
+        ),
+    )
+
+
 def _suggest_ocr_dimension_targets(
     ocr_result: OcrResult | None,
     entities: tuple[GeometryEntity, ...],
-    offset: Point,
-    inverse_matrix: tuple[float, ...] | None,
+    frame: _RestoreFrame,
+    dimension_lines: tuple[DimensionLine, ...] = (),
 ) -> tuple[Dimension, ...]:
-    """Pre-fill OCR dimension targets only when exactly one entity is near."""
+    """Pre-fill OCR dimension targets only when exactly one entity is near.
+
+    A value read beside a drawn dimension line takes what that line measures,
+    or nothing, never the nearest entity.
+    """
     if ocr_result is None:
         return ()
     if not ocr_result.dimensions:
         return ocr_result.dimensions
     restored_sources = tuple(
-        _restore_text_candidate(candidate, offset, inverse_matrix)
+        _restore_text_candidate(candidate, frame.offset, frame.inverse_matrix)
         for candidate in ocr_result.dimension_sources
     )
+    measured = {
+        dimension_line.dimension_index: dimension_line
+        for dimension_line in dimension_lines
+    }
+    entity_ids = frozenset(entity.entity_id for entity in entities)
     return tuple(
-        suggest_dimension_target(dimension, source.bounds, entities)
-        for dimension, source in zip(
-            ocr_result.dimensions,
-            restored_sources,
-            strict=True,
+        _measured_dimension(dimension, measured[index], entity_ids)
+        if index in measured
+        else suggest_dimension_target(dimension, source.bounds, entities)
+        for index, (dimension, source) in enumerate(
+            zip(ocr_result.dimensions, restored_sources, strict=True),
         )
     )
 
@@ -1584,10 +1713,6 @@ def analyze_image(
         _shape_candidate_to_entity(candidate)
         for candidate in shape_detection.candidates
     )
-    edge_tolerance = max(
-        _POLYGON_EDGE_TOLERANCE,
-        min(frame_width, frame_height) * _POLYGON_EDGE_TOLERANCE_RATIO,
-    )
     lines = without_lines_through_features(
         without_circle_chords(
             without_polygon_edge_lines(
@@ -1597,12 +1722,12 @@ def analyze_image(
                     for entity in shape_entities
                     if isinstance(entity, PolylineEntity)
                 ),
-                edge_tolerance,
+                _edge_tolerance(frame_width, frame_height),
             ),
             tuple(
                 entity for entity in shape_entities if isinstance(entity, CircleEntity)
             ),
-            edge_tolerance,
+            _edge_tolerance(frame_width, frame_height),
         ),
         tuple(
             entity
@@ -1622,6 +1747,13 @@ def analyze_image(
             normalization.component_length_ratio,
             _largest_shape_perimeter(shape_entities),
         )
+    lines, dimension_lines = _without_dimension_lines(
+        lines,
+        shape_entities,
+        ocr_result,
+        ink_mask,
+        warnings,
+    )
     restored_shapes = _restore_source_coordinates(
         shape_entities,
         offset,
@@ -1695,10 +1827,15 @@ def analyze_image(
     suggested_dimensions = _suggest_ocr_dimension_targets(
         ocr_result,
         entities,
-        offset,
-        inverse_matrix,
+        _RestoreFrame(offset=offset, inverse_matrix=inverse_matrix),
+        dimension_lines,
     )
-    warnings.extend(_uncertain_reading_warnings(suggested_dimensions, ocr_result))
+    warnings.extend(
+        (
+            *_uncertain_reading_warnings(suggested_dimensions, ocr_result),
+            *_unmeasured_warnings(suggested_dimensions, dimension_lines),
+        ),
+    )
     return DrawingAnalysis(
         unit="mm",
         image_size=(image_shape[1], image_shape[0]),
