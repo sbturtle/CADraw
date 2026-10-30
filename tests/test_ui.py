@@ -1173,4 +1173,4 @@ def test_a_value_read_without_a_target_is_shown_for_reference_only(
     assert status is not None
     assert value.text() == "40mm"
     assert not bool(value.flags() & Qt.ItemFlag.ItemIsEditable)
-    assert status.text() == "대상 없음 · 참고용"
+    assert status.text() == "대상 없음 · 검토 필요"

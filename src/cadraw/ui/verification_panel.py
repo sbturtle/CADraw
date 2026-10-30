@@ -31,7 +31,7 @@ _MIN_MERGE_SELECTION: Final = 2
 _MIN_DELETE_SELECTION: Final = 1
 _AUTO_ANGLE_SOURCE: Final = "axis_inference"
 _UNLINKED_VALUE_TIP: Final = (
-    "읽힌 값이지만 잴 형상을 정하지 못했습니다. 해당 형상의 행에 이 값을 입력하세요."
+    "읽힌 값이지만 잴 형상을 정하지 못해 참고용입니다. 해당 형상의 행에 입력하세요."
 )
 _DEFAULT_APPLY_TEXT: Final = "치수 적용"
 _ANGLE_APPLY_TEXT: Final = "각도 승인 후 다시 그리기"

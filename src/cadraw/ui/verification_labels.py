@@ -81,7 +81,9 @@ def status_text(dimension: Dimension) -> str:
     if dimension.source == "axis_inference":
         return "자동 확정"
     if not dimension.target_entity_ids and dimension.parsed_value is not None:
-        return "대상 없음 · 참고용"
+        # The reading's own state still matters: an uncertain reading is
+        # worth checking against the photograph before it is typed in.
+        return f"대상 없음 · {_STATUS_LABELS[dimension.status]}"
     return _STATUS_LABELS[dimension.status]
 
 
