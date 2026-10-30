@@ -1161,7 +1161,11 @@ def _lettering_free_shapes(
     if not context.detection.faces.enabled:
         return shapes, removal
     height, width = cast("tuple[int, int]", context.analysis_image.shape[:2])
-    rows = _printed_rows(shapes.candidates, context.analysis_image)
+    rows = _printed_rows(
+        shapes.candidates,
+        context.analysis_image,
+        shapes.table_cell_bounds,
+    )
     return (
         replace(
             shapes,
@@ -1190,8 +1194,13 @@ def _lettering_free_shapes(
 def _printed_rows(
     candidates: tuple[ShapeCandidate, ...],
     analysis_image: GrayImage,
+    proved_cells: tuple[tuple[float, float, float, float], ...],
 ) -> tuple[PolylineCandidate, ...]:
-    """Return the closed polygons that are printed form rows across the page."""
+    """Return the closed polygons that are printed form rows across the page.
+
+    A polygon with another shape inside it is a plate with its features and
+    is never a printed row.
+    """
     width = cast("tuple[int, int]", analysis_image.shape[:2])[1]
     flattened = illumination_flattened(analysis_image)
     return tuple(
@@ -1199,11 +1208,43 @@ def _printed_rows(
         for candidate in candidates
         if isinstance(candidate, PolylineCandidate)
         and candidate.closed
+        and candidate.role is GeometryRole.STRUCTURE
+        and not any(
+            other.role is GeometryRole.HOLE
+            and _bounds_inside(_shape_box(other), _bounds_of(candidate))
+            for other in candidates
+        )
         and is_printed_row(
             candidate.points,
             width,
             lambda start, end: stroke_wobble(flattened, start, end),
+            proved_cells,
         )
+    )
+
+
+def _shape_box(candidate: ShapeCandidate) -> tuple[float, float, float, float]:
+    """Return any shape candidate's axis-aligned bounds."""
+    if isinstance(candidate, PolylineCandidate):
+        return _bounds_of(candidate)
+    return (
+        candidate.center.x - candidate.radius,
+        candidate.center.y - candidate.radius,
+        candidate.center.x + candidate.radius,
+        candidate.center.y + candidate.radius,
+    )
+
+
+def _bounds_inside(
+    inner: tuple[float, float, float, float],
+    outer: tuple[float, float, float, float],
+) -> bool:
+    """Return whether one box lies within another."""
+    return (
+        outer[0] <= inner[0]
+        and outer[1] <= inner[1]
+        and inner[2] <= outer[2]
+        and inner[3] <= outer[3]
     )
 
 
@@ -1225,7 +1266,7 @@ def _closed_shapes(context: _ShapeContext) -> ShapeDetectionEvidence:
         config,
         context.snap_distance,
         None
-        if context.ocr_result is None
+        if context.ocr_result is None or not context.ocr_result.available
         else tuple(candidate.bounds for candidate in context.ocr_result.candidates),
         tuple(
             candidate

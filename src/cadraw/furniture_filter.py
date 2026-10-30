@@ -31,11 +31,14 @@ type StrokeIntensity = Callable[[Point, Point], float]
 
 _MIN_EDGE_OVERLAP_RATIO = 0.50
 _PRINTED_RULE_WOBBLE = 0.6
+_PRINTED_RULE_SKEW = 3.0
 _RECTANGLE_CORNERS = 4
 _PRINTED_ROW_FILL = 0.95
 _PRINTED_ROW_ASPECT = 4.0
 _PRINTED_ROW_SPAN = 0.8
 _JUDGED_EDGE_RATIO = 0.25
+_ATTACHED_CELLS = 2
+_ATTACHED_CELL_SLACK = 4.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,76 +195,108 @@ def without_printed_rules(
     minimum_length: float,
     wobble: StrokeIntensity,
 ) -> tuple[LineEntity, ...]:
-    """Drop long, isolated lines whose ink is as straight as print.
+    """Drop groups of touching lines that are all as straight as print.
 
     A form's header and footer rules can sit anywhere on the sheet, so the
     page-edge test misses most of them. What gives them away is their
     straightness: a printed rule stays within a fraction of a pixel of one
     line along its whole length, while a hand-drawn stroke of that length
-    wanders by a pixel or more even when drawn against a ruler. A line joined
-    to the rest of the drawing stays, however straight: a printed rule meets
-    no drawn stroke at its ends, neither another line, a closed outline, nor
-    an arc such as a rounded corner.
+    wanders by a pixel or more even when drawn against a ruler.
+
+    Lines are judged in groups that touch anywhere, end to end or at a T, so
+    a form's ruled T goes as one piece. A group goes only when every line in
+    it is as straight as print and runs along the page's axes, one of them is
+    at least `minimum_length` long, and none of them meets a closed outline
+    or an arc. One wavering stroke or one slanted edge in the group makes it
+    part of the drawing.
     """
-    return tuple(
-        line
+    straight = {
+        id(line): wobble(line.start, line.end) <= _PRINTED_RULE_WOBBLE
+        and _axis_aligned(line)
         for line in lines
-        if not (
-            line.length >= minimum_length
-            and not _meets_another_line(line, lines, snap_distance)
+    }
+    printed: set[int] = set()
+    for group in _touching_groups(lines, snap_distance):
+        if (
+            all(straight[id(line)] for line in group)
+            and any(line.length >= minimum_length for line in group)
             and not any(
                 _touches_shape(point, shapes, snap_distance)
+                for line in group
                 for point in (line.start, line.end)
             )
-            and wobble(line.start, line.end) <= _PRINTED_RULE_WOBBLE
-        )
+        ):
+            printed.update(id(line) for line in group)
+    return tuple(line for line in lines if id(line) not in printed)
+
+
+def _axis_aligned(line: LineEntity) -> bool:
+    """Return whether a line runs along the page's axes, as printed rules do."""
+    angle = math.degrees(
+        math.atan2(line.end.y - line.start.y, line.end.x - line.start.x)
+    )
+    deviation = abs(angle) % 90.0
+    return min(deviation, 90.0 - deviation) <= _PRINTED_RULE_SKEW
+
+
+def _lines_touch(first: LineEntity, second: LineEntity, snap_distance: float) -> bool:
+    """Return whether either line's end lies on the other line."""
+    return any(
+        _segment_distance(point, first.start, first.end) <= snap_distance
+        for point in (second.start, second.end)
+    ) or any(
+        _segment_distance(point, second.start, second.end) <= snap_distance
+        for point in (first.start, first.end)
     )
 
 
-def _meets_another_line(
-    line: LineEntity,
+def _touching_groups(
     lines: tuple[LineEntity, ...],
     snap_distance: float,
-) -> bool:
-    """Return whether any other line touches this one anywhere.
-
-    A branch drawn from the middle of a long edge leaves the edge unsplit, so
-    meeting only at shared endpoints would miss the joint of a T. Either
-    line's end lying on the other line counts.
-    """
-    return any(
-        other is not line
-        and (
-            any(
-                _segment_distance(point, line.start, line.end) <= snap_distance
-                for point in (other.start, other.end)
-            )
-            or any(
-                _segment_distance(point, other.start, other.end) <= snap_distance
-                for point in (line.start, line.end)
-            )
-        )
-        for other in lines
-    )
+) -> tuple[tuple[LineEntity, ...], ...]:
+    """Group lines that touch one another, directly or through others."""
+    unvisited = list(lines)
+    groups: list[tuple[LineEntity, ...]] = []
+    while unvisited:
+        group = [unvisited.pop()]
+        frontier = list(group)
+        while frontier:
+            current = frontier.pop()
+            touching = [
+                other
+                for other in unvisited
+                if _lines_touch(current, other, snap_distance)
+            ]
+            for other in touching:
+                unvisited.remove(other)
+            group.extend(touching)
+            frontier.extend(touching)
+        groups.append(tuple(group))
+    return tuple(groups)
 
 
 def is_printed_row(
     points: tuple[Point, ...],
     page_width: float,
     wobble: StrokeIntensity,
+    proved_cells: tuple[Bounds, ...],
 ) -> bool:
     """Return whether a closed polygon is a printed form row spanning the page.
 
     A work-order form's remarks row is one long ruled cell nearly as wide as
-    the sheet. All of these must hold, and none alone suffices: the polygon
-    fills its own oriented bounding box (a rectangle, whatever small corner
-    cut tracing left), the band is at least `_PRINTED_ROW_ASPECT` times as
-    long as it is deep and `_PRINTED_ROW_SPAN` of the page wide, and every
-    edge long enough to judge is as straight as print. A part drawn against
-    a ruler can be that straight, but it has chamfers or notches, or does not
-    run across the whole sheet.
+    the sheet, ruled directly under the header table. All of these must hold,
+    and none alone suffices: the polygon fills its own oriented bounding box
+    (a rectangle, whatever small corner cut tracing left), the band is at
+    least `_PRINTED_ROW_ASPECT` times as long as it is deep and
+    `_PRINTED_ROW_SPAN` of the page wide, every edge long enough to judge is
+    as straight as print, and at least `_ATTACHED_CELLS` cells of a table
+    already proved by tiling sit against it. A long bar drawn against a ruler
+    can be as straight and as wide, but no proved table is ruled onto it.
     """
-    if len(points) < _RECTANGLE_CORNERS:
+    if len(points) < _RECTANGLE_CORNERS or not _attached_to_table(
+        points,
+        proved_cells,
+    ):
         return False
     edges = tuple(
         (points[index], points[(index + 1) % len(points)])
@@ -282,6 +317,51 @@ def is_printed_row(
     return len(judged) >= _RECTANGLE_CORNERS and all(
         wobble(start, end) <= _PRINTED_RULE_WOBBLE for start, end in judged
     )
+
+
+def _attached_to_table(
+    points: tuple[Point, ...],
+    proved_cells: tuple[Bounds, ...],
+) -> bool:
+    """Return whether enough proved table cells sit against a polygon.
+
+    A cell counts when its box overlaps the polygon's box, grown by a few
+    pixels, while its centre lies outside the polygon: it is ruled onto the
+    row from beside it, not drawn inside it.
+    """
+    xs = [point.x for point in points]
+    ys = [point.y for point in points]
+    low_x = min(xs) - _ATTACHED_CELL_SLACK
+    high_x = max(xs) + _ATTACHED_CELL_SLACK
+    low_y = min(ys) - _ATTACHED_CELL_SLACK
+    high_y = max(ys) + _ATTACHED_CELL_SLACK
+    attached = sum(
+        1
+        for cell_low_x, cell_low_y, cell_high_x, cell_high_y in proved_cells
+        if cell_low_x <= high_x
+        and cell_high_x >= low_x
+        and cell_low_y <= high_y
+        and cell_high_y >= low_y
+        and not _inside_polygon(
+            Point((cell_low_x + cell_high_x) / 2.0, (cell_low_y + cell_high_y) / 2.0),
+            points,
+        )
+    )
+    return attached >= _ATTACHED_CELLS
+
+
+def _inside_polygon(point: Point, points: tuple[Point, ...]) -> bool:
+    """Return whether a point lies inside a polygon (even-odd rule)."""
+    inside = False
+    for index, first in enumerate(points):
+        second = points[(index + 1) % len(points)]
+        if (first.y > point.y) != (second.y > point.y):
+            crossing = first.x + (point.y - first.y) * (second.x - first.x) / (
+                second.y - first.y
+            )
+            if point.x < crossing:
+                inside = not inside
+    return inside
 
 
 def _edge_length(edge: tuple[Point, Point]) -> float:
