@@ -949,13 +949,24 @@ def _stroke_lines(
 
 
 def _entity_centre(entity: GeometryEntity) -> Point:
-    """Return a representative point of an entity: its centre or midpoint."""
+    """Return a point on or within an entity's own ink.
+
+    A line's midpoint, an arc's middle point, a circle's or polygon's centre:
+    an arc's centre can lie far off the stroke itself.
+    """
     if isinstance(entity, LineEntity):
         return Point(
             (entity.start.x + entity.end.x) / 2.0,
             (entity.start.y + entity.end.y) / 2.0,
         )
-    if isinstance(entity, (CircleEntity, ArcEntity)):
+    if isinstance(entity, ArcEntity):
+        sweep = (entity.end_angle_degrees - entity.start_angle_degrees) % 360.0
+        middle = math.radians(entity.start_angle_degrees + sweep / 2.0)
+        return Point(
+            entity.center.x + entity.radius * math.cos(middle),
+            entity.center.y + entity.radius * math.sin(middle),
+        )
+    if isinstance(entity, CircleEntity):
         return entity.center
     count = max(1, len(entity.points))
     return Point(
@@ -1630,7 +1641,7 @@ def analyze_image(
         entities=entities,
         dimensions=suggested_dimensions,
         connections=build_connections(
-            restored_lines,
+            tuple(entity for entity in entities if isinstance(entity, LineEntity)),
             config.normalization.endpoint_snap_distance,
         ),
         warnings=tuple(warnings),
