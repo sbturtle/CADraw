@@ -232,6 +232,8 @@ _FEATURE_PENETRATION_MARGIN = 3.0
 _PRINTED_RULE_LENGTH_RATIO = 0.15
 _INTERSTITIAL_STROKES = 3.0
 _ROW_FEATURE_DEPTH_RATIO = 0.25
+_MINIMUM_LETTERING_GLYPHS = 2
+_LEADING_GLYPH_SHARE = 0.3
 _POLYGON_EDGE_TOLERANCE_RATIO = 0.012
 _MIN_GRID_LIKE_SHAPES = 8
 _MIN_SHAPES_PER_LINE = 4
@@ -1231,9 +1233,15 @@ def _lettering_free_shapes(
         shapes.candidates,
         context.analysis_image,
         shapes.table_cell_bounds,
+        # A box read as two or more glyphs is a line of lettering, whatever
+        # the glyphs were read as; a drilled hole read alone as `0` is not.
         ()
         if context.ocr_result is None
-        else tuple(candidate.bounds for candidate in context.ocr_result.candidates),
+        else tuple(
+            candidate.bounds
+            for candidate in context.ocr_result.candidates
+            if len(candidate.text.strip()) >= _MINIMUM_LETTERING_GLYPHS
+        ),
     )
     return (
         replace(
@@ -1303,7 +1311,9 @@ def _lettering_loop(
     """Return whether a hole in a printed row is a loop of its lettering.
 
     It must be far smaller than the row is deep and centred inside a box of
-    text that OCR found; `labels` are boxes as left, top, width, height.
+    text that OCR found, past the box's leading part: a hole labelled by a
+    size written after it, as in `o←Ø14`, is read as that box's first glyph.
+    `labels` are boxes as left, top, width, height.
     """
     box = _shape_box(hole)
     if _box_extent(box) >= _ROW_FEATURE_DEPTH_RATIO * _box_depth(_bounds_of(row)):
@@ -1311,7 +1321,8 @@ def _lettering_loop(
     centre_x = (box[0] + box[2]) / 2.0
     centre_y = (box[1] + box[3]) / 2.0
     return any(
-        left <= centre_x <= left + width and top <= centre_y <= top + height
+        left + _LEADING_GLYPH_SHARE * width < centre_x <= left + width
+        and top <= centre_y <= top + height
         for left, top, width, height in labels
     )
 
