@@ -664,7 +664,7 @@ def test_a_restored_arc_ends_where_its_mapped_ends_land() -> None:
         assert end.distance_to(mapped) <= 0.01
 
 
-def test_a_long_arc_squashed_by_a_warp_stays_its_own_size_and_way_round() -> None:
+def test_a_long_arc_squashed_by_a_warp_keeps_its_ends_and_shape() -> None:
     # Given a three-quarter arc and a warp squashing one direction tenfold
     arc = ArcEntity(
         entity_id=EntityId("arc"),
@@ -679,8 +679,10 @@ def test_a_long_arc_squashed_by_a_warp_stays_its_own_size_and_way_round() -> Non
     # When it is restored to source coordinates
     restored = restore_source_geometry(arc, Point(0.0, 0.0), squash)
 
-    # Then no circle through three of its points blows it up, and it still
-    # runs the long way round
-    assert isinstance(restored, ArcEntity)
-    assert restored.radius <= 110.0
-    assert restored.end_angle_degrees - restored.start_angle_degrees >= 180.0
+    # Then no circle can follow the ellipse it became, so its mapped points
+    # are kept: both ends where the page's ends map, and nothing off its path
+    assert isinstance(restored, PolylineEntity)
+    assert not restored.closed
+    assert restored.points[0].distance_to(Point(100.0, 0.0)) <= 0.01
+    assert restored.points[-1].distance_to(Point(0.0, -10.0)) <= 0.01
+    assert all(abs(point.y) <= 10.01 for point in restored.points)
