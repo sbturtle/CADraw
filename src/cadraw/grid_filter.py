@@ -9,7 +9,7 @@ from typing import cast
 import numpy as np
 from numpy.typing import NDArray
 
-from cadraw.models import LineCandidate, PolylineCandidate, ShapeCandidate
+from cadraw.models import LineCandidate, Point, PolylineCandidate, ShapeCandidate
 
 _SHAPE_SQUARE_RATIO = 0.65
 _SHAPE_CELL_EXTENT_RATIO = 0.08
@@ -18,6 +18,8 @@ _QUADRILATERAL_POINTS = 4
 _LATTICE_MINIMUM_CELLS = 4
 _LATTICE_CELL_EXTENT_RATIO = 0.06
 _LATTICE_EDGE_TOLERANCE_RATIO = 0.004
+_LATTICE_INK_SAMPLES = 5
+_LATTICE_INKED_SHARE = 0.8
 
 type GrayImage = NDArray[np.uint8]
 
@@ -438,12 +440,54 @@ def inspect_periodic_grid_shapes(
     )
 
 
+def _inked_between(
+    ink: GrayImage,
+    first: tuple[Point, Point],
+    second: tuple[Point, Point],
+) -> bool:
+    """Return whether one stroke runs midway between two matching sides.
+
+    Two cells bounded by the same printed rule each trace their side along
+    it, so the line midway between their sides lies on that rule's ink. Two
+    shapes drawn side by side have paper between their own strokes there.
+    """
+    height, width = cast("tuple[int, int]", ink.shape[:2])
+    inked = 0
+    for step in range(1, _LATTICE_INK_SAMPLES + 1):
+        fraction = step / (_LATTICE_INK_SAMPLES + 1)
+        x = round(
+            (
+                first[0].x
+                + (first[1].x - first[0].x) * fraction
+                + second[0].x
+                + (second[1].x - second[0].x) * fraction
+            )
+            / 2.0,
+        )
+        y = round(
+            (
+                first[0].y
+                + (first[1].y - first[0].y) * fraction
+                + second[0].y
+                + (second[1].y - second[0].y) * fraction
+            )
+            / 2.0,
+        )
+        window = ink[
+            max(0, y - 1) : min(height, y + 2),
+            max(0, x - 1) : min(width, x + 2),
+        ]
+        inked += bool(np.any(window))
+    return inked >= _LATTICE_INKED_SHARE * _LATTICE_INK_SAMPLES
+
+
 def _shares_edge(
     first: PolylineCandidate,
     second: PolylineCandidate,
     tolerance: float,
+    ink: GrayImage,
 ) -> bool:
-    """Return whether two polygons have a side whose two ends coincide."""
+    """Return whether two polygons have a side on one and the same stroke."""
     first_points = first.points
     second_points = second.points
     for index, start in enumerate(first_points):
@@ -453,9 +497,11 @@ def _shares_edge(
             if (
                 start.distance_to(other_start) <= tolerance
                 and end.distance_to(other_end) <= tolerance
+                and _inked_between(ink, (start, end), (other_start, other_end))
             ) or (
                 start.distance_to(other_end) <= tolerance
                 and end.distance_to(other_start) <= tolerance
+                and _inked_between(ink, (start, end), (other_end, other_start))
             ):
                 return True
     return False
@@ -464,6 +510,7 @@ def _shares_edge(
 def _cell_components(
     cells: tuple[PolylineCandidate, ...],
     tolerance: float,
+    ink: GrayImage,
 ) -> list[list[int]]:
     """Group cells into components joined by shared sides."""
     bounds = [_shape_bounds(cell) for cell in cells]
@@ -476,7 +523,7 @@ def _cell_components(
                 and left <= other[2] + tolerance
                 and other[1] <= bottom + tolerance
                 and top <= other[3] + tolerance
-                and _shares_edge(cells[first], cells[second], tolerance)
+                and _shares_edge(cells[first], cells[second], tolerance, ink)
             ):
                 neighbours[first].append(second)
                 neighbours[second].append(first)
@@ -500,8 +547,7 @@ def _cell_components(
 
 def without_ruled_lattices(
     candidates: tuple[ShapeCandidate, ...],
-    width: int,
-    height: int,
+    ink: GrayImage,
     config: GridFilterConfig | None = None,
 ) -> tuple[tuple[ShapeCandidate, ...], int]:
     """Drop small four-sided cells that tile the paper side by side.
@@ -514,13 +560,15 @@ def without_ruled_lattices(
     candidates and how many cells were dropped.
 
     Neighbouring cells are both bounded by the one rule between them, so
-    their shared side coincides within a few pixels; two separate slots
-    drawn close together keep their own strokes and a gap a pen wide or
-    more apart. It is part of the grid filter and is off with it.
+    their sides coincide within a few pixels and the `ink` the shapes were
+    read from runs midway between them; two separate slots drawn close
+    together keep paper between their own strokes. It is part of the grid
+    filter and is off with it.
     """
     settings = config if config is not None else GridFilterConfig()
     if not settings.enabled:
         return candidates, 0
+    height, width = cast("tuple[int, int]", ink.shape[:2])
     side = min(width, height)
     tolerance = _LATTICE_EDGE_TOLERANCE_RATIO * side
     largest = _LATTICE_CELL_EXTENT_RATIO * side
@@ -534,7 +582,7 @@ def without_ruled_lattices(
     )
     removed = {
         id(cells[index])
-        for component in _cell_components(cells, tolerance)
+        for component in _cell_components(cells, tolerance, ink)
         if len(component) >= _LATTICE_MINIMUM_CELLS
         for index in component
     }
