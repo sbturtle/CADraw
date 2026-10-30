@@ -1105,7 +1105,7 @@ def _without_dimension_lines(
         AnalysisWarning(
             code=WarningCode.DIMENSION_LINES_REMOVED,
             message=(
-                f"양 끝에 눈금이 있고 치수가 적힌 선 {len(found)}개를 형상이 아닌 "
+                f"양 끝에 눈금이 있고 치수가 적힌 선 {len(removed)}개를 형상이 아닌 "
                 "치수선으로 보고 제외했습니다."
             ),
             entity_ids=tuple(sorted(removed, key=str)),
@@ -1132,6 +1132,38 @@ def _measured_dimension(
         kind=dimension_line.kind,
         target_entity_ids=(target,),
         source=_DIMENSION_LINE_SOURCE,
+    )
+
+
+def _unmeasured_warnings(
+    dimensions: tuple[Dimension, ...],
+    dimension_lines: tuple[DimensionLine, ...],
+) -> tuple[AnalysisWarning, ...]:
+    """Name the values read beside dimension lines that measure nothing yet.
+
+    Such a value has no entity to show it on, so this warning is what tells
+    the reviewer it was read and still needs a target.
+    """
+    unmeasured = tuple(
+        dimensions[dimension_line.dimension_index].raw_text
+        for dimension_line in dimension_lines
+        if not dimensions[dimension_line.dimension_index].target_entity_ids
+    )
+    if not unmeasured:
+        return ()
+    return (
+        AnalysisWarning(
+            code=WarningCode.UNCONNECTED_DIMENSION,
+            message=(
+                f"치수선 옆 값 {', '.join(unmeasured)}의 측정 대상을 정하지 "
+                "못했습니다. 사진을 보고 직접 입력해 주세요."
+            ),
+            entity_ids=tuple(
+                dimension_line.line_id
+                for dimension_line in dimension_lines
+                if not dimensions[dimension_line.dimension_index].target_entity_ids
+            ),
+        ),
     )
 
 
@@ -1798,7 +1830,12 @@ def analyze_image(
         _RestoreFrame(offset=offset, inverse_matrix=inverse_matrix),
         dimension_lines,
     )
-    warnings.extend(_uncertain_reading_warnings(suggested_dimensions, ocr_result))
+    warnings.extend(
+        (
+            *_uncertain_reading_warnings(suggested_dimensions, ocr_result),
+            *_unmeasured_warnings(suggested_dimensions, dimension_lines),
+        ),
+    )
     return DrawingAnalysis(
         unit="mm",
         image_size=(image_shape[1], image_shape[0]),

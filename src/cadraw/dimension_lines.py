@@ -16,8 +16,9 @@ a hole's centre line has no ticks.
 
 The ends of the line are what it measures, so a circle whose two poles
 along the line fall on those ends, or a single edge that spans them, is the
-target. Anything else leaves the value unresolved for the reviewer; it is
-never handed to the nearest line instead.
+target, as is a closed outline whose overall width or height they span.
+Anything else leaves the value unresolved for the reviewer; it is never
+handed to the nearest line instead.
 """
 
 import math
@@ -35,6 +36,7 @@ from cadraw.models import (
     GeometryEntity,
     LineEntity,
     Point,
+    PolylineEntity,
 )
 
 type InkMask = NDArray[np.uint8]
@@ -58,7 +60,8 @@ class DimensionLine:
 
     `dimension_index` points into the OCR dimensions the value came from.
     `target_id` is `None` when nothing, or more than one thing, matches the
-    line's ends; `kind` is a diameter when the target is a circle.
+    line's ends. `kind` is what the target takes: a circle's diameter, an
+    edge's length, or a closed outline's width or height.
     """
 
     line_id: EntityId
@@ -209,25 +212,36 @@ def _parallel(direction: tuple[float, float], other: tuple[float, float]) -> boo
     return cosine >= math.cos(math.radians(_PARALLEL_DEGREES))
 
 
+def _axis_kind(direction: tuple[float, float]) -> DimensionKind | None:
+    """Return the outline extent a horizontal or vertical line measures."""
+    limit = math.cos(math.radians(_PARALLEL_DEGREES))
+    if abs(direction[0]) >= limit:
+        return DimensionKind.WIDTH
+    if abs(direction[1]) >= limit:
+        return DimensionKind.HEIGHT
+    return None
+
+
 def _measured(
     line: LineEntity,
     direction: tuple[float, float],
     geometry: tuple[GeometryEntity, ...],
     width: float,
-) -> tuple[GeometryEntity, ...]:
-    """Return every circle or edge whose extent matches the line's two ends."""
+) -> tuple[tuple[GeometryEntity, DimensionKind], ...]:
+    """Return everything whose extent matches the line's ends, with its kind.
+
+    A circle's two poles along the line give its diameter, a parallel edge
+    spanning the ends its length, and a closed outline whose overall extent
+    along a horizontal or vertical line matches gives its width or height.
+    """
     slack = max(_TARGET_SLACK_WIDTHS * width, _TARGET_SLACK_RATIO * line.length)
-    matches: list[GeometryEntity] = []
+    extent_kind = _axis_kind(direction)
+    matches: list[tuple[GeometryEntity, DimensionKind]] = []
     for entity in geometry:
         if isinstance(entity, CircleEntity):
             centre = _project(entity.center, line.start, direction)
-            if _spans(
-                line,
-                centre - entity.radius,
-                centre + entity.radius,
-                slack,
-            ):
-                matches.append(entity)
+            if _spans(line, centre - entity.radius, centre + entity.radius, slack):
+                matches.append((entity, DimensionKind.DIAMETER))
         elif isinstance(entity, LineEntity) and entity.entity_id != line.entity_id:
             other = _direction(entity)
             if (
@@ -240,8 +254,43 @@ def _measured(
                     slack,
                 )
             ):
-                matches.append(entity)
+                matches.append((entity, DimensionKind.LENGTH))
+        elif (
+            isinstance(entity, PolylineEntity)
+            and entity.closed
+            and entity.points
+            and extent_kind is not None
+        ):
+            positions = [
+                _project(point, line.start, direction) for point in entity.points
+            ]
+            if _spans(line, min(positions), max(positions), slack):
+                matches.append((entity, extent_kind))
     return tuple(matches)
+
+
+def _measuring(
+    line: LineEntity,
+    direction: tuple[float, float],
+    geometry: tuple[GeometryEntity, ...],
+    width: float,
+    text: DimensionText,
+) -> tuple[EntityId | None, DimensionKind]:
+    """Return the one target a value beside a line measures, and its kind.
+
+    A value carrying its own symbol, such as `Ø40` or `R5`, keeps it, and
+    only a target of that kind may take it.
+    """
+    stated = text.dimension.kind
+    matches = tuple(
+        (entity, kind)
+        for entity, kind in _measured(line, direction, geometry, width)
+        if stated is DimensionKind.LENGTH or kind is stated
+    )
+    if len(matches) != 1:
+        return None, stated
+    entity, kind = matches[0]
+    return entity.entity_id, kind
 
 
 def find_dimension_lines(
@@ -251,10 +300,12 @@ def find_dimension_lines(
     ink: InkMask,
     width: float,
 ) -> tuple[DimensionLine, ...]:
-    """Return the lines that are drawn dimensions, each with its value.
+    """Return the drawn dimension lines, one record per value they carry.
 
     `width` is the pen width in the same pixels as `ink`. Values and ticked
-    lines are paired closest first, so each takes at most one of the other.
+    lines are paired closest first. A line takes one value, unless several
+    are written along it: that is a chain, whose ends bound the sum of its
+    values, so it takes all of them and gives none a target.
     """
     pairs: list[tuple[float, str, int, LineEntity, tuple[float, float]]] = []
     chained: set[EntityId] = set()
@@ -283,29 +334,23 @@ def find_dimension_lines(
     used_lines: set[EntityId] = set()
     used_texts: set[int] = set()
     for _, _, index, line, direction in sorted(pairs, key=lambda item: item[:3]):
-        if line.entity_id in used_lines or index in used_texts:
+        if index in used_texts or (
+            line.entity_id in used_lines and line.entity_id not in chained
+        ):
             continue
         used_lines.add(line.entity_id)
         used_texts.add(index)
-        # Values written along one line split it into a chain of sizes; its
-        # ends then bound their sum, which no single value measures.
-        matches = (
-            ()
+        target, kind = (
+            (None, texts[index].dimension.kind)
             if line.entity_id in chained
-            else _measured(line, direction, geometry, width)
+            else _measuring(line, direction, geometry, width, texts[index])
         )
-        target = matches[0] if len(matches) == 1 else None
-        kind = texts[index].dimension.kind
         found.append(
             DimensionLine(
                 line_id=line.entity_id,
                 dimension_index=index,
-                target_id=None if target is None else target.entity_id,
-                kind=(
-                    DimensionKind.DIAMETER
-                    if isinstance(target, CircleEntity) and kind is DimensionKind.LENGTH
-                    else kind
-                ),
+                target_id=target,
+                kind=kind,
             ),
         )
     return tuple(found)

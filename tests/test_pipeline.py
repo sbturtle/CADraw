@@ -647,3 +647,34 @@ def test_a_drawn_dimension_line_is_not_geometry_and_not_a_target(
     )
     assert analysis.dimensions[0].target_entity_ids == (lines[0].entity_id,)
     assert analysis.dimensions[0].status is DimensionStatus.NEEDS_REVIEW
+
+
+def test_a_dimension_line_measuring_nothing_leaves_its_value_unlinked(
+    tmp_path: Path,
+) -> None:
+    # Given a ticked dimension line longer than the only edge near it
+    image = np.full((260, 320), 255, dtype=np.uint8)
+    _ = cv2.line(image, (40, 100), (200, 100), 0, 5)
+    _ = cv2.line(image, (40, 180), (280, 180), 0, 3)
+    _ = cv2.line(image, (40, 170), (40, 190), 0, 3)
+    _ = cv2.line(image, (280, 170), (280, 190), 0, 3)
+    image_path = tmp_path / "unmatched-dimension.png"
+    Image.fromarray(image).save(image_path)
+    config = _single_line_config()
+    config = replace(
+        config,
+        normalization=replace(
+            config.normalization,
+            keep_largest_connected_component=False,
+        ),
+    )
+
+    # When the production pipeline runs with OCR enabled
+    analysis = analyze_image(image_path, config, _DimensionValueOcrBackend())
+
+    # Then the value is not handed to the nearby edge, and the reviewer is told
+    assert analysis.dimensions[0].target_entity_ids == ()
+    assert any(
+        warning.code is WarningCode.UNCONNECTED_DIMENSION and "150" in warning.message
+        for warning in analysis.warnings
+    )

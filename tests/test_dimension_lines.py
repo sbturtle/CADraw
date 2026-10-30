@@ -12,6 +12,7 @@ from cadraw.models import (
     LineEntity,
     Orientation,
     Point,
+    PolylineEntity,
 )
 
 type InkMask = NDArray[np.uint8]
@@ -140,9 +141,10 @@ def test_a_chain_of_values_along_one_line_leaves_the_target_open() -> None:
         float(_PEN),
     )
 
-    # Then the line is a dimension, but its ends bound the chain's sum
-    assert len(found) == 1
-    assert found[0].target_id is None
+    # Then the line carries both values, and neither measures its ends
+    assert sorted(record.dimension_index for record in found) == [0, 1]
+    assert {record.line_id for record in found} == {dimension.entity_id}
+    assert all(record.target_id is None for record in found)
 
 
 def test_a_line_matching_two_circles_leaves_the_target_open() -> None:
@@ -169,3 +171,37 @@ def test_a_line_matching_two_circles_leaves_the_target_open() -> None:
     assert len(found) == 1
     assert found[0].target_id is None
     assert found[0].kind is DimensionKind.LENGTH
+
+
+def test_a_ticked_line_spanning_a_plate_measures_its_width() -> None:
+    # Given a plate outline and a ticked line below it spanning its full width
+    ink = _ink()
+    _ = cv2.rectangle(ink, (100, 80), (400, 220), 255, _PEN)
+    _stroke(ink, (100, 300), (400, 300))
+    _stroke(ink, (100, 291), (100, 309))
+    _stroke(ink, (400, 291), (400, 309))
+    dimension = _line("dimension", Point(100.0, 300.0), Point(400.0, 300.0))
+    plate = PolylineEntity(
+        entity_id=EntityId("plate"),
+        points=(
+            Point(100.0, 80.0),
+            Point(400.0, 80.0),
+            Point(400.0, 220.0),
+            Point(100.0, 220.0),
+        ),
+        closed=True,
+        confidence=0.9,
+    )
+
+    found = find_dimension_lines(
+        (dimension,),
+        (_value("300", (230.0, 312.0, 40.0, 24.0)),),
+        (dimension, plate),
+        ink,
+        float(_PEN),
+    )
+
+    # Then the value is the plate's overall width
+    assert len(found) == 1
+    assert found[0].target_id == EntityId("plate")
+    assert found[0].kind is DimensionKind.WIDTH
