@@ -15,6 +15,7 @@ from cadraw.models import (
 
 _NUMBER = r"(?P<value>(?:\d+(?:[.,]\d*)?|[.,]\d+))"
 _MAX_DIMENSION_VALUE: Final = 1_000_000_000.0
+_GROUPED_DIGITS = re.compile(r"^[1-9]\d{0,2}(?:[.,]\d{3})+$")
 _MAX_ANGLE_DEGREES: Final = 180.0
 _SIZED_KINDS: Final = frozenset(
     {
@@ -40,7 +41,15 @@ _ANGLE_PATTERN = re.compile(
 
 
 def _numeric_value(raw_value: str) -> float | None:
-    """Parse a positive decimal using dot or comma notation."""
+    """Parse a positive decimal using dot or comma notation.
+
+    A whole number written with thousands grouping, `1,050` or `1.050`,
+    would read as a decimal a thousandfold too small. It is refused rather
+    than guessed, and the reviewer types the plain number. A decimal that
+    cannot be grouping, such as `0.125`, stays a decimal.
+    """
+    if _GROUPED_DIGITS.fullmatch(raw_value):
+        return None
     try:
         value = float(raw_value.replace(",", "."))
     except ValueError:

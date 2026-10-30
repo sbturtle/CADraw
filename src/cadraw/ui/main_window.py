@@ -4,7 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import override
 
-from PySide6.QtGui import QPixmap, QResizeEvent
+from PySide6.QtGui import QImageReader, QPixmap, QResizeEvent
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QWidget
 
 from cadraw.calculator import calculate_document
@@ -63,6 +63,20 @@ _STATUS_CAPTIONS: dict[AnalysisStatus, str] = {
         "전처리 후보가 불확실합니다. 가장 잘 보이는 방식을 선택해 주세요."
     ),
 }
+
+
+def oriented_pixmap(image_path: Path) -> QPixmap:
+    """Load a photograph upright, as the analysis reads it.
+
+    A phone stores a portrait shot as landscape pixels with an EXIF rotation.
+    OpenCV applies that rotation when the analysis decodes the file, while
+    Qt leaves it off by default, so without it the source view, the region
+    drag, and the redraw strokes would all be in a frame turned a quarter
+    away from the geometry.
+    """
+    reader = QImageReader(str(image_path))
+    reader.setAutoTransform(True)
+    return QPixmap.fromImage(reader.read())
 
 
 class MainWindow(QMainWindow):
@@ -380,7 +394,7 @@ class MainWindow(QMainWindow):
         self._view.set_region_actions_enabled(mark=True, clear=False)
         self._source_mode = SourceViewMode.ORIGINAL
         self._view.set_source_mode(SourceViewMode.ORIGINAL)
-        self._source_pixmap = QPixmap(str(image_path))
+        self._source_pixmap = oriented_pixmap(image_path)
         installed = self._install_analysis(analysis)
         self._refresh_source_pixmap()
         self._view.set_main_actions_enabled(

@@ -35,6 +35,7 @@ from cadraw.models import (
     CircleEntity,
     Dimension,
     DimensionId,
+    DimensionStatus,
     DrawingAnalysis,
     GeometryRole,
     LineEntity,
@@ -211,6 +212,10 @@ def _add_manual_dimension(
         ),
         target.entity_id,
     )
+    # A refused value would leave the drawing in photo pixels labelled as
+    # millimetres, so the run stops instead of writing that DXF.
+    if dimension.status is not DimensionStatus.CONFIRMED:
+        raise PocUsageError(_DIMENSIONS_ERROR)
     return replace(analysis, dimensions=(dimension,))
 
 
