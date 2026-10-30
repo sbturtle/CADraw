@@ -481,15 +481,16 @@ def _restored_arc(
     arc: ArcEntity,
     offset: Point,
     inverse_matrix: tuple[float, ...] | None,
-) -> ArcEntity | PolylineEntity:
+) -> ArcEntity:
     """Map an arc back to the photograph through its two ends and middle.
 
     The warp scales each direction differently, so in general no circle
     fits the whole mapped arc. The one through its mapped ends and middle
     keeps the ends exactly where the lines joining them meet the arc, and
     is used while every mapped point stays near it. When none does, the
-    photograph shows the arc as part of an ellipse, and the mapped points
-    are kept as an open path, which keeps both its ends and its shape.
+    photograph shows the arc as part of an ellipse that no circle follows;
+    the arc then keeps its flat-page radius and angles around its mapped
+    centre, as before, so it stays an arc a radius can be confirmed on.
     """
     centre = _restore_point(arc.center, offset, inverse_matrix)
     if inverse_matrix is None:
@@ -501,13 +502,7 @@ def _restored_arc(
     first, middle, last = mapped[0], mapped[len(mapped) // 2], mapped[-1]
     circle = _circle_through(first, middle, last)
     if circle is None or not _fits_arc(circle, mapped):
-        return PolylineEntity(
-            entity_id=arc.entity_id,
-            points=mapped,
-            closed=False,
-            confidence=arc.confidence,
-            role=arc.role,
-        )
+        return replace(arc, center=centre)
     centre, radius = circle
     start = math.degrees(math.atan2(first.y - centre.y, first.x - centre.x))
     end = math.degrees(math.atan2(last.y - centre.y, last.x - centre.x))
