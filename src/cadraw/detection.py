@@ -49,6 +49,7 @@ GrayImage = NDArray[np.uint8]
 
 _MIN_DUPLICATE_CIRCLE_DISTANCE = 8.0
 _MIN_DUPLICATE_RADIUS_RATIO = 0.55
+_CONTAINMENT_EXTENT_RATIO = 1.8
 _MAX_DUPLICATE_RADIUS_GAP = 12.0
 _MAX_DUPLICATE_RADIUS_GAP_RATIO = 0.15
 _MIN_CIRCLE_APPROX_POINTS = 6
@@ -1484,7 +1485,7 @@ def _shape_contains(parent: ShapeCandidate, child: ShapeCandidate) -> bool:
     child_min_x, child_min_y, child_max_x, child_max_y = _shape_bounds(child)
     child_extent = max(child_max_x - child_min_x, child_max_y - child_min_y)
     parent_extent = max(parent_max_x - parent_min_x, parent_max_y - parent_min_y)
-    if parent_extent < child_extent * 1.8:
+    if parent_extent < child_extent * _CONTAINMENT_EXTENT_RATIO:
         return False
     if isinstance(parent, (CircleCandidate, ArcCandidate)):
         # A drilled hole near the rim of a hand-drawn round plate reaches
@@ -1546,18 +1547,36 @@ def _with_shape_role(
 def classify_shape_holes(
     candidates: tuple[ShapeCandidate, ...],
 ) -> tuple[ShapeCandidate, ...]:
-    """Mark only contained, smaller closed shapes as holes."""
+    """Mark only contained, smaller closed shapes as holes.
+
+    Every parent must be at least `_CONTAINMENT_EXTENT_RATIO` times the
+    child's extent and hold the child's centre within its box, so those two
+    cheap tests come first; on a busy photo they spare the full containment
+    test for almost every pair.
+    """
+    bounds = [_shape_bounds(candidate) for candidate in candidates]
+    extents = [max(box[2] - box[0], box[3] - box[1]) for box in bounds]
+    centres = [((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0) for box in bounds]
+
+    def is_hole(index: int) -> bool:
+        candidate = candidates[index]
+        centre_x, centre_y = centres[index]
+        least_extent = extents[index] * _CONTAINMENT_EXTENT_RATIO
+        return any(
+            extents[other] >= least_extent
+            and bounds[other][0] <= centre_x <= bounds[other][2]
+            and bounds[other][1] <= centre_y <= bounds[other][3]
+            and parent != candidate
+            and _shape_contains(parent, candidate)
+            for other, parent in enumerate(candidates)
+        )
+
     return tuple(
         _with_shape_role(
             candidate,
-            GeometryRole.HOLE
-            if any(
-                parent != candidate and _shape_contains(parent, candidate)
-                for parent in candidates
-            )
-            else GeometryRole.STRUCTURE,
+            GeometryRole.HOLE if is_hole(index) else GeometryRole.STRUCTURE,
         )
-        for candidate in candidates
+        for index, candidate in enumerate(candidates)
     )
 
 

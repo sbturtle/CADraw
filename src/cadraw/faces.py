@@ -271,6 +271,27 @@ def _draw(mask: GrayImage, start: Point, end: Point, thickness: int) -> None:
     )
 
 
+def _ink_window(image: NDArray[np.uint8]) -> tuple[slice, slice] | None:
+    """Return the box around a binary image's ink, a pixel of paper wide.
+
+    Thinning reads only each pixel's eight neighbours, with paper beyond the
+    frame, so working on the ink's box gives the same skeleton as the whole
+    frame at a fraction of the cost. The box starts on even coordinates so
+    a pass that alternates rows and columns keeps the frame's parity.
+    """
+    rows: list[int] = np.flatnonzero(np.any(image, axis=1)).tolist()
+    if not rows:
+        return None
+    columns: list[int] = np.flatnonzero(np.any(image, axis=0)).tolist()
+    height, width = cast("tuple[int, int]", image.shape[:2])
+    top = max(0, rows[0] - 1) // 2 * 2
+    left = max(0, columns[0] - 1) // 2 * 2
+    return (
+        slice(top, min(height, rows[-1] + 2)),
+        slice(left, min(width, columns[-1] + 2)),
+    )
+
+
 def thinned(mask: GrayImage, maximum_iterations: int | None = None) -> GrayImage:
     """Return the one-pixel skeleton of a binary mask (Zhang and Suen).
 
@@ -279,7 +300,11 @@ def thinned(mask: GrayImage, maximum_iterations: int | None = None) -> GrayImage
     such as the backdrop around a photographed page would take hundreds;
     `maximum_iterations` leaves it thick, which yields no stroke ends anyway.
     """
-    image = np.asarray(np.greater(mask, 0), dtype=np.uint8)
+    full = np.asarray(np.greater(mask, 0), dtype=np.uint8)
+    window = _ink_window(full)
+    if window is None:
+        return np.asarray(full * _INK, dtype=np.uint8)
+    image = full[window].copy()
     changed = True
     iterations = 0
     while changed and (maximum_iterations is None or iterations < maximum_iterations):
@@ -293,7 +318,8 @@ def thinned(mask: GrayImage, maximum_iterations: int | None = None) -> GrayImage
             if bool(np.any(removable)):
                 image[removable] = 0
                 changed = True
-    return np.asarray(image * _INK, dtype=np.uint8)
+    full[window] = image
+    return np.asarray(full * _INK, dtype=np.uint8)
 
 
 def _neighbour_codes(image: GrayImage) -> NDArray[np.uint8]:
@@ -452,7 +478,11 @@ def _minimal(present: NDArray[np.bool_]) -> NDArray[np.bool_]:
     junction. Removing such pixels in four interleaved passes, so no two
     removed pixels ever touch, leaves a line exactly one pixel wide.
     """
-    minimal = np.asarray(present, dtype=np.uint8)
+    full = np.asarray(present, dtype=np.uint8)
+    window = _ink_window(full)
+    if window is None:
+        return np.greater(full, 0)
+    minimal = full[window].copy()
     changed = True
     while changed:
         changed = False
@@ -467,7 +497,8 @@ def _minimal(present: NDArray[np.bool_]) -> NDArray[np.bool_]:
             if bool(np.any(removable)):
                 minimal[removable] = 0
                 changed = True
-    return np.greater(minimal, 0)
+    full[window] = minimal
+    return np.greater(full, 0)
 
 
 def _pruned(present: NDArray[np.bool_], iterations: int) -> NDArray[np.bool_]:
