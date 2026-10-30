@@ -17,6 +17,7 @@ from cadraw.models import CircleEntity, LineEntity, Point, PolylineEntity
 
 _PENETRATION_STEP = 2.0
 _RADIAL_SHARE = 0.2
+_EDGE_SAMPLES = 21
 _MINIMUM_PENETRATION = 4.0
 
 
@@ -90,7 +91,13 @@ def without_polygon_edge_lines(
     polygons: tuple[PolylineEntity, ...],
     tolerance: float,
 ) -> tuple[LineEntity, ...]:
-    """Drop lines whose ends and midpoint all hug one closed polygon's edge."""
+    """Drop lines that run along closed polygons' edges for their whole length.
+
+    Two faces either side of one stroke both trace it, so a line along a
+    wall between parts, or along an outline and on along a neighbour's, is
+    the same ink again even where no single polygon holds all of it. Every
+    point along the line must lie near some polygon's edge.
+    """
     closed = tuple(polygon for polygon in polygons if polygon.closed and polygon.points)
     if not closed:
         return lines
@@ -98,6 +105,47 @@ def without_polygon_edge_lines(
         line
         for line in lines
         if not any(_retraces(line, polygon, tolerance) for polygon in closed)
+        and not _along_edges(line, closed, tolerance)
+    )
+
+
+def _along_edges(
+    line: LineEntity,
+    polygons: tuple[PolylineEntity, ...],
+    tolerance: float,
+) -> bool:
+    """Return whether every point along a line lies near some polygon's edge."""
+    near = tuple(
+        polygon for polygon in polygons if _boxes_meet(line, polygon, tolerance)
+    )
+    if not near:
+        return False
+    steps = _EDGE_SAMPLES - 1
+    return all(
+        any(
+            _boundary_distance(
+                Point(
+                    line.start.x + (line.end.x - line.start.x) * index / steps,
+                    line.start.y + (line.end.y - line.start.y) * index / steps,
+                ),
+                polygon,
+            )
+            <= tolerance
+            for polygon in near
+        )
+        for index in range(_EDGE_SAMPLES)
+    )
+
+
+def _boxes_meet(line: LineEntity, polygon: PolylineEntity, slack: float) -> bool:
+    """Return whether a line's box comes within `slack` of a polygon's box."""
+    xs = [point.x for point in polygon.points]
+    ys = [point.y for point in polygon.points]
+    return (
+        min(line.start.x, line.end.x) <= max(xs) + slack
+        and min(xs) <= max(line.start.x, line.end.x) + slack
+        and min(line.start.y, line.end.y) <= max(ys) + slack
+        and min(ys) <= max(line.start.y, line.end.y) + slack
     )
 
 

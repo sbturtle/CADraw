@@ -183,3 +183,37 @@ def test_a_chord_ending_where_a_centre_line_crosses_the_rim_is_dropped() -> None
 
     # Then the dash stays and the chord goes: a centre line aims at the centre
     assert without_circle_chords((chord, dash), (_washer(),), 12.0) == (dash,)
+
+
+def _box(name: str, top: float, bottom: float) -> PolylineEntity:
+    return PolylineEntity(
+        entity_id=EntityId(name),
+        points=(
+            Point(100.0, top),
+            Point(500.0, top),
+            Point(500.0, bottom),
+            Point(100.0, bottom),
+        ),
+        closed=True,
+        confidence=0.9,
+    )
+
+
+def test_a_line_along_two_stacked_outlines_is_dropped() -> None:
+    # Given a strip and the body below it, and one line down their right side
+    side = _line("side", Point(500.0, 100.0), Point(500.0, 400.0), Orientation.VERTICAL)
+    outlines = (_box("strip", 100.0, 160.0), _box("body", 160.0, 400.0))
+
+    # Then the line is their edges again, though neither holds all of it
+    assert without_polygon_edge_lines((side,), outlines, 12.0) == ()
+
+
+def test_a_bend_line_inside_an_outline_is_kept() -> None:
+    # Given a line drawn across a body, well inside its outline
+    bend = _line(
+        "bend", Point(100.0, 250.0), Point(500.0, 250.0), Orientation.HORIZONTAL
+    )
+    outlines = (_box("body", 160.0, 400.0),)
+
+    # Then it stays: only its two ends touch the outline
+    assert without_polygon_edge_lines((bend,), outlines, 12.0) == (bend,)
