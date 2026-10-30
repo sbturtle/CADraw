@@ -237,3 +237,59 @@ def test_a_far_outline_of_the_same_width_is_not_the_target() -> None:
     # Then nothing ties the plate to the line, so the value stays open
     assert len(found) == 1
     assert found[0].target_id is None
+
+
+def test_an_edge_with_flanges_on_one_side_is_not_a_dimension() -> None:
+    # Given an open channel edge whose two short flanges leave on one side
+    ink = _ink()
+    _stroke(ink, (100, 200), (260, 200))
+    _stroke(ink, (100, 200), (100, 220))
+    _stroke(ink, (260, 200), (260, 220))
+    edge = _line("edge", Point(100.0, 200.0), Point(260.0, 200.0))
+
+    found = find_dimension_lines(
+        (edge,),
+        (_value("160", (160.0, 170.0, 40.0, 24.0)),),
+        (edge,),
+        ink,
+        float(_PEN),
+    )
+
+    # Then it stays geometry: a tick crosses its line, a flange only leaves it
+    assert found == ()
+
+
+def test_two_dimension_lines_close_together_each_keep_their_value() -> None:
+    # Given two parallel ticked lines 30 px apart, a value beside each
+    ink = _ink()
+    upper = _ticked_line(ink, 400, 100, 300)
+    lower = _ticked_line(ink, 430, 100, 300)
+    lower = _line("lower", lower.start, lower.end)
+    _ = cv2.circle(ink, (300, 200), 100, 255, _PEN)
+
+    found = find_dimension_lines(
+        (upper, lower),
+        (
+            _value("200", (370.0, 150.0, 40.0, 16.0)),
+            _value("200", (420.0, 230.0, 40.0, 16.0)),
+        ),
+        (
+            upper,
+            lower,
+            CircleEntity(
+                entity_id=EntityId("rim"),
+                center=Point(300.0, 200.0),
+                radius=100.0,
+                confidence=0.9,
+            ),
+        ),
+        ink,
+        float(_PEN),
+    )
+
+    # Then neither is a chain, and the other dimension line is no target
+    assert {(record.line_id, record.dimension_index) for record in found} == {
+        (upper.entity_id, 0),
+        (lower.entity_id, 1),
+    }
+    assert all(record.target_id == EntityId("rim") for record in found)

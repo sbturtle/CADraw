@@ -127,40 +127,68 @@ def _band_run(
     )
 
 
-def _ticked(
-    mask: InkMask, end: Point, inward: tuple[float, float], width: float
-) -> bool:
-    """Return whether a short tick crosses a line's end and the line stops there.
+def _tick_sides(
+    mask: InkMask,
+    end: Point,
+    inward: tuple[float, float],
+    normal: tuple[float, float],
+    width: float,
+) -> frozenset[int] | None:
+    """Return the sides of a line a short tick crosses at one end, if any.
 
-    A hand-drawn tick may cross a little inside the end, so the test also
-    looks a couple of pen widths back along the line.
+    The sides are +1 along the line's `normal` and -1 against it, so both
+    ends of one line report them alike. A hand-drawn tick may cross a
+    little inside the end, so the test also looks a couple of pen widths
+    back along the line. `None` means no tick: too little ink across the
+    end, a stroke running on past it, or ink across it longer than a tick.
     """
-    across = (-inward[1], inward[0])
     longest = _MAXIMUM_TICK_WIDTHS * width
     outward = (-inward[0], -inward[1])
     if _band_run(mask, end, outward, longest, width / 2.0) > (
         _MAXIMUM_OVERRUN_WIDTHS * width
     ):
-        return False
+        return None
     for setback in _TICK_SETBACK_WIDTHS:
         point = Point(
             end.x + inward[0] * setback * width,
             end.y + inward[1] * setback * width,
         )
-        one_side = _band_run(mask, point, across, 1.5 * longest, width)
-        other_side = _band_run(
-            mask,
-            point,
-            (-across[0], -across[1]),
-            1.5 * longest,
-            width,
-        )
+        runs = {
+            side: _band_run(
+                mask,
+                point,
+                (normal[0] * side, normal[1] * side),
+                1.5 * longest,
+                width,
+            )
+            for side in (1, -1)
+        }
         if (
-            one_side + other_side >= _MINIMUM_TICK_WIDTHS * width
-            and max(one_side, other_side) <= longest
+            sum(runs.values()) >= _MINIMUM_TICK_WIDTHS * width
+            and max(runs.values()) <= longest
         ):
-            return True
-    return False
+            return frozenset(side for side, run in runs.items() if run >= width)
+    return None
+
+
+def _ticked(mask: InkMask, line: LineEntity, width: float) -> bool:
+    """Return whether a tick closes each end of a line.
+
+    A tick crosses the line, so it shows on both sides. A freehand line can
+    meet its tick off centre, and then one end may show it on one side only;
+    the other end then shows it on the other side or both. Short strokes
+    leaving both ends on the same side are the corners of an open outline,
+    such as a channel's flanges, and not ticks.
+    """
+    direction = _direction(line)
+    if direction is None:
+        return False
+    normal = (-direction[1], direction[0])
+    start = _tick_sides(mask, line.start, direction, normal, width)
+    end = _tick_sides(mask, line.end, (-direction[0], -direction[1]), normal, width)
+    if not start or not end:
+        return False
+    return not (len(start) == 1 and start == end)
 
 
 def _direction(line: LineEntity) -> tuple[float, float] | None:
@@ -332,55 +360,47 @@ def find_dimension_lines(
 ) -> tuple[DimensionLine, ...]:
     """Return the drawn dimension lines, one record per value they carry.
 
-    `width` is the pen width in the same pixels as `ink`. Values and ticked
-    lines are paired closest first. A line takes one value, unless several
-    are written along it: that is a chain, whose ends bound the sum of its
-    values, so it takes all of them and gives none a target.
+    `width` is the pen width in the same pixels as `ink`. Each value goes to
+    the ticked line it sits closest beside. A line given one value measures
+    what its ends span; a line given several is a chain, whose ends bound
+    the sum of its values, so none of them gets a target. Dimension lines
+    are annotation, so none is a target of another.
     """
-    pairs: list[tuple[float, str, int, LineEntity, tuple[float, float]]] = []
-    chained: set[EntityId] = set()
-    for line in lines:
-        direction = _direction(line)
-        if direction is None:
+    ticked = tuple(line for line in lines if _ticked(ink, line, width))
+    carried: dict[EntityId, list[int]] = {}
+    for index, text in enumerate(texts):
+        if text.dimension.parsed_value is None:
             continue
-        beside = [
-            (distance, index)
-            for index, text in enumerate(texts)
-            if text.dimension.parsed_value is not None
-            and math.isfinite(distance := _beside(line, direction, text.bounds))
-        ]
-        if (
-            beside
-            and _ticked(ink, line.start, direction, width)
-            and _ticked(ink, line.end, (-direction[0], -direction[1]), width)
-        ):
-            pairs.extend(
-                (distance, str(line.entity_id), index, line, direction)
-                for distance, index in beside
-            )
-            if len(beside) > 1:
-                chained.add(line.entity_id)
-    found: list[DimensionLine] = []
-    used_lines: set[EntityId] = set()
-    used_texts: set[int] = set()
-    for _, _, index, line, direction in sorted(pairs, key=lambda item: item[:3]):
-        if index in used_texts or (
-            line.entity_id in used_lines and line.entity_id not in chained
-        ):
-            continue
-        used_lines.add(line.entity_id)
-        used_texts.add(index)
-        target, kind = (
-            (None, texts[index].dimension.kind)
-            if line.entity_id in chained
-            else _measuring(line, direction, geometry, width, texts[index])
-        )
-        found.append(
-            DimensionLine(
-                line_id=line.entity_id,
-                dimension_index=index,
-                target_id=target,
-                kind=kind,
+        nearest = min(
+            (
+                (distance, str(line.entity_id), line.entity_id)
+                for line in ticked
+                if (direction := _direction(line)) is not None
+                and math.isfinite(distance := _beside(line, direction, text.bounds))
             ),
+            default=None,
         )
+        if nearest is not None:
+            carried.setdefault(nearest[2], []).append(index)
+    measurable = tuple(entity for entity in geometry if entity.entity_id not in carried)
+    found: list[DimensionLine] = []
+    for line in ticked:
+        indices = carried.get(line.entity_id, [])
+        direction = _direction(line)
+        if not indices or direction is None:
+            continue
+        for index in indices:
+            target, kind = (
+                (None, texts[index].dimension.kind)
+                if len(indices) > 1
+                else _measuring(line, direction, measurable, width, texts[index])
+            )
+            found.append(
+                DimensionLine(
+                    line_id=line.entity_id,
+                    dimension_index=index,
+                    target_id=target,
+                    kind=kind,
+                ),
+            )
     return tuple(found)
