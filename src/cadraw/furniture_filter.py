@@ -31,6 +31,11 @@ type StrokeIntensity = Callable[[Point, Point], float]
 
 _MIN_EDGE_OVERLAP_RATIO = 0.50
 _PRINTED_RULE_WOBBLE = 0.6
+_RECTANGLE_CORNERS = 4
+_PRINTED_ROW_FILL = 0.95
+_PRINTED_ROW_ASPECT = 4.0
+_PRINTED_ROW_SPAN = 0.8
+_JUDGED_EDGE_RATIO = 0.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +243,73 @@ def _meets_another_line(
         )
         for other in lines
     )
+
+
+def is_printed_row(
+    points: tuple[Point, ...],
+    page_width: float,
+    wobble: StrokeIntensity,
+) -> bool:
+    """Return whether a closed polygon is a printed form row spanning the page.
+
+    A work-order form's remarks row is one long ruled cell nearly as wide as
+    the sheet. All of these must hold, and none alone suffices: the polygon
+    fills its own oriented bounding box (a rectangle, whatever small corner
+    cut tracing left), the band is at least `_PRINTED_ROW_ASPECT` times as
+    long as it is deep and `_PRINTED_ROW_SPAN` of the page wide, and every
+    edge long enough to judge is as straight as print. A part drawn against
+    a ruler can be that straight, but it has chamfers or notches, or does not
+    run across the whole sheet.
+    """
+    if len(points) < _RECTANGLE_CORNERS:
+        return False
+    edges = tuple(
+        (points[index], points[(index + 1) % len(points)])
+        for index in range(len(points))
+    )
+    length, depth = _oriented_extent(points, max(edges, key=_edge_length))
+    xs = [point.x for point in points]
+    if (
+        depth <= 0.0
+        or _polygon_area(points) < _PRINTED_ROW_FILL * length * depth
+        or length < _PRINTED_ROW_ASPECT * depth
+        or max(xs) - min(xs) < _PRINTED_ROW_SPAN * page_width
+    ):
+        return False
+    judged = tuple(
+        edge for edge in edges if _edge_length(edge) >= _JUDGED_EDGE_RATIO * depth
+    )
+    return len(judged) >= _RECTANGLE_CORNERS and all(
+        wobble(start, end) <= _PRINTED_RULE_WOBBLE for start, end in judged
+    )
+
+
+def _edge_length(edge: tuple[Point, Point]) -> float:
+    """Return the length of one polygon edge."""
+    return edge[0].distance_to(edge[1])
+
+
+def _oriented_extent(
+    points: tuple[Point, ...],
+    axis: tuple[Point, Point],
+) -> tuple[float, float]:
+    """Return a polygon's extent along an edge's direction and across it."""
+    size = max(_edge_length(axis), 1e-9)
+    direction_x = (axis[1].x - axis[0].x) / size
+    direction_y = (axis[1].y - axis[0].y) / size
+    along = [point.x * direction_x + point.y * direction_y for point in points]
+    across = [point.y * direction_x - point.x * direction_y for point in points]
+    return max(along) - min(along), max(across) - min(across)
+
+
+def _polygon_area(points: tuple[Point, ...]) -> float:
+    """Return the area a closed polygon encloses (shoelace formula)."""
+    twice = sum(
+        points[index].x * points[(index + 1) % len(points)].y
+        - points[(index + 1) % len(points)].x * points[index].y
+        for index in range(len(points))
+    )
+    return abs(twice) / 2.0
 
 
 def without_ruling_remnants(

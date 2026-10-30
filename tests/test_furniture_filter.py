@@ -1,5 +1,6 @@
 from cadraw.furniture_filter import (
     RulingRails,
+    is_printed_row,
     without_printed_rules,
     without_ruling_remnants,
     without_table_edge_lines,
@@ -129,6 +130,52 @@ def test_a_straight_line_touching_a_closed_outline_is_kept() -> None:
 
     # Then meeting the outline makes it part of the drawing
     assert kept == (member,)
+
+
+def test_a_ruled_row_across_the_page_is_a_printed_row() -> None:
+    # Given a slightly skewed remarks row with a small corner cut from tracing
+    row = (
+        Point(47.0, 135.0),
+        Point(1028.0, 155.0),
+        Point(1030.0, 239.0),
+        Point(55.0, 225.0),
+        Point(47.0, 218.0),
+    )
+
+    assert is_printed_row(row, 1077.0, lambda _s, _e: 0.4)
+
+
+def test_a_ruler_drawn_part_is_not_a_printed_row() -> None:
+    # Given straight edges that do not make a page-wide band
+    notched = (
+        Point(100.0, 100.0),
+        Point(980.0, 100.0),
+        Point(980.0, 300.0),
+        Point(700.0, 300.0),
+        Point(700.0, 200.0),
+        Point(100.0, 200.0),
+    )
+    short = (
+        Point(300.0, 100.0),
+        Point(700.0, 100.0),
+        Point(700.0, 160.0),
+        Point(300.0, 160.0),
+    )
+
+    assert not is_printed_row(notched, 1077.0, lambda _s, _e: 0.3)
+    assert not is_printed_row(short, 1077.0, lambda _s, _e: 0.3)
+
+
+def test_a_hand_drawn_band_across_the_page_is_not_print() -> None:
+    # Given a page-wide band whose edges wander like a pen's
+    band = (
+        Point(40.0, 100.0),
+        Point(1030.0, 100.0),
+        Point(1030.0, 180.0),
+        Point(40.0, 180.0),
+    )
+
+    assert not is_printed_row(band, 1077.0, lambda _s, _e: 1.3)
 
 
 def test_a_straight_edge_with_a_branch_from_its_middle_is_kept() -> None:

@@ -32,6 +32,7 @@ from cadraw.duplicate_filter import (
 from cadraw.faces import FaceConfig, drawing_ink, stroke_width
 from cadraw.furniture_filter import (
     RulingRails,
+    is_printed_row,
     without_printed_rules,
     without_ruling_remnants,
     without_table_edge_lines,
@@ -1154,16 +1155,54 @@ def _lettering_free_shapes(
     if not context.detection.faces.enabled:
         return shapes, removal
     height, width = cast("tuple[int, int]", context.analysis_image.shape[:2])
+    rows = _printed_rows(shapes.candidates, context.analysis_image)
     return (
         replace(
             shapes,
             candidates=settle_shape_roles(
-                shapes.candidates,
+                tuple(
+                    candidate
+                    for candidate in shapes.candidates
+                    if all(candidate is not row for row in rows)
+                ),
                 min(width, height) * context.detection.faces.isolated_mark_ratio,
+            ),
+            # A printed row is a table cell proved by its own print, so the
+            # lines retracing its rules go with it, as a tiled table's do.
+            table_cell_bounds=(
+                *shapes.table_cell_bounds,
+                *(_bounds_of(row) for row in rows),
             ),
         ),
         removal,
     )
+
+
+def _printed_rows(
+    candidates: tuple[ShapeCandidate, ...],
+    analysis_image: GrayImage,
+) -> tuple[PolylineCandidate, ...]:
+    """Return the closed polygons that are printed form rows across the page."""
+    width = cast("tuple[int, int]", analysis_image.shape[:2])[1]
+    flattened = illumination_flattened(analysis_image)
+    return tuple(
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, PolylineCandidate)
+        and candidate.closed
+        and is_printed_row(
+            candidate.points,
+            width,
+            lambda start, end: stroke_wobble(flattened, start, end),
+        )
+    )
+
+
+def _bounds_of(candidate: PolylineCandidate) -> tuple[float, float, float, float]:
+    """Return a polygon's axis-aligned bounds as min x, min y, max x, max y."""
+    xs = [point.x for point in candidate.points]
+    ys = [point.y for point in candidate.points]
+    return min(xs), min(ys), max(xs), max(ys)
 
 
 def _closed_shapes(context: _ShapeContext) -> ShapeDetectionEvidence:

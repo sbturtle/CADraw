@@ -20,7 +20,7 @@ OCR 제안은 로컬 PP-OCR이 읽고 가까운 geometry 하나에 미리 연결
 | 샘플 | 선택 variant | 상태 | 추출 | OCR 제안 | 레퍼런스 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `blur_otsu` | `READY` | line 4 | 3 | LWPOLYLINE 1 |
-| 2 | `blur_otsu` | `READY` | circle 2, line 2, polyline 5 | 8 | LWPOLYLINE 3 |
+| 2 | `blur_otsu` | `READY` | circle 2, line 2, polyline 4 | 8 | LWPOLYLINE 3 |
 | 3 | `blur_otsu` | `READY` | circle 1, line 8, polyline 3 | 1 | LWPOLYLINE 10 |
 | 4 | `clahe_adaptive` | `READY` | circle 2, line 2, polyline 1 | 1 | ARC 2, CIRCLE 2, LINE 2, LWPOLYLINE 1 |
 | 5 | `shadow_removed_adaptive` | `READY` | circle 15, polyline 18 | 0 | ARC 24, CIRCLE 7, LINE 24, LWPOLYLINE 1 |
@@ -44,7 +44,7 @@ OCR 제안은 로컬 PP-OCR이 읽고 가까운 geometry 하나에 미리 연결
 
 - 선택 variant: `blur_otsu`
 - 상태: `READY`
-- 추출: circle 2, line 2, polyline 5
+- 추출: circle 2, line 2, polyline 4
 - OCR 제안: `160`, `475`, `30`, `601`, `30`, `25`, `65`, `21`
 - 레퍼런스: LWPOLYLINE 3
 - 경고: `PERSPECTIVE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `TEXT_STROKES_REMOVED`
