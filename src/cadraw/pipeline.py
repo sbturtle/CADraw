@@ -231,6 +231,9 @@ _POLYGON_EDGE_TOLERANCE = 12.0
 _FEATURE_PENETRATION_MARGIN = 3.0
 _PRINTED_RULE_LENGTH_RATIO = 0.15
 _INTERSTITIAL_STROKES = 3.0
+_ROW_FEATURE_DEPTH_RATIO = 0.25
+_MINIMUM_LETTERING_GLYPHS = 2
+_LEADING_GLYPH_SHARE = 0.3
 _POLYGON_EDGE_TOLERANCE_RATIO = 0.012
 _MIN_GRID_LIKE_SHAPES = 8
 _MIN_SHAPES_PER_LINE = 4
@@ -1230,6 +1233,15 @@ def _lettering_free_shapes(
         shapes.candidates,
         context.analysis_image,
         shapes.table_cell_bounds,
+        # A box read as two or more glyphs is a line of lettering, whatever
+        # the glyphs were read as; a drilled hole read alone as `0` is not.
+        ()
+        if context.ocr_result is None
+        else tuple(
+            candidate.bounds
+            for candidate in context.ocr_result.candidates
+            if len(candidate.text.strip()) >= _MINIMUM_LETTERING_GLYPHS
+        ),
     )
     return (
         replace(
@@ -1260,11 +1272,13 @@ def _printed_rows(
     candidates: tuple[ShapeCandidate, ...],
     analysis_image: GrayImage,
     proved_cells: tuple[tuple[float, float, float, float], ...],
+    labels: tuple[tuple[float, float, float, float], ...],
 ) -> tuple[PolylineCandidate, ...]:
     """Return the closed polygons that are printed form rows across the page.
 
-    A polygon with another shape inside it is a plate with its features and
-    is never a printed row.
+    A polygon holding a hole is a plate with its features and is never a
+    printed row. Only a loop proved to be lettering does not count: one far
+    smaller than the row is deep and centred in a box of text OCR found.
     """
     width = cast("tuple[int, int]", analysis_image.shape[:2])[1]
     flattened = illumination_flattened(analysis_image)
@@ -1277,6 +1291,7 @@ def _printed_rows(
         and not any(
             other.role is GeometryRole.HOLE
             and _bounds_inside(_shape_box(other), _bounds_of(candidate))
+            and not _lettering_loop(other, candidate, labels)
             for other in candidates
         )
         and is_printed_row(
@@ -1286,6 +1301,40 @@ def _printed_rows(
             proved_cells,
         )
     )
+
+
+def _lettering_loop(
+    hole: ShapeCandidate,
+    row: PolylineCandidate,
+    labels: tuple[tuple[float, float, float, float], ...],
+) -> bool:
+    """Return whether a hole in a printed row is a loop of its lettering.
+
+    It must be far smaller than the row is deep and centred inside a box of
+    text that OCR found, past the box's leading part: a hole labelled by a
+    size written after it, as in `o←Ø14`, is read as that box's first glyph.
+    `labels` are boxes as left, top, width, height.
+    """
+    box = _shape_box(hole)
+    if _box_extent(box) >= _ROW_FEATURE_DEPTH_RATIO * _box_depth(_bounds_of(row)):
+        return False
+    centre_x = (box[0] + box[2]) / 2.0
+    centre_y = (box[1] + box[3]) / 2.0
+    return any(
+        left + _LEADING_GLYPH_SHARE * width < centre_x <= left + width
+        and top <= centre_y <= top + height
+        for left, top, width, height in labels
+    )
+
+
+def _box_extent(box: tuple[float, float, float, float]) -> float:
+    """Return the larger side of a box."""
+    return max(box[2] - box[0], box[3] - box[1])
+
+
+def _box_depth(box: tuple[float, float, float, float]) -> float:
+    """Return the smaller side of a box."""
+    return min(box[2] - box[0], box[3] - box[1])
 
 
 def _shape_box(candidate: ShapeCandidate) -> tuple[float, float, float, float]:

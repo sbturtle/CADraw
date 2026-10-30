@@ -103,6 +103,7 @@ class FaceConfig:
     tiny_feature_ratio: float = 0.015
     tiny_circle_aspect_ratio: float = 0.5
     tiny_maximum_rectangularity: float = 0.93
+    tiny_circle_residual_ratio: float = 0.25
     maximum_vertices: int = 48
     sliver_aspect_ratio: float = 5.0
     sliver_width: float = 10.0
@@ -962,10 +963,11 @@ def _reads_as_circle(roundness: _Roundness, config: FaceConfig) -> bool:
     """
     if roundness.extent_ratio <= config.tiny_feature_ratio:
         # A small square cutout still fills its bounding box; a rough round
-        # hole leaves the box's corners empty.
+        # hole leaves the box's corners empty. At a radius of a few pixels the
+        # pixel staircase alone strays a fifth of the radius from any circle.
         return (
             roundness.aspect >= config.tiny_circle_aspect_ratio
-            and roundness.residual_ratio <= config.small_circle_residual_ratio
+            and roundness.residual_ratio <= config.tiny_circle_residual_ratio
             and roundness.rectangularity <= config.tiny_maximum_rectangularity
         )
     if (
