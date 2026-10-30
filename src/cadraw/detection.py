@@ -28,6 +28,7 @@ from cadraw.faces import (
 from cadraw.grid_filter import (
     filter_periodic_grid_candidates,
     inspect_periodic_grid_shapes,
+    without_ruled_lattices,
 )
 from cadraw.models import (
     ArcCandidate,
@@ -1709,16 +1710,28 @@ def settle_shape_roles(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _FaceEvidence:
+    """What shapes read from enclosed faces add to their evidence."""
+
+    ink: GrayImage
+    isolated_mark_extent: float
+
+
 def _shape_evidence(
     candidates: list[tuple[float, ShapeCandidate]],
     width: int,
     height: int,
     config: DetectionConfig,
-    isolated_mark_extent: float | None = None,
+    faces: _FaceEvidence | None = None,
 ) -> ShapeDetectionEvidence:
     """Prove paper structure away, then deduplicate, classify, and number.
 
-    With `isolated_mark_extent`, a closed mark smaller than that which lies
+    Shapes read from enclosed faces bring `faces`: the ink they were read
+    from, which tells cells tiling the paper side by side from separate
+    strokes, and the isolated-mark extent below.
+
+    With `faces`, a closed mark smaller than its isolated-mark extent that lies
     inside no other shape is dropped: a part is never that small on its sheet,
     while the loops of handwritten digits and syllables always are, and a
     small drilled hole is kept because it sits inside its part.
@@ -1749,7 +1762,21 @@ def _shape_evidence(
         for candidate in deduplicated
         if id(candidate) not in retained_ids
     )
-    classified = settle_shape_roles(table_evidence.candidates, isolated_mark_extent)
+    # Cells tiling the paper at an angle are dropped only after the table
+    # proof, which counts proved paper cells for the preprocessing choice.
+    unlatticed = (
+        table_evidence.candidates
+        if faces is None
+        else without_ruled_lattices(
+            table_evidence.candidates,
+            faces.ink,
+            config.arbitration.grid,
+        )[0]
+    )
+    classified = settle_shape_roles(
+        unlatticed,
+        None if faces is None else faces.isolated_mark_extent,
+    )
     limited = classified[: config.maximum_shape_candidates]
     return ShapeDetectionEvidence(
         candidates=tuple(
@@ -1869,7 +1896,10 @@ def detect_face_shapes_with_evidence(
         width,
         height,
         config,
-        isolated_mark_extent=minimum_side * settings.isolated_mark_ratio,
+        _FaceEvidence(
+            ink=features,
+            isolated_mark_extent=minimum_side * settings.isolated_mark_ratio,
+        ),
     )
 
 

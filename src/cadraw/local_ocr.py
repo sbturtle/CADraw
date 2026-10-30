@@ -13,11 +13,14 @@ fewer, because it pulls in the neighbouring strokes.
 """
 
 import importlib.util
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
+from hashlib import blake2b
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol, cast
+from weakref import WeakKeyDictionary
 
 import cv2
 import numpy as np
@@ -39,6 +42,7 @@ _GRAYSCALE_DIMENSIONS: Final = 2
 _MINIMUM_CROP_SIDE: Final = 2
 _LOCAL_OCR_MODULES: Final = ("rapidocr", "onnxruntime")
 _INFERENCE_THREADS: Final = 4
+_CACHED_READINGS: Final = 4
 _DETECT_ONLY: Final = {"use_det": True, "use_cls": False, "use_rec": False}
 
 
@@ -66,6 +70,14 @@ class _Engine(Protocol):
     def recognize_txt(self, img: list[NDArray[np.uint8]]) -> object:
         """Recognize a batch of single-line crops, in the order given."""
         ...
+
+
+_READINGS: WeakKeyDictionary[
+    "_Engine",
+    OrderedDict[
+        tuple[bytes, tuple[int, ...], "RapidOcrBackend"], tuple[TextCandidate, ...]
+    ],
+] = WeakKeyDictionary()
 
 
 @cache
@@ -152,8 +164,36 @@ class RapidOcrBackend:
     minimum_score: float = 0.5
 
     def recognize(self, image: GrayImage) -> tuple[TextCandidate, ...]:
-        """Return every readable text box in the image's own coordinates."""
+        """Return every readable text box in the image's own coordinates.
+
+        The workbench analyzes the same frame again when the reviewer picks
+        another preprocessing variant, and reading it is the slowest step.
+        The engine is deterministic, so the last few readings are kept per
+        engine by the frame's digest and this reader's settings.
+        """
         engine = _engine(self.model_directory)
+        readings = _READINGS.setdefault(engine, OrderedDict())
+        key = (
+            blake2b(np.ascontiguousarray(image).tobytes(), digest_size=16).digest(),
+            cast("tuple[int, ...]", image.shape),
+            self,
+        )
+        cached = readings.get(key)
+        if cached is not None:
+            readings.move_to_end(key)
+            return cached
+        result = self._recognize(engine, image)
+        readings[key] = result
+        if len(readings) > _CACHED_READINGS:
+            _ = readings.popitem(last=False)
+        return result
+
+    def _recognize(
+        self,
+        engine: _Engine,
+        image: GrayImage,
+    ) -> tuple[TextCandidate, ...]:
+        """Detect text boxes in one frame and read each padded crop."""
         color: NDArray[np.uint8] = np.asarray(
             cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
             if image.ndim == _GRAYSCALE_DIMENSIONS
