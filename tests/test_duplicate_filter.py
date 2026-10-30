@@ -217,3 +217,36 @@ def test_a_bend_line_inside_an_outline_is_kept() -> None:
 
     # Then it stays: only its two ends touch the outline
     assert without_polygon_edge_lines((bend,), outlines, 12.0) == (bend,)
+
+
+def test_a_short_member_joining_two_outlines_is_kept() -> None:
+    # Given two outlines one above the other, 40 px apart, and a line down
+    # their right sides that also spans the gap between them
+    upper = PolylineEntity(
+        entity_id=EntityId("upper"),
+        points=(
+            Point(100.0, 100.0),
+            Point(500.0, 100.0),
+            Point(500.0, 510.0),
+            Point(100.0, 510.0),
+        ),
+        closed=True,
+        confidence=0.9,
+    )
+    lower = PolylineEntity(
+        entity_id=EntityId("lower"),
+        points=(
+            Point(100.0, 550.0),
+            Point(500.0, 550.0),
+            Point(500.0, 1100.0),
+            Point(100.0, 1100.0),
+        ),
+        closed=True,
+        confidence=0.9,
+    )
+    side = _line(
+        "side", Point(500.0, 100.0), Point(500.0, 1100.0), Orientation.VERTICAL
+    )
+
+    # Then it stays: the stretch between the outlines is its own ink
+    assert without_polygon_edge_lines((side,), (upper, lower), 12.0) == (side,)

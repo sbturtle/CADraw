@@ -13,11 +13,12 @@ continues past the outline, keeps one of those three points away from the
 boundary and stays.
 """
 
+import math
+
 from cadraw.models import CircleEntity, LineEntity, Point, PolylineEntity
 
 _PENETRATION_STEP = 2.0
 _RADIAL_SHARE = 0.2
-_EDGE_SAMPLES = 21
 _MINIMUM_PENETRATION = 4.0
 
 
@@ -114,13 +115,20 @@ def _along_edges(
     polygons: tuple[PolylineEntity, ...],
     tolerance: float,
 ) -> bool:
-    """Return whether every point along a line lies near some polygon's edge."""
+    """Return whether the whole line runs near some polygon's edge.
+
+    A point's distance to the edges changes no faster than the point moves,
+    so points half a tolerance apart that are all within the tolerance
+    leave nothing between them farther than a quarter more; a stretch the
+    edges leave uncovered, such as a short member joining two outlines,
+    cannot slip between the points.
+    """
     near = tuple(
         polygon for polygon in polygons if _boxes_meet(line, polygon, tolerance)
     )
     if not near:
         return False
-    steps = _EDGE_SAMPLES - 1
+    steps = max(1, math.ceil(line.length / (tolerance / 2.0)))
     return all(
         any(
             _boundary_distance(
@@ -133,7 +141,7 @@ def _along_edges(
             <= tolerance
             for polygon in near
         )
-        for index in range(_EDGE_SAMPLES)
+        for index in range(steps + 1)
     )
 
 
