@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 
@@ -7,6 +8,7 @@ from cadraw.preprocessing import (
     PreprocessingConfig,
     PreprocessingVariant,
     ScoreContext,
+    backdrop_mask,
     preprocess_variants,
     score_candidates,
     write_debug_outputs,
@@ -128,3 +130,29 @@ def test_the_paper_penalty_saturates_instead_of_running_away() -> None:
     # Given two variants that both manufactured hundreds of cells
     # Then the penalty stops growing, so other evidence still decides
     assert _scored(900) == _scored(5000)
+
+
+def test_the_desk_beside_a_photographed_sheet_is_backdrop() -> None:
+    # Given a sheet photographed on a dark desk, half of it in shadow
+    image = np.full((800, 600), 40, dtype=np.uint8)
+    image[:, 150:] = 220
+    image[:, 150:350] = 140
+    image[400:404, 200:550] = 30
+
+    mask = backdrop_mask(image)
+
+    # Then only the desk is backdrop; shadowed paper and ink are not
+    assert mask is not None
+    flags = cast("list[list[bool]]", mask.tolist())
+    assert flags[400][50]
+    assert not flags[400][250]
+    assert not flags[402][450]
+
+
+def test_a_scan_shows_no_backdrop() -> None:
+    # Given a full sheet of paper with a drawn rectangle
+    image = np.full((800, 600), 245, dtype=np.uint8)
+    image[200:204, 100:500] = 30
+    image[200:600, 100:104] = 30
+
+    assert backdrop_mask(image) is None
