@@ -28,6 +28,7 @@ from cadraw.faces import (
 from cadraw.grid_filter import (
     filter_periodic_grid_candidates,
     inspect_periodic_grid_shapes,
+    without_ruled_lattices,
 )
 from cadraw.models import (
     ArcCandidate,
@@ -1730,7 +1731,10 @@ def _shape_evidence(
         for candidate in deduplicated
         if id(candidate) not in retained_ids
     )
-    classified = settle_shape_roles(table_evidence.candidates, isolated_mark_extent)
+    # Cells tiling the paper at an angle are dropped only after the table
+    # proof, which counts proved paper cells for the preprocessing choice.
+    unlatticed, _ = without_ruled_lattices(table_evidence.candidates, width, height)
+    classified = settle_shape_roles(unlatticed, isolated_mark_extent)
     limited = classified[: config.maximum_shape_candidates]
     return ShapeDetectionEvidence(
         candidates=tuple(

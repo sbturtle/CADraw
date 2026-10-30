@@ -14,6 +14,10 @@ from cadraw.models import LineCandidate, PolylineCandidate, ShapeCandidate
 _SHAPE_SQUARE_RATIO = 0.65
 _SHAPE_CELL_EXTENT_RATIO = 0.08
 _SHAPE_SIZE_TOLERANCE_RATIO = 0.30
+_QUADRILATERAL_POINTS = 4
+_LATTICE_MINIMUM_CELLS = 4
+_LATTICE_CELL_EXTENT_RATIO = 0.06
+_LATTICE_EDGE_TOLERANCE_RATIO = 0.012
 
 type GrayImage = NDArray[np.uint8]
 
@@ -431,4 +435,101 @@ def inspect_periodic_grid_shapes(
         grid_detected=bool(grid_members),
         removed_count=len(grid_members),
         grid_like_count=grid_like_count,
+    )
+
+
+def _shares_edge(
+    first: PolylineCandidate,
+    second: PolylineCandidate,
+    tolerance: float,
+) -> bool:
+    """Return whether two polygons have a side whose two ends coincide."""
+    first_points = first.points
+    second_points = second.points
+    for index, start in enumerate(first_points):
+        end = first_points[(index + 1) % len(first_points)]
+        for other_index, other_start in enumerate(second_points):
+            other_end = second_points[(other_index + 1) % len(second_points)]
+            if (
+                start.distance_to(other_start) <= tolerance
+                and end.distance_to(other_end) <= tolerance
+            ) or (
+                start.distance_to(other_end) <= tolerance
+                and end.distance_to(other_start) <= tolerance
+            ):
+                return True
+    return False
+
+
+def _cell_components(
+    cells: tuple[PolylineCandidate, ...],
+    tolerance: float,
+) -> list[list[int]]:
+    """Group cells into components joined by shared sides."""
+    bounds = [_shape_bounds(cell) for cell in cells]
+    neighbours: list[list[int]] = [[] for _ in cells]
+    for first, (left, top, right, bottom) in enumerate(bounds):
+        for second in range(first + 1, len(cells)):
+            other = bounds[second]
+            if (
+                other[0] <= right + tolerance
+                and left <= other[2] + tolerance
+                and other[1] <= bottom + tolerance
+                and top <= other[3] + tolerance
+                and _shares_edge(cells[first], cells[second], tolerance)
+            ):
+                neighbours[first].append(second)
+                neighbours[second].append(first)
+    components: list[list[int]] = []
+    seen: set[int] = set()
+    for start in range(len(cells)):
+        if start in seen or not neighbours[start]:
+            continue
+        stack = [start]
+        component: list[int] = []
+        while stack:
+            index = stack.pop()
+            if index in seen:
+                continue
+            seen.add(index)
+            component.append(index)
+            stack.extend(neighbours[index])
+        components.append(component)
+    return components
+
+
+def without_ruled_lattices(
+    candidates: tuple[ShapeCandidate, ...],
+    width: int,
+    height: int,
+) -> tuple[tuple[ShapeCandidate, ...], int]:
+    """Drop small four-sided cells that tile the paper side by side.
+
+    Graph paper photographed at an angle is no longer a grid of equal axis
+    squares, so the periodic proof above misses it, but its cells still
+    share their sides with one another. A drawn part is never a lattice of
+    four or more cells each only a few percent of the sheet across: the
+    smallest drawn features, a slot or a tab, stand alone. Returns the kept
+    candidates and how many cells were dropped.
+    """
+    side = min(width, height)
+    tolerance = _LATTICE_EDGE_TOLERANCE_RATIO * side
+    largest = _LATTICE_CELL_EXTENT_RATIO * side
+    cells = tuple(
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, PolylineCandidate)
+        and candidate.closed
+        and len(candidate.points) == _QUADRILATERAL_POINTS
+        and max(_shape_size(candidate)) <= largest
+    )
+    removed = {
+        id(cells[index])
+        for component in _cell_components(cells, tolerance)
+        if len(component) >= _LATTICE_MINIMUM_CELLS
+        for index in component
+    }
+    return (
+        tuple(candidate for candidate in candidates if id(candidate) not in removed),
+        len(removed),
     )
