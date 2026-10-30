@@ -157,3 +157,28 @@ def test_real_models_read_a_handwritten_sample_label() -> None:
 
     # Then the drawing's two clearest dimensions are among the readings
     assert {"100", "1050"} <= texts
+
+
+def test_reading_the_same_frame_again_reuses_the_first_reading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given an engine whose reads are counted
+    engine = _FakeEngine(("150", "60"), (0.93, 0.91))
+
+    def fake_engine(_directory: Path | None) -> _FakeEngine:
+        return engine
+
+    monkeypatch.setattr(local_ocr, "_engine", fake_engine)
+    image = np.full((80, 160), 255, dtype=np.uint8)
+    backend = RapidOcrBackend()
+
+    # When the same frame is read twice, and then a changed frame
+    first = backend.recognize(image)
+    second = backend.recognize(image.copy())
+    changed = image.copy()
+    changed[0, 0] = 0
+    _ = backend.recognize(changed)
+
+    # Then the engine read the first frame once and the changed frame anew
+    assert second == first
+    assert len(engine.batches) == 2
