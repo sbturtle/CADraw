@@ -31,6 +31,14 @@ type StrokeIntensity = Callable[[Point, Point], float]
 
 _MIN_EDGE_OVERLAP_RATIO = 0.50
 _PRINTED_RULE_WOBBLE = 0.6
+_PRINTED_RULE_SKEW = 3.0
+_RECTANGLE_CORNERS = 4
+_PRINTED_ROW_FILL = 0.95
+_PRINTED_ROW_ASPECT = 4.0
+_PRINTED_ROW_SPAN = 0.8
+_JUDGED_EDGE_RATIO = 0.25
+_ATTACHED_CELLS = 2
+_ATTACHED_CELL_SLACK = 4.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,23 +195,31 @@ def without_printed_rules(
     minimum_length: float,
     wobble: StrokeIntensity,
 ) -> tuple[LineEntity, ...]:
-    """Drop long, isolated lines whose ink is as straight as print.
+    """Drop long, lone lines whose ink is as straight as print.
 
     A form's header and footer rules can sit anywhere on the sheet, so the
     page-edge test misses most of them. What gives them away is their
     straightness: a printed rule stays within a fraction of a pixel of one
     line along its whole length, while a hand-drawn stroke of that length
-    wanders by a pixel or more even when drawn against a ruler. A line joined
-    to the rest of the drawing stays, however straight: a printed rule meets
-    no drawn stroke at its ends, neither another line, a closed outline, nor
-    an arc such as a rounded corner.
+    wanders by a pixel or more even when drawn against a ruler.
+
+    Only a lone line goes: one at least `minimum_length` long, running along
+    the page's axes, that touches no other line, end to end or at a T, and no
+    closed outline or arc. Straightness and length cannot tell a form's ruled
+    T from a corner or a T of a part drawn against a ruler, so lines that
+    touch each other stay; rules retracing a proved table's cells are already
+    removed by `without_table_edge_lines`.
     """
     return tuple(
         line
         for line in lines
         if not (
             line.length >= minimum_length
-            and _is_isolated(line, lines, snap_distance)
+            and _axis_aligned(line)
+            and not any(
+                other is not line and _lines_touch(line, other, snap_distance)
+                for other in lines
+            )
             and not any(
                 _touches_shape(point, shapes, snap_distance)
                 for point in (line.start, line.end)
@@ -211,6 +227,143 @@ def without_printed_rules(
             and wobble(line.start, line.end) <= _PRINTED_RULE_WOBBLE
         )
     )
+
+
+def _axis_aligned(line: LineEntity) -> bool:
+    """Return whether a line runs along the page's axes, as printed rules do."""
+    angle = math.degrees(
+        math.atan2(line.end.y - line.start.y, line.end.x - line.start.x)
+    )
+    deviation = abs(angle) % 90.0
+    return min(deviation, 90.0 - deviation) <= _PRINTED_RULE_SKEW
+
+
+def _lines_touch(first: LineEntity, second: LineEntity, snap_distance: float) -> bool:
+    """Return whether either line's end lies on the other line."""
+    return any(
+        _segment_distance(point, first.start, first.end) <= snap_distance
+        for point in (second.start, second.end)
+    ) or any(
+        _segment_distance(point, second.start, second.end) <= snap_distance
+        for point in (first.start, first.end)
+    )
+
+
+def is_printed_row(
+    points: tuple[Point, ...],
+    page_width: float,
+    wobble: StrokeIntensity,
+    proved_cells: tuple[Bounds, ...],
+) -> bool:
+    """Return whether a closed polygon is a printed form row spanning the page.
+
+    A work-order form's remarks row is one long ruled cell nearly as wide as
+    the sheet, ruled directly under the header table. All of these must hold,
+    and none alone suffices: the polygon fills its own oriented bounding box
+    (a rectangle, whatever small corner cut tracing left), the band is at
+    least `_PRINTED_ROW_ASPECT` times as long as it is deep and
+    `_PRINTED_ROW_SPAN` of the page wide, every edge long enough to judge is
+    as straight as print, and at least `_ATTACHED_CELLS` cells of a table
+    already proved by tiling sit against it. A long bar drawn against a ruler
+    can be as straight and as wide, but no proved table is ruled onto it.
+    """
+    if len(points) < _RECTANGLE_CORNERS or not _attached_to_table(
+        points,
+        proved_cells,
+    ):
+        return False
+    edges = tuple(
+        (points[index], points[(index + 1) % len(points)])
+        for index in range(len(points))
+    )
+    length, depth = _oriented_extent(points, max(edges, key=_edge_length))
+    xs = [point.x for point in points]
+    if (
+        depth <= 0.0
+        or _polygon_area(points) < _PRINTED_ROW_FILL * length * depth
+        or length < _PRINTED_ROW_ASPECT * depth
+        or max(xs) - min(xs) < _PRINTED_ROW_SPAN * page_width
+    ):
+        return False
+    judged = tuple(
+        edge for edge in edges if _edge_length(edge) >= _JUDGED_EDGE_RATIO * depth
+    )
+    return len(judged) >= _RECTANGLE_CORNERS and all(
+        wobble(start, end) <= _PRINTED_RULE_WOBBLE for start, end in judged
+    )
+
+
+def _attached_to_table(
+    points: tuple[Point, ...],
+    proved_cells: tuple[Bounds, ...],
+) -> bool:
+    """Return whether enough proved table cells sit against a polygon.
+
+    A cell counts when its box overlaps the polygon's box, grown by a few
+    pixels, while its centre lies outside the polygon: it is ruled onto the
+    row from beside it, not drawn inside it.
+    """
+    xs = [point.x for point in points]
+    ys = [point.y for point in points]
+    low_x = min(xs) - _ATTACHED_CELL_SLACK
+    high_x = max(xs) + _ATTACHED_CELL_SLACK
+    low_y = min(ys) - _ATTACHED_CELL_SLACK
+    high_y = max(ys) + _ATTACHED_CELL_SLACK
+    attached = sum(
+        1
+        for cell_low_x, cell_low_y, cell_high_x, cell_high_y in proved_cells
+        if cell_low_x <= high_x
+        and cell_high_x >= low_x
+        and cell_low_y <= high_y
+        and cell_high_y >= low_y
+        and not _inside_polygon(
+            Point((cell_low_x + cell_high_x) / 2.0, (cell_low_y + cell_high_y) / 2.0),
+            points,
+        )
+    )
+    return attached >= _ATTACHED_CELLS
+
+
+def _inside_polygon(point: Point, points: tuple[Point, ...]) -> bool:
+    """Return whether a point lies inside a polygon (even-odd rule)."""
+    inside = False
+    for index, first in enumerate(points):
+        second = points[(index + 1) % len(points)]
+        if (first.y > point.y) != (second.y > point.y):
+            crossing = first.x + (point.y - first.y) * (second.x - first.x) / (
+                second.y - first.y
+            )
+            if point.x < crossing:
+                inside = not inside
+    return inside
+
+
+def _edge_length(edge: tuple[Point, Point]) -> float:
+    """Return the length of one polygon edge."""
+    return edge[0].distance_to(edge[1])
+
+
+def _oriented_extent(
+    points: tuple[Point, ...],
+    axis: tuple[Point, Point],
+) -> tuple[float, float]:
+    """Return a polygon's extent along an edge's direction and across it."""
+    size = max(_edge_length(axis), 1e-9)
+    direction_x = (axis[1].x - axis[0].x) / size
+    direction_y = (axis[1].y - axis[0].y) / size
+    along = [point.x * direction_x + point.y * direction_y for point in points]
+    across = [point.y * direction_x - point.x * direction_y for point in points]
+    return max(along) - min(along), max(across) - min(across)
+
+
+def _polygon_area(points: tuple[Point, ...]) -> float:
+    """Return the area a closed polygon encloses (shoelace formula)."""
+    twice = sum(
+        points[index].x * points[(index + 1) % len(points)].y
+        - points[(index + 1) % len(points)].x * points[index].y
+        for index in range(len(points))
+    )
+    return abs(twice) / 2.0
 
 
 def without_ruling_remnants(

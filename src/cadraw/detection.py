@@ -1756,7 +1756,7 @@ def detect_face_shapes_with_evidence(
     image: GrayImage,
     config: DetectionConfig,
     bridge_reach: float = 0.0,
-    labels: tuple[tuple[float, float, float, float], ...] = (),
+    labels: tuple[tuple[float, float, float, float], ...] | None = None,
     arcs: tuple[ArcCandidate, ...] = (),
 ) -> ShapeDetectionEvidence:
     """Detect closed shapes from the paper regions the strokes enclose.
@@ -1767,6 +1767,8 @@ def detect_face_shapes_with_evidence(
     `bridge_reach` is the least gap a stroke end may be bridged across; the
     sheet's own size usually asks for more. `labels` are the boxes of text
     read on the sheet, which keep a dimension line's gap from being bridged.
+    Without a reading (`None`) nothing can tell such a gap from a faded
+    stroke, so the long facing bridge is not used at all.
     An open curve encloses no face, so `arcs` found by the contour path are
     carried along and deduplicated with the faces' circles.
     """
@@ -1790,7 +1792,9 @@ def detect_face_shapes_with_evidence(
         ends,
         reach,
         settings.bridge_thickness,
-        FacingReach(
+        None
+        if labels is None
+        else FacingReach(
             reach=max(reach, minimum_side * settings.facing_reach_ratio),
             labels=labels,
         ),

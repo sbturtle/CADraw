@@ -36,6 +36,7 @@ from numpy.typing import NDArray
 from cadraw.models import (
     CircleCandidate,
     EntityId,
+    GeometryRole,
     Point,
     PolylineCandidate,
     ShapeCandidate,
@@ -60,6 +61,9 @@ _FACING_COSINE = 0.87
 _SQUARE_FACING_COSINE = 0.95
 _LABEL_GAP_START = 0.2
 _RING_RAYS = 24
+_MINIMUM_OUTLINE_SAMPLES = 12
+_INTERSTITIAL_SHARE = 0.75
+_SAME_FEATURE_AREA_RATIO = 2.0
 _RING_SEARCH_MARGIN = 6.0
 _RING_SEARCH_START = 0.8
 _MAD_TO_SIGMA = 1.4826
@@ -1092,3 +1096,139 @@ def face_shape(
         closed=True,
         confidence=min(0.95, max(0.5, rectangularity)),
     )
+
+
+def _outline_samples(
+    candidate: CircleCandidate | PolylineCandidate,
+) -> NDArray[np.float64]:
+    """Return points every couple of pixels along a closed shape's outline."""
+    if isinstance(candidate, CircleCandidate):
+        count = max(
+            _MINIMUM_OUTLINE_SAMPLES, round(2.0 * math.pi * candidate.radius / 2.0)
+        )
+        angles = np.linspace(0.0, 2.0 * math.pi, count, endpoint=False)
+        return np.column_stack(
+            (
+                candidate.center.x + candidate.radius * np.cos(angles),
+                candidate.center.y + candidate.radius * np.sin(angles),
+            ),
+        )
+    corners = candidate.points
+    samples: list[tuple[float, float]] = []
+    for index, start in enumerate(corners):
+        end = corners[(index + 1) % len(corners)]
+        steps = max(1, round(start.distance_to(end) / 2.0))
+        samples.extend(
+            (
+                start.x + (end.x - start.x) * step / steps,
+                start.y + (end.y - start.y) * step / steps,
+            )
+            for step in range(steps)
+        )
+    return np.asarray(samples, dtype=np.float64)
+
+
+def _distance_to_outline(
+    points: NDArray[np.float64],
+    candidate: CircleCandidate | PolylineCandidate,
+) -> NDArray[np.float64]:
+    """Return each point's distance to a closed shape's outline."""
+    if isinstance(candidate, CircleCandidate):
+        offsets = points - np.asarray([candidate.center.x, candidate.center.y])
+        return np.abs(np.hypot(offsets[:, 0], offsets[:, 1]) - candidate.radius)
+    corners = np.asarray([[point.x, point.y] for point in candidate.points])
+    starts = corners
+    ends = np.roll(corners, -1, axis=0)
+    edges = ends - starts
+    lengths = np.maximum(np.sum(edges * edges, axis=1), 1e-12)
+    relative = points[:, None, :] - starts[None, :, :]
+    along = np.clip(np.sum(relative * edges[None, :, :], axis=2) / lengths, 0.0, 1.0)
+    nearest = starts[None, :, :] + along[:, :, None] * edges[None, :, :]
+    gaps = points[:, None, :] - nearest
+    distances: NDArray[np.float64] = np.min(
+        np.hypot(gaps[:, :, 0], gaps[:, :, 1]), axis=1
+    )
+    return distances
+
+
+def _shape_area(candidate: CircleCandidate | PolylineCandidate) -> float:
+    """Return the area a closed shape encloses."""
+    if isinstance(candidate, CircleCandidate):
+        return math.pi * candidate.radius * candidate.radius
+    points = candidate.points
+    twice = sum(
+        points[index].x * points[(index + 1) % len(points)].y
+        - points[(index + 1) % len(points)].x * points[index].y
+        for index in range(len(points))
+    )
+    return abs(twice) / 2.0
+
+
+def _shape_centre(candidate: CircleCandidate | PolylineCandidate) -> Point:
+    """Return a closed shape's centre: a circle's, or a polygon's mean corner."""
+    if isinstance(candidate, CircleCandidate):
+        return candidate.center
+    count = len(candidate.points)
+    return Point(
+        sum(point.x for point in candidate.points) / count,
+        sum(point.y for point in candidate.points) / count,
+    )
+
+
+def _encloses_point(
+    candidate: CircleCandidate | PolylineCandidate, point: Point
+) -> bool:
+    """Return whether a point lies inside a closed shape."""
+    if isinstance(candidate, CircleCandidate):
+        return point.distance_to(candidate.center) < candidate.radius
+    contour = np.asarray(
+        [[corner.x, corner.y] for corner in candidate.points],
+        dtype=np.float32,
+    ).reshape(-1, 1, 2)
+    return cv2.pointPolygonTest(contour, (point.x, point.y), measureDist=False) > 0.0
+
+
+def without_interstitial_holes(
+    candidates: tuple[ShapeCandidate, ...],
+    near: float,
+) -> tuple[ShapeCandidate, ...]:
+    """Drop hole faces walled in almost entirely by larger holes' outlines.
+
+    Where slots radiate from a ring with a size written inside it, the
+    strokes of the slots, the ring, and the lettering wall off small pockets
+    of paper. Each pocket is a face, and inside the part it reads as a hole,
+    but its outline is made of other features' walls: most of it runs within
+    `near` of a larger hole's outline. A drilled hole or slot stands in the
+    part's own paper, so little of its outline runs along another hole's.
+    """
+    holes = tuple(
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, (CircleCandidate, PolylineCandidate))
+        and candidate.role is GeometryRole.HOLE
+        and (not isinstance(candidate, PolylineCandidate) or candidate.closed)
+    )
+    areas = {id(hole): _shape_area(hole) for hole in holes}
+    walled: set[int] = set()
+    for hole in holes:
+        # A slightly larger reading of the same feature encloses it, and its
+        # outline runs right along this one's; that is no wall.
+        larger = tuple(
+            other
+            for other in holes
+            if areas[id(other)] > areas[id(hole)]
+            and not (
+                areas[id(other)] <= _SAME_FEATURE_AREA_RATIO * areas[id(hole)]
+                and _encloses_point(other, _shape_centre(hole))
+            )
+        )
+        if not larger:
+            continue
+        samples = _outline_samples(hole)
+        nearest = np.min(
+            np.vstack([_distance_to_outline(samples, other) for other in larger]),
+            axis=0,
+        )
+        if float(np.mean(nearest <= near)) >= _INTERSTITIAL_SHARE:
+            walled.add(id(hole))
+    return tuple(candidate for candidate in candidates if id(candidate) not in walled)

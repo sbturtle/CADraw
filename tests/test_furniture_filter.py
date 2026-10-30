@@ -1,5 +1,6 @@
 from cadraw.furniture_filter import (
     RulingRails,
+    is_printed_row,
     without_printed_rules,
     without_ruling_remnants,
     without_table_edge_lines,
@@ -12,6 +13,8 @@ from cadraw.models import (
     Point,
     PolylineEntity,
 )
+
+_LENGTHS = 150.0
 
 
 def _line(name: str, start: Point, end: Point, orientation: Orientation) -> LineEntity:
@@ -125,10 +128,112 @@ def test_a_straight_line_touching_a_closed_outline_is_kept() -> None:
         "member", Point(400.0, 200.0), Point(800.0, 200.0), Orientation.HORIZONTAL
     )
 
-    kept = without_printed_rules((member,), (plate,), 10.0, 150.0, lambda _s, _e: 0.2)
+    kept = without_printed_rules(
+        (member,), (plate,), 10.0, _LENGTHS, lambda _s, _e: 0.2
+    )
 
     # Then meeting the outline makes it part of the drawing
     assert kept == (member,)
+
+
+_HEADER_CELLS = (
+    (48.0, 103.0, 162.0, 136.0),
+    (162.0, 106.0, 410.0, 142.0),
+    (517.0, 114.0, 727.0, 152.0),
+)
+_REMARKS_ROW = (
+    Point(47.0, 135.0),
+    Point(1028.0, 155.0),
+    Point(1030.0, 239.0),
+    Point(55.0, 225.0),
+    Point(47.0, 218.0),
+)
+
+
+def test_a_ruled_row_under_a_proved_table_is_a_printed_row() -> None:
+    # Given a slightly skewed remarks row ruled under proved header cells
+    assert is_printed_row(_REMARKS_ROW, 1077.0, lambda _s, _e: 0.4, _HEADER_CELLS)
+
+
+def test_a_page_wide_ruled_bar_without_a_table_is_kept() -> None:
+    # Given the same straight, page-wide band with no proved table against it
+    assert not is_printed_row(_REMARKS_ROW, 1077.0, lambda _s, _e: 0.4, ())
+
+
+def test_a_ruler_drawn_part_is_not_a_printed_row() -> None:
+    # Given straight edges that do not make a page-wide band
+    notched = (
+        Point(100.0, 100.0),
+        Point(980.0, 100.0),
+        Point(980.0, 300.0),
+        Point(700.0, 300.0),
+        Point(700.0, 200.0),
+        Point(100.0, 200.0),
+    )
+    short = (
+        Point(300.0, 100.0),
+        Point(700.0, 100.0),
+        Point(700.0, 160.0),
+        Point(300.0, 160.0),
+    )
+
+    assert not is_printed_row(notched, 1077.0, lambda _s, _e: 0.3, _HEADER_CELLS)
+    assert not is_printed_row(short, 1077.0, lambda _s, _e: 0.3, _HEADER_CELLS)
+
+
+def test_a_hand_drawn_band_across_the_page_is_not_print() -> None:
+    # Given a page-wide band whose edges wander like a pen's
+    assert not is_printed_row(_REMARKS_ROW, 1077.0, lambda _s, _e: 1.3, _HEADER_CELLS)
+
+
+def test_a_straight_edge_with_a_hand_drawn_branch_is_kept() -> None:
+    # Given a ruler-straight edge and a pen-drawn branch from its middle
+    edge = _line(
+        "edge", Point(100.0, 300.0), Point(800.0, 300.0), Orientation.HORIZONTAL
+    )
+    branch = _line(
+        "branch", Point(450.0, 300.0), Point(450.0, 380.0), Orientation.VERTICAL
+    )
+
+    kept = without_printed_rules(
+        (edge, branch),
+        (),
+        10.0,
+        _LENGTHS,
+        lambda start, _e: 1.4 if start == branch.start else 0.2,
+    )
+
+    # Then the hand-drawn branch makes the edge part of the drawing
+    assert kept == (edge, branch)
+
+
+def _printed_t() -> tuple[LineEntity, LineEntity]:
+    """Return a long straight rule and a straight divider ruled onto it."""
+    return (
+        _line("rule", Point(40.0, 300.0), Point(1000.0, 300.0), Orientation.HORIZONTAL),
+        _line(
+            "divider", Point(450.0, 260.0), Point(450.0, 300.0), Orientation.VERTICAL
+        ),
+    )
+
+
+def test_straight_lines_that_touch_each_other_are_kept() -> None:
+    # Given a straight T of rules, and a ruler-drawn L wider than half the page
+    long_top = _line(
+        "long_top", Point(40.0, 700.0), Point(900.0, 700.0), Orientation.HORIZONTAL
+    )
+    long_side = _line(
+        "long_side", Point(900.0, 700.0), Point(900.0, 950.0), Orientation.VERTICAL
+    )
+
+    t_kept = without_printed_rules(_printed_t(), (), 10.0, _LENGTHS, lambda _s, _e: 0.2)
+    l_kept = without_printed_rules(
+        (long_top, long_side), (), 10.0, _LENGTHS, lambda _s, _e: 0.2
+    )
+
+    # Then lines that meet one another are never taken for print
+    assert t_kept == _printed_t()
+    assert l_kept == (long_top, long_side)
 
 
 def test_straight_lines_meeting_a_rounded_corner_are_kept() -> None:
@@ -145,7 +250,7 @@ def test_straight_lines_meeting_a_rounded_corner_are_kept() -> None:
     side = _line("side", Point(450.0, 300.0), Point(450.0, 600.0), Orientation.VERTICAL)
 
     kept = without_printed_rules(
-        (top, side), (corner,), 10.0, 150.0, lambda _s, _e: 0.2
+        (top, side), (corner,), 10.0, _LENGTHS, lambda _s, _e: 0.2
     )
 
     # Then the arc joins both to the drawing
@@ -158,7 +263,7 @@ def test_a_long_isolated_line_as_straight_as_print_is_a_form_rule() -> None:
         "rule", Point(10.0, 373.0), Point(870.0, 373.0), Orientation.HORIZONTAL
     )
 
-    kept = without_printed_rules((rule,), (), 10.0, 150.0, lambda _s, _e: 0.25)
+    kept = without_printed_rules((rule,), (), 10.0, _LENGTHS, lambda _s, _e: 0.25)
 
     assert kept == ()
 
@@ -169,22 +274,44 @@ def test_a_hand_drawn_line_of_the_same_length_is_kept() -> None:
         "stroke", Point(10.0, 373.0), Point(870.0, 373.0), Orientation.HORIZONTAL
     )
 
-    kept = without_printed_rules((stroke,), (), 10.0, 150.0, lambda _s, _e: 1.4)
+    kept = without_printed_rules((stroke,), (), 10.0, _LENGTHS, lambda _s, _e: 1.4)
 
     assert kept == (stroke,)
 
 
-def test_a_straight_line_joined_to_the_drawing_or_short_is_kept() -> None:
-    # Given a ruler-straight edge meeting another member, and a short tick
+def test_straight_lines_joined_to_drawn_or_slanted_ones_and_short_ones_stay() -> None:
+    # Given a straight edge meeting a pen-drawn side, a straight edge meeting a
+    # ruler-drawn chamfer, and a short isolated tick
     edge = _line(
         "edge", Point(100.0, 300.0), Point(700.0, 300.0), Orientation.HORIZONTAL
     )
     side = _line("side", Point(700.0, 300.0), Point(700.0, 600.0), Orientation.VERTICAL)
+    base = _line(
+        "base", Point(100.0, 800.0), Point(600.0, 800.0), Orientation.HORIZONTAL
+    )
+    chamfer = _line(
+        "chamfer", Point(600.0, 800.0), Point(700.0, 700.0), Orientation.DIAGONAL
+    )
     tick = _line("tick", Point(900.0, 50.0), Point(980.0, 50.0), Orientation.HORIZONTAL)
 
     kept = without_printed_rules(
-        (edge, side, tick), (), 10.0, 150.0, lambda _s, _e: 0.2
+        (edge, side, base, chamfer, tick),
+        (),
+        10.0,
+        _LENGTHS,
+        lambda start, _e: 1.4 if start == side.start else 0.2,
     )
 
-    # Then neither is taken for print
-    assert kept == (edge, side, tick)
+    # Then none of them is taken for print
+    assert kept == (edge, side, base, chamfer, tick)
+
+
+def test_a_ruler_drawn_open_corner_is_kept() -> None:
+    # Given an open right angle drawn against a ruler, shorter than the form
+    top = _line("top", Point(200.0, 300.0), Point(600.0, 300.0), Orientation.HORIZONTAL)
+    side = _line("side", Point(600.0, 300.0), Point(600.0, 600.0), Orientation.VERTICAL)
+
+    kept = without_printed_rules((top, side), (), 10.0, _LENGTHS, lambda _s, _e: 0.2)
+
+    # Then the corner is part of the drawing, however straight
+    assert kept == (top, side)
