@@ -188,28 +188,14 @@ def _touches_shape(
     return False
 
 
-@dataclass(frozen=True, slots=True)
-class RuleEvidence:
-    """What proves straight lines to be print, alone or among others.
-
-    `single` is the least length of a lone rule. Touching rules, such as a
-    form's ruled T, go only when they touch one of the `proved_cells` of a
-    table already proved by tiling: straightness and length alone cannot tell
-    them from a corner or a T of a part drawn against a ruler.
-    """
-
-    single: float
-    proved_cells: tuple[Bounds, ...] = ()
-
-
 def without_printed_rules(
     lines: tuple[LineEntity, ...],
     shapes: tuple[PolylineEntity | CircleEntity | ArcEntity, ...],
     snap_distance: float,
-    evidence: RuleEvidence,
+    minimum_length: float,
     wobble: StrokeIntensity,
 ) -> tuple[LineEntity, ...]:
-    """Drop groups of touching lines that are all as straight as print.
+    """Drop long, lone lines whose ink is as straight as print.
 
     A form's header and footer rules can sit anywhere on the sheet, so the
     page-edge test misses most of them. What gives them away is their
@@ -217,51 +203,29 @@ def without_printed_rules(
     line along its whole length, while a hand-drawn stroke of that length
     wanders by a pixel or more even when drawn against a ruler.
 
-    Lines are judged in groups that touch anywhere, end to end or at a T, so
-    a form's ruled T goes as one piece. A group goes only when every line in
-    it is as straight as print and runs along the page's axes, none of them
-    meets a closed outline or an arc, and it is proved print: a lone line at
-    least `evidence.single` long, or a group touching a proved table cell.
-    One wavering stroke or one slanted edge makes the group part of the
-    drawing, and so does any group of straight lines away from a proved
-    table, such as a corner of a part drawn against a ruler.
+    Only a lone line goes: one at least `minimum_length` long, running along
+    the page's axes, that touches no other line, end to end or at a T, and no
+    closed outline or arc. Straightness and length cannot tell a form's ruled
+    T from a corner or a T of a part drawn against a ruler, so lines that
+    touch each other stay; rules retracing a proved table's cells are already
+    removed by `without_table_edge_lines`.
     """
-    straight = {
-        id(line): wobble(line.start, line.end) <= _PRINTED_RULE_WOBBLE
-        and _axis_aligned(line)
+    return tuple(
+        line
         for line in lines
-    }
-    printed: set[int] = set()
-    for group in _touching_groups(lines, snap_distance):
-        proved = (
-            any(line.length >= evidence.single for line in group)
-            if len(group) == 1
-            else any(
-                _near_cell(point, cell, snap_distance)
-                for line in group
-                for point in (line.start, line.end)
-                for cell in evidence.proved_cells
+        if not (
+            line.length >= minimum_length
+            and _axis_aligned(line)
+            and not any(
+                other is not line and _lines_touch(line, other, snap_distance)
+                for other in lines
             )
-        )
-        if (
-            proved
-            and all(straight[id(line)] for line in group)
             and not any(
                 _touches_shape(point, shapes, snap_distance)
-                for line in group
                 for point in (line.start, line.end)
             )
-        ):
-            printed.update(id(line) for line in group)
-    return tuple(line for line in lines if id(line) not in printed)
-
-
-def _near_cell(point: Point, cell: Bounds, snap_distance: float) -> bool:
-    """Return whether a point lies in or within snap distance of a cell's box."""
-    min_x, min_y, max_x, max_y = cell
-    return (
-        min_x - snap_distance <= point.x <= max_x + snap_distance
-        and min_y - snap_distance <= point.y <= max_y + snap_distance
+            and wobble(line.start, line.end) <= _PRINTED_RULE_WOBBLE
+        )
     )
 
 
@@ -283,31 +247,6 @@ def _lines_touch(first: LineEntity, second: LineEntity, snap_distance: float) ->
         _segment_distance(point, second.start, second.end) <= snap_distance
         for point in (first.start, first.end)
     )
-
-
-def _touching_groups(
-    lines: tuple[LineEntity, ...],
-    snap_distance: float,
-) -> tuple[tuple[LineEntity, ...], ...]:
-    """Group lines that touch one another, directly or through others."""
-    unvisited = list(lines)
-    groups: list[tuple[LineEntity, ...]] = []
-    while unvisited:
-        group = [unvisited.pop()]
-        frontier = list(group)
-        while frontier:
-            current = frontier.pop()
-            touching = [
-                other
-                for other in unvisited
-                if _lines_touch(current, other, snap_distance)
-            ]
-            for other in touching:
-                unvisited.remove(other)
-            group.extend(touching)
-            frontier.extend(touching)
-        groups.append(tuple(group))
-    return tuple(groups)
 
 
 def is_printed_row(

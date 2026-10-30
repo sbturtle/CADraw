@@ -1,5 +1,4 @@
 from cadraw.furniture_filter import (
-    RuleEvidence,
     RulingRails,
     is_printed_row,
     without_printed_rules,
@@ -15,7 +14,7 @@ from cadraw.models import (
     PolylineEntity,
 )
 
-_LENGTHS = RuleEvidence(single=150.0)
+_LENGTHS = 150.0
 
 
 def _line(name: str, start: Point, end: Point, orientation: Orientation) -> LineEntity:
@@ -218,19 +217,8 @@ def _printed_t() -> tuple[LineEntity, LineEntity]:
     )
 
 
-def test_a_t_of_rules_on_a_proved_table_goes_together() -> None:
-    # Given a printed T whose divider bounds a cell of a proved table
-    evidence = RuleEvidence(single=150.0, proved_cells=((300.0, 260.0, 450.0, 298.0),))
-
-    kept = without_printed_rules(_printed_t(), (), 10.0, evidence, lambda _s, _e: 0.2)
-
-    # Then both rules are the table's print
-    assert kept == ()
-
-
-def test_a_long_straight_corner_away_from_a_table_is_kept() -> None:
-    # Given the same straight lines, or a ruler-drawn L wider than half the
-    # page, with no proved table anywhere near
+def test_straight_lines_that_touch_each_other_are_kept() -> None:
+    # Given a straight T of rules, and a ruler-drawn L wider than half the page
     long_top = _line(
         "long_top", Point(40.0, 700.0), Point(900.0, 700.0), Orientation.HORIZONTAL
     )
@@ -243,7 +231,7 @@ def test_a_long_straight_corner_away_from_a_table_is_kept() -> None:
         (long_top, long_side), (), 10.0, _LENGTHS, lambda _s, _e: 0.2
     )
 
-    # Then nothing proves them print
+    # Then lines that meet one another are never taken for print
     assert t_kept == _printed_t()
     assert l_kept == (long_top, long_side)
 
