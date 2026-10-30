@@ -16,6 +16,7 @@ boundary and stays.
 from cadraw.models import CircleEntity, LineEntity, Point, PolylineEntity
 
 _PENETRATION_STEP = 2.0
+_RADIAL_SHARE = 0.2
 _MINIMUM_PENETRATION = 4.0
 
 
@@ -32,6 +33,20 @@ def _segment_distance(point: Point, start: Point, end: Point) -> float:
     clamped = max(0.0, min(1.0, projection))
     return point.distance_to(
         Point(start.x + clamped * delta_x, start.y + clamped * delta_y),
+    )
+
+
+def _line_distance(point: Point, line: LineEntity) -> float:
+    """Return the distance from a point to the infinite line through a segment."""
+    length = line.length
+    if length == 0.0:
+        return point.distance_to(line.start)
+    return (
+        abs(
+            (line.end.x - line.start.x) * (line.start.y - point.y)
+            - (line.start.x - point.x) * (line.end.y - line.start.y)
+        )
+        / length
     )
 
 
@@ -72,26 +87,74 @@ def _retraces(
 
 def without_polygon_edge_lines(
     lines: tuple[LineEntity, ...],
-    outlines: tuple[PolylineEntity | CircleEntity, ...],
+    polygons: tuple[PolylineEntity, ...],
     tolerance: float,
 ) -> tuple[LineEntity, ...]:
-    """Drop lines whose ends and midpoint all hug one closed outline's edge.
-
-    A circle's stroke comes back from the line detector as a ring of short
-    chords, each of which bows away from the arc by less than a pen's
-    tolerance.
-    """
-    closed = tuple(
-        outline
-        for outline in outlines
-        if isinstance(outline, CircleEntity) or (outline.closed and outline.points)
-    )
+    """Drop lines whose ends and midpoint all hug one closed polygon's edge."""
+    closed = tuple(polygon for polygon in polygons if polygon.closed and polygon.points)
     if not closed:
         return lines
     return tuple(
         line
         for line in lines
-        if not any(_retraces(line, outline, tolerance) for outline in closed)
+        if not any(_retraces(line, polygon, tolerance) for polygon in closed)
+    )
+
+
+def _leads_away(
+    line: LineEntity,
+    circle: CircleEntity,
+    others: tuple[LineEntity, ...],
+    tolerance: float,
+) -> bool:
+    """Return whether a line joins another that runs on out of the circle.
+
+    A centre line runs out past the rim too, but it is aimed at the centre,
+    and a chord ending where it crosses the rim is still only a chord.
+    """
+    return any(
+        end.distance_to(other_end) <= tolerance
+        and max(point.distance_to(circle.center) for point in (other.start, other.end))
+        > circle.radius + tolerance
+        and _line_distance(circle.center, other) > _RADIAL_SHARE * circle.radius
+        for other in others
+        for end in (line.start, line.end)
+        for other_end in (other.start, other.end)
+    )
+
+
+def without_circle_chords(
+    lines: tuple[LineEntity, ...],
+    circles: tuple[CircleEntity, ...],
+    tolerance: float,
+) -> tuple[LineEntity, ...]:
+    """Drop the chords the line detector finds along a circle's stroke.
+
+    A circle's stroke comes back from the line detector as a ring of short
+    chords, each lying within a pen's tolerance of the arc. On a freehand
+    circle a chord and a short straight edge touching the circle cannot be
+    told apart by where they lie: the drawn ring strays from its fitted
+    circle by as much as a tangent's ends do. They differ in what they join.
+    Chords join one another round the ring, or lines drawn across it, while
+    a drawn edge goes on into the rest of the outline: a chord whose end
+    meets a line running out past the rim is kept.
+    """
+    if not circles:
+        return lines
+    traced = {
+        id(line): tuple(
+            circle for circle in circles if _retraces(line, circle, tolerance)
+        )
+        for line in lines
+    }
+    others = tuple(line for line in lines if not traced[id(line)])
+    return tuple(
+        line
+        for line in lines
+        if not traced[id(line)]
+        or any(
+            _leads_away(line, circle, others, tolerance) for circle in traced[id(line)]
+        )
     )
 
 
