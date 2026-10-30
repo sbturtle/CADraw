@@ -131,6 +131,21 @@ def test_a_straight_line_touching_a_closed_outline_is_kept() -> None:
     assert kept == (member,)
 
 
+def test_a_straight_edge_with_a_branch_from_its_middle_is_kept() -> None:
+    # Given a ruler-straight edge and a short branch drawn from its middle
+    edge = _line(
+        "edge", Point(100.0, 300.0), Point(800.0, 300.0), Orientation.HORIZONTAL
+    )
+    branch = _line(
+        "branch", Point(450.0, 300.0), Point(450.0, 380.0), Orientation.VERTICAL
+    )
+
+    kept = without_printed_rules((edge, branch), (), 10.0, 150.0, lambda _s, _e: 0.2)
+
+    # Then the T joint makes the edge part of the drawing
+    assert kept == (edge, branch)
+
+
 def test_straight_lines_meeting_a_rounded_corner_are_kept() -> None:
     # Given two ruler-straight edges joined by an open quarter-circle corner
     corner = ArcEntity(

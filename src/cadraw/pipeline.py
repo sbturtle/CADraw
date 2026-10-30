@@ -1176,7 +1176,7 @@ def _closed_shapes(context: _ShapeContext) -> ShapeDetectionEvidence:
         context.analysis_image,
         config,
         context.snap_distance,
-        ()
+        None
         if context.ocr_result is None
         else tuple(candidate.bounds for candidate in context.ocr_result.candidates),
         tuple(

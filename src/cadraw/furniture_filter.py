@@ -203,13 +203,40 @@ def without_printed_rules(
         for line in lines
         if not (
             line.length >= minimum_length
-            and _is_isolated(line, lines, snap_distance)
+            and not _meets_another_line(line, lines, snap_distance)
             and not any(
                 _touches_shape(point, shapes, snap_distance)
                 for point in (line.start, line.end)
             )
             and wobble(line.start, line.end) <= _PRINTED_RULE_WOBBLE
         )
+    )
+
+
+def _meets_another_line(
+    line: LineEntity,
+    lines: tuple[LineEntity, ...],
+    snap_distance: float,
+) -> bool:
+    """Return whether any other line touches this one anywhere.
+
+    A branch drawn from the middle of a long edge leaves the edge unsplit, so
+    meeting only at shared endpoints would miss the joint of a T. Either
+    line's end lying on the other line counts.
+    """
+    return any(
+        other is not line
+        and (
+            any(
+                _segment_distance(point, line.start, line.end) <= snap_distance
+                for point in (other.start, other.end)
+            )
+            or any(
+                _segment_distance(point, other.start, other.end) <= snap_distance
+                for point in (line.start, line.end)
+            )
+        )
+        for other in lines
     )
 
 

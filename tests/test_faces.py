@@ -378,6 +378,25 @@ def test_face_detection_reads_a_plate_with_its_hole_and_slot() -> None:
     assert hole.center.distance_to(Point(180.0, 200.0)) <= 2.0
 
 
+def test_a_long_facing_gap_is_bridged_only_when_text_was_read() -> None:
+    # Given a plate whose top edge is missing a stretch longer than a pen lift
+    image = _page()
+    _ = cv2.line(image, (80, 80), (250, 80), _INK_VALUE, 3)
+    _ = cv2.line(image, (280, 80), (500, 80), _INK_VALUE, 3)
+    _ = cv2.line(image, (500, 80), (500, 320), _INK_VALUE, 3)
+    _ = cv2.line(image, (500, 320), (80, 320), _INK_VALUE, 3)
+    _ = cv2.line(image, (80, 320), (80, 80), _INK_VALUE, 3)
+    config = DetectionConfig(detect_closed_shapes=True, faces=FaceConfig(enabled=True))
+
+    # When faces are read without a reading, and with one that found no label
+    unread = detect_face_shapes_with_evidence(image, config)
+    read = detect_face_shapes_with_evidence(image, config, labels=())
+
+    # Then only the read sheet can rule out a dimension gap and close the plate
+    assert unread.candidates == ()
+    assert len(read.candidates) == 1
+
+
 def test_face_detection_respects_the_closed_shape_switch() -> None:
     # Given closed-shape detection turned off
     evidence = detect_face_shapes_with_evidence(
