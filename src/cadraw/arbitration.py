@@ -2,9 +2,15 @@
 
 from dataclasses import dataclass, field
 from math import atan2, degrees
+from typing import TYPE_CHECKING
+
+import numpy as np
 
 from cadraw.grid_filter import GridFilterConfig
 from cadraw.models import LineCandidate, Point
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 _HALF_TURN_DEGREES = 180.0
 
@@ -153,9 +159,40 @@ def arbitrate_line_candidates(
             str(candidate.entity_id),
         ),
     )
+    # A duplicate overlaps the line it repeats and stays within the distance
+    # limit of it, so their boxes, grown by that limit, meet. The box test
+    # spares the full comparison for the thousands of pairs on a busy photo
+    # that lie apart.
+    reach = max(
+        settings.duplicate_perpendicular_distance,
+        settings.overdraw_perpendicular_distance,
+    )
+    bounds = [
+        (
+            min(candidate.start.x, candidate.end.x),
+            min(candidate.start.y, candidate.end.y),
+            max(candidate.start.x, candidate.end.x),
+            max(candidate.start.y, candidate.end.y),
+        )
+        for candidate in ranked
+    ]
+    boxes: NDArray[np.float64] = np.asarray(bounds, dtype=np.float64).reshape(-1, 4)
     retained: list[LineCandidate] = []
-    for candidate in ranked:
-        if any(_is_duplicate(existing, candidate, settings) for existing in retained):
+    retained_boxes: NDArray[np.float64] = np.empty_like(boxes)
+    for index, candidate in enumerate(ranked):
+        left, top, right, bottom = bounds[index]
+        kept = retained_boxes[: len(retained)]
+        meeting: NDArray[np.bool_] = (
+            np.less_equal(kept[:, 0], right + reach)
+            & np.greater_equal(kept[:, 2], left - reach)
+            & np.less_equal(kept[:, 1], bottom + reach)
+            & np.greater_equal(kept[:, 3], top - reach)
+        )
+        if any(
+            _is_duplicate(retained[match], candidate, settings)
+            for match in np.flatnonzero(meeting).tolist()
+        ):
             continue
+        retained_boxes[len(retained)] = boxes[index]
         retained.append(candidate)
     return tuple(retained)

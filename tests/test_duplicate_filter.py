@@ -1,4 +1,5 @@
 from cadraw.duplicate_filter import (
+    without_circle_chords,
     without_lines_through_features,
     without_polygon_edge_lines,
 )
@@ -127,3 +128,58 @@ def test_an_open_polyline_is_not_an_outline() -> None:
     )
 
     assert without_polygon_edge_lines((edge,), (chain,), 12.0) == (edge,)
+
+
+def _washer() -> CircleEntity:
+    return CircleEntity(
+        entity_id=EntityId("washer"),
+        center=Point(300.0, 200.0),
+        radius=100.0,
+        confidence=0.9,
+    )
+
+
+def test_chords_retracing_a_circle_stroke_are_dropped() -> None:
+    # Given two chords the line detector found end to end along the stroke
+    first = _line(
+        "first", Point(400.0, 180.0), Point(394.0, 236.0), Orientation.VERTICAL
+    )
+    second = _line(
+        "second", Point(394.0, 236.0), Point(370.0, 271.0), Orientation.DIAGONAL
+    )
+
+    # Then they are the circle's ink a second time, not members of their own
+    assert without_circle_chords((first, second), (_washer(),), 12.0) == ()
+
+
+def test_a_straight_edge_touching_a_circle_is_kept() -> None:
+    # Given a short edge touching the rim that goes on into the outline
+    tangent = _line(
+        "tangent", Point(260.0, 100.0), Point(340.0, 100.0), Orientation.HORIZONTAL
+    )
+    side = _line("side", Point(340.0, 100.0), Point(340.0, 20.0), Orientation.VERTICAL)
+
+    # Then the edge stays, since a chord only ever joins other chords
+    kept = without_circle_chords((tangent, side), (_washer(),), 12.0)
+    assert kept == (tangent, side)
+
+
+def test_a_centre_line_through_a_circle_is_kept() -> None:
+    # Given a centre line drawn across the circle and past its rim
+    centre_line = _line(
+        "centre", Point(300.0, 80.0), Point(300.0, 320.0), Orientation.VERTICAL
+    )
+
+    # Then it stays: its midpoint is the circle's centre, far from the rim
+    assert without_circle_chords((centre_line,), (_washer(),), 12.0) == (centre_line,)
+
+
+def test_a_chord_ending_where_a_centre_line_crosses_the_rim_is_dropped() -> None:
+    # Given a chord whose end meets a centre line dash crossing the rim
+    chord = _line(
+        "chord", Point(300.0, 100.0), Point(360.0, 120.0), Orientation.DIAGONAL
+    )
+    dash = _line("dash", Point(300.0, 105.0), Point(300.0, 60.0), Orientation.VERTICAL)
+
+    # Then the dash stays and the chord goes: a centre line aims at the centre
+    assert without_circle_chords((chord, dash), (_washer(),), 12.0) == (dash,)

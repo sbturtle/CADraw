@@ -26,6 +26,7 @@ from cadraw.detection import (
     stroke_wobble,
 )
 from cadraw.duplicate_filter import (
+    without_circle_chords,
     without_lines_through_features,
     without_polygon_edge_lines,
 )
@@ -1583,18 +1584,25 @@ def analyze_image(
         _shape_candidate_to_entity(candidate)
         for candidate in shape_detection.candidates
     )
+    edge_tolerance = max(
+        _POLYGON_EDGE_TOLERANCE,
+        min(frame_width, frame_height) * _POLYGON_EDGE_TOLERANCE_RATIO,
+    )
     lines = without_lines_through_features(
-        without_polygon_edge_lines(
-            lines,
+        without_circle_chords(
+            without_polygon_edge_lines(
+                lines,
+                tuple(
+                    entity
+                    for entity in shape_entities
+                    if isinstance(entity, PolylineEntity)
+                ),
+                edge_tolerance,
+            ),
             tuple(
-                entity
-                for entity in shape_entities
-                if isinstance(entity, PolylineEntity)
+                entity for entity in shape_entities if isinstance(entity, CircleEntity)
             ),
-            max(
-                _POLYGON_EDGE_TOLERANCE,
-                min(frame_width, frame_height) * _POLYGON_EDGE_TOLERANCE_RATIO,
-            ),
+            edge_tolerance,
         ),
         tuple(
             entity
