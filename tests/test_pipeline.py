@@ -662,3 +662,25 @@ def test_a_restored_arc_ends_where_its_mapped_ends_land() -> None:
             restored.center.y + restored.radius * math.sin(math.radians(angle)),
         )
         assert end.distance_to(mapped) <= 0.01
+
+
+def test_a_long_arc_squashed_by_a_warp_stays_its_own_size_and_way_round() -> None:
+    # Given a three-quarter arc and a warp squashing one direction tenfold
+    arc = ArcEntity(
+        entity_id=EntityId("arc"),
+        center=Point(0.0, 0.0),
+        radius=100.0,
+        start_angle_degrees=0.0,
+        end_angle_degrees=270.0,
+        confidence=0.9,
+    )
+    squash = (1.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 1.0)
+
+    # When it is restored to source coordinates
+    restored = restore_source_geometry(arc, Point(0.0, 0.0), squash)
+
+    # Then no circle through three of its points blows it up, and it still
+    # runs the long way round
+    assert isinstance(restored, ArcEntity)
+    assert restored.radius <= 110.0
+    assert restored.end_angle_degrees - restored.start_angle_degrees >= 180.0

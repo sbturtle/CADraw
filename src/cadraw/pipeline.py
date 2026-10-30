@@ -241,6 +241,9 @@ _MIN_SHAPES_PER_LINE = 4
 _FULL_TURN_DEGREES = 360.0
 _RIM_SAMPLES = 36
 _COLLINEAR_DETERMINANT = 1e-6
+_ARC_FIT_PIXELS = 2.0
+_ARC_FIT_RATIO = 0.05
+_CIRCLE_FIT_RANK = 3
 
 
 def _select_detection_stream(
@@ -449,6 +452,44 @@ def _circle_through(
     return centre, centre.distance_to(first)
 
 
+def _fits_arc(circle: tuple[Point, float], mapped: tuple[Point, ...]) -> bool:
+    """Return whether a circle runs along a mapped arc, the same way round.
+
+    Every mapped point must lie near the circle, and the arc's middle must
+    fall inside the sweep from its first point to its last; a steep warp
+    can bend an arc so far that the circle through three of its points is
+    much larger and sweeps the other way round.
+    """
+    centre, radius = circle
+    tolerance = max(_ARC_FIT_PIXELS, _ARC_FIT_RATIO * radius)
+    if any(abs(point.distance_to(centre) - radius) > tolerance for point in mapped):
+        return False
+
+    def angle(point: Point) -> float:
+        return math.degrees(math.atan2(point.y - centre.y, point.x - centre.x))
+
+    start = angle(mapped[0])
+    sweep = (angle(mapped[-1]) - start) % _FULL_TURN_DEGREES
+    middle = (angle(mapped[len(mapped) // 2]) - start) % _FULL_TURN_DEGREES
+    return 0.0 < middle < sweep
+
+
+def _fitted_circle(points: tuple[Point, ...]) -> tuple[Point, float] | None:
+    """Return the least-squares circle through points, if they are not aligned."""
+    xs = np.asarray([point.x for point in points], dtype=np.float64)
+    ys = np.asarray([point.y for point in points], dtype=np.float64)
+    design = np.column_stack((xs, ys, np.ones_like(xs)))
+    solution, _, rank, _ = np.linalg.lstsq(design, -(xs * xs + ys * ys), rcond=None)
+    if int(rank) < _CIRCLE_FIT_RANK:
+        return None
+    a, b, c = cast("list[float]", solution.tolist())
+    centre = Point(-a / 2.0, -b / 2.0)
+    squared = centre.x * centre.x + centre.y * centre.y - c
+    if squared <= 0.0:
+        return None
+    return centre, math.sqrt(squared)
+
+
 def _restored_arc(
     arc: ArcEntity,
     offset: Point,
@@ -466,17 +507,26 @@ def _restored_arc(
     sweep = (arc.end_angle_degrees - arc.start_angle_degrees) % _FULL_TURN_DEGREES
     sweep = sweep or _FULL_TURN_DEGREES
     rim = _rim_points(arc.center, arc.radius, arc.start_angle_degrees, sweep)
-    first = _restore_point(rim[0], offset, inverse_matrix)
-    middle = _restore_point(rim[len(rim) // 2], offset, inverse_matrix)
-    last = _restore_point(rim[-1], offset, inverse_matrix)
+    mapped = tuple(_restore_point(point, offset, inverse_matrix) for point in rim)
+    first, middle, last = mapped[0], mapped[len(mapped) // 2], mapped[-1]
     circle = _circle_through(first, middle, last)
-    if circle is None:
-        radius = _restored_radius(rim, centre, offset, inverse_matrix)
-    else:
-        centre, radius = circle
-    start = math.degrees(math.atan2(first.y - centre.y, first.x - centre.x))
-    end = math.degrees(math.atan2(last.y - centre.y, last.x - centre.x))
-    restored_sweep = (end - start) % _FULL_TURN_DEGREES or sweep
+    if circle is None or not _fits_arc(circle, mapped):
+        circle = _fitted_circle(mapped) or (
+            centre,
+            _restored_radius(rim, centre, offset, inverse_matrix),
+        )
+    centre, radius = circle
+
+    def angle(point: Point) -> float:
+        return math.degrees(math.atan2(point.y - centre.y, point.x - centre.x))
+
+    start = angle(first)
+    restored_sweep = (angle(last) - start) % _FULL_TURN_DEGREES or sweep
+    # Angles run one way round from start to end; when the arc's middle is
+    # not on that way, the arc is the rest of the circle, from its last end.
+    if not 0.0 < (angle(middle) - start) % _FULL_TURN_DEGREES < restored_sweep:
+        start = angle(last)
+        restored_sweep = _FULL_TURN_DEGREES - restored_sweep
     return replace(
         arc,
         center=centre,
