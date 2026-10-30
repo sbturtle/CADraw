@@ -6,7 +6,7 @@ from scripts.run_poc import PocOptions, run
 
 from cadraw.detection import DetectionConfig
 from cadraw.export import validate_dxf
-from cadraw.models import LineEntity, Orientation
+from cadraw.models import CircleEntity, LineEntity, Orientation, Point
 from cadraw.normalization import NormalizationConfig
 from cadraw.pipeline import PipelineConfig, analyze_image
 
@@ -20,6 +20,8 @@ _SAMPLE = next(
     if path.exists()
 )
 _PURE_BACKGROUND_SAMPLE = _PROJECT_ROOT / "sample" / "pure_background" / "1.png"
+_PEN2STEP = _PROJECT_ROOT / "samples" / "pen2step"
+_RETRACE_TOLERANCE = 12.0
 _REAL_SAMPLES = tuple(
     sorted(
         {
@@ -241,3 +243,48 @@ def test_supplied_sample_reconstructs_entered_segment_lengths(
     lengths = tuple(round(length, 6) for length in validation.geometry_lengths)
     assert tuple(sorted(lengths)) == (20.0, 100.0, 150.0, 1050.0)
     assert "UNKNOWN_ANGLE" in summary.warnings
+
+
+@pytest.mark.parametrize(
+    ("name", "radii"),
+    [
+        ("real_11_mv.jpg", (91.0, 63.0, 24.0)),
+        ("real_17_mv.jpg", (95.0, 56.0)),
+        ("real_18_mv.jpg", (138.0, 49.0)),
+    ],
+)
+def test_an_end_view_keeps_every_concentric_circle_once(
+    name: str,
+    radii: tuple[float, ...],
+) -> None:
+    # Given another hand's end view of concentric circles crossed by centre lines
+    analysis = analyze_image(_PEN2STEP / name, PipelineConfig.from_detection_defaults())
+    circles = tuple(
+        entity for entity in analysis.entities if isinstance(entity, CircleEntity)
+    )
+    rim = max(circles, key=lambda circle: circle.radius)
+
+    # Then each drawn circle is found around the rim's centre
+    for radius in radii:
+        assert any(
+            circle.center.distance_to(rim.center) <= 0.15 * rim.radius
+            and abs(circle.radius - radius) <= 0.06 * radius
+            for circle in circles
+        ), radius
+
+    # And no detector line re-traces a circle's stroke as a chord
+    def on_rim(point: Point, circle: CircleEntity) -> bool:
+        return abs(point.distance_to(circle.center) - circle.radius) <= (
+            _RETRACE_TOLERANCE
+        )
+
+    for line in analysis.entities:
+        if isinstance(line, LineEntity):
+            midpoint = Point(
+                (line.start.x + line.end.x) / 2.0,
+                (line.start.y + line.end.y) / 2.0,
+            )
+            assert not any(
+                all(on_rim(point, circle) for point in (line.start, midpoint, line.end))
+                for circle in circles
+            )

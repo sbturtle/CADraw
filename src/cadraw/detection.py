@@ -49,6 +49,8 @@ GrayImage = NDArray[np.uint8]
 
 _MIN_DUPLICATE_CIRCLE_DISTANCE = 8.0
 _MIN_DUPLICATE_RADIUS_RATIO = 0.55
+_MAX_DUPLICATE_RADIUS_GAP = 12.0
+_MAX_DUPLICATE_RADIUS_GAP_RATIO = 0.15
 _MIN_CIRCLE_APPROX_POINTS = 6
 _MIN_CIRCLE_CIRCULARITY = 0.68
 _MIN_CIRCLE_ASPECT_RATIO = 0.65
@@ -1100,20 +1102,23 @@ def _shape_duplicate(
     first: ShapeCandidate,
     second: ShapeCandidate,
 ) -> bool:
-    """Check whether nested Canny contours describe one physical shape."""
+    """Check whether nested Canny contours describe one physical shape.
+
+    The two edges of one drawn ring differ in radius by about a pen width,
+    which on a small hole is half its radius. Concentric circles drawn as a
+    washer, a boss, or a stepped shaft's end view share a centre too, but
+    their radii lie further apart than any pen is wide.
+    """
     circular = (CircleCandidate, ArcCandidate)
     if isinstance(first, circular) and isinstance(second, circular):
-        radius_ratio = min(first.radius, second.radius) / max(
-            first.radius,
-            second.radius,
-        )
+        larger = max(first.radius, second.radius)
+        smaller = min(first.radius, second.radius)
         return (
             first.center.distance_to(second.center)
-            <= max(
-                _MIN_DUPLICATE_CIRCLE_DISTANCE,
-                0.25 * max(first.radius, second.radius),
-            )
-            and radius_ratio >= _MIN_DUPLICATE_RADIUS_RATIO
+            <= max(_MIN_DUPLICATE_CIRCLE_DISTANCE, 0.25 * larger)
+            and smaller / larger >= _MIN_DUPLICATE_RADIUS_RATIO
+            and larger - smaller
+            <= max(_MAX_DUPLICATE_RADIUS_GAP, _MAX_DUPLICATE_RADIUS_GAP_RATIO * larger)
         )
     if isinstance(first, circular) != isinstance(second, circular):
         return _circle_polygon_duplicate(first, second)

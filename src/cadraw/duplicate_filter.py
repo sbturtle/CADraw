@@ -7,7 +7,7 @@ segment with its own length row and once as part of the profile. The
 reference drawings carry each edge once, and so should the export.
 
 A line is treated as a re-trace only when its two ends and its midpoint all
-lie within a small distance of the same polygon's boundary. A line that
+lie within a small distance of the same polygon's boundary or circle's rim. A line that
 starts on an edge and leaves it, such as a dimension tick or a member that
 continues past the outline, keeps one of those three points away from the
 boundary and stays.
@@ -44,31 +44,54 @@ def _boundary_distance(point: Point, polygon: PolylineEntity) -> float:
     )
 
 
-def _retraces(line: LineEntity, polygon: PolylineEntity, tolerance: float) -> bool:
-    """Return whether the whole line lies along the polygon's boundary."""
+def _circle_distance(point: Point, circle: CircleEntity) -> float:
+    """Return the distance from a point to a circle's circumference."""
+    return abs(point.distance_to(circle.center) - circle.radius)
+
+
+def _retraces(
+    line: LineEntity,
+    outline: PolylineEntity | CircleEntity,
+    tolerance: float,
+) -> bool:
+    """Return whether the whole line lies along a closed outline."""
     midpoint = Point(
         (line.start.x + line.end.x) / 2.0,
         (line.start.y + line.end.y) / 2.0,
     )
     return all(
-        _boundary_distance(point, polygon) <= tolerance
+        (
+            _circle_distance(point, outline)
+            if isinstance(outline, CircleEntity)
+            else _boundary_distance(point, outline)
+        )
+        <= tolerance
         for point in (line.start, midpoint, line.end)
     )
 
 
 def without_polygon_edge_lines(
     lines: tuple[LineEntity, ...],
-    polygons: tuple[PolylineEntity, ...],
+    outlines: tuple[PolylineEntity | CircleEntity, ...],
     tolerance: float,
 ) -> tuple[LineEntity, ...]:
-    """Drop lines whose ends and midpoint all hug one closed polygon's edge."""
-    closed = tuple(polygon for polygon in polygons if polygon.closed and polygon.points)
+    """Drop lines whose ends and midpoint all hug one closed outline's edge.
+
+    A circle's stroke comes back from the line detector as a ring of short
+    chords, each of which bows away from the arc by less than a pen's
+    tolerance.
+    """
+    closed = tuple(
+        outline
+        for outline in outlines
+        if isinstance(outline, CircleEntity) or (outline.closed and outline.points)
+    )
     if not closed:
         return lines
     return tuple(
         line
         for line in lines
-        if not any(_retraces(line, polygon, tolerance) for polygon in closed)
+        if not any(_retraces(line, outline, tolerance) for outline in closed)
     )
 
 

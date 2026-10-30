@@ -404,6 +404,32 @@ def test_face_detection_reads_a_plate_with_its_hole_and_slot() -> None:
     assert hole.center.distance_to(Point(180.0, 200.0)) <= 2.0
 
 
+def test_concentric_circles_of_a_washer_are_both_kept() -> None:
+    # Given a washer's outer rim and centre hole, drawn a pen apart many times
+    image = _page()
+    _ = cv2.circle(image, (300, 200), 110, _INK_VALUE, 3)
+    _ = cv2.circle(image, (300, 200), 65, _INK_VALUE, 3)
+
+    # When closed shapes are read from the enclosed faces
+    evidence = detect_face_shapes_with_evidence(
+        image,
+        DetectionConfig(detect_closed_shapes=True, faces=FaceConfig(enabled=True)),
+    )
+
+    # Then the hole is not mistaken for the rim's other edge
+    circles = sorted(
+        (
+            candidate
+            for candidate in evidence.candidates
+            if isinstance(candidate, CircleCandidate)
+        ),
+        key=lambda candidate: candidate.radius,
+    )
+    assert len(circles) == len(evidence.candidates) == 2
+    assert abs(circles[0].radius - 65.0) <= 3.0
+    assert abs(circles[1].radius - 110.0) <= 3.0
+
+
 def test_a_long_facing_gap_is_bridged_only_when_text_was_read() -> None:
     # Given a plate whose top edge is missing a stretch longer than a pen lift
     image = _page()

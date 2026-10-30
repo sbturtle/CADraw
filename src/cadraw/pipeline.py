@@ -1589,7 +1589,7 @@ def analyze_image(
             tuple(
                 entity
                 for entity in shape_entities
-                if isinstance(entity, PolylineEntity)
+                if isinstance(entity, (PolylineEntity, CircleEntity))
             ),
             max(
                 _POLYGON_EDGE_TOLERANCE,

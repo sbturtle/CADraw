@@ -127,3 +127,37 @@ def test_an_open_polyline_is_not_an_outline() -> None:
     )
 
     assert without_polygon_edge_lines((edge,), (chain,), 12.0) == (edge,)
+
+
+def _washer() -> CircleEntity:
+    return CircleEntity(
+        entity_id=EntityId("washer"),
+        center=Point(300.0, 200.0),
+        radius=100.0,
+        confidence=0.9,
+    )
+
+
+def test_a_chord_retracing_a_circle_stroke_is_dropped() -> None:
+    # Given a short chord the line detector found along the circle's stroke
+    chord = _line(
+        "chord", Point(400.0, 180.0), Point(394.0, 236.0), Orientation.VERTICAL
+    )
+
+    # Then it is the circle's ink a second time, not a member of its own
+    assert without_polygon_edge_lines((chord,), (_washer(),), 12.0) == ()
+
+
+def test_a_centre_line_through_a_circle_is_kept() -> None:
+    # Given a centre line drawn across the circle and past its rim
+    centre_line = _line(
+        "centre", Point(300.0, 80.0), Point(300.0, 320.0), Orientation.VERTICAL
+    )
+    tangent = _line(
+        "tangent", Point(200.0, 100.0), Point(450.0, 100.0), Orientation.HORIZONTAL
+    )
+
+    kept = without_polygon_edge_lines((centre_line, tangent), (_washer(),), 12.0)
+
+    # Then both stay: each has a point well away from the circumference
+    assert kept == (centre_line, tangent)
