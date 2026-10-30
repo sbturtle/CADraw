@@ -231,6 +231,7 @@ _POLYGON_EDGE_TOLERANCE = 12.0
 _FEATURE_PENETRATION_MARGIN = 3.0
 _PRINTED_RULE_LENGTH_RATIO = 0.15
 _INTERSTITIAL_STROKES = 3.0
+_ROW_FEATURE_DEPTH_RATIO = 0.25
 _POLYGON_EDGE_TOLERANCE_RATIO = 0.012
 _MIN_GRID_LIKE_SHAPES = 8
 _MIN_SHAPES_PER_LINE = 4
@@ -1263,8 +1264,9 @@ def _printed_rows(
 ) -> tuple[PolylineCandidate, ...]:
     """Return the closed polygons that are printed form rows across the page.
 
-    A polygon with another shape inside it is a plate with its features and
-    is never a printed row.
+    A polygon holding a hole of real size is a plate with its features and is
+    never a printed row. The loops of the row's own printed lettering, far
+    smaller than the row is deep, do not count.
     """
     width = cast("tuple[int, int]", analysis_image.shape[:2])[1]
     flattened = illumination_flattened(analysis_image)
@@ -1277,6 +1279,8 @@ def _printed_rows(
         and not any(
             other.role is GeometryRole.HOLE
             and _bounds_inside(_shape_box(other), _bounds_of(candidate))
+            and _box_extent(_shape_box(other))
+            >= _ROW_FEATURE_DEPTH_RATIO * _box_depth(_bounds_of(candidate))
             for other in candidates
         )
         and is_printed_row(
@@ -1286,6 +1290,16 @@ def _printed_rows(
             proved_cells,
         )
     )
+
+
+def _box_extent(box: tuple[float, float, float, float]) -> float:
+    """Return the larger side of a box."""
+    return max(box[2] - box[0], box[3] - box[1])
+
+
+def _box_depth(box: tuple[float, float, float, float]) -> float:
+    """Return the smaller side of a box."""
+    return min(box[2] - box[0], box[3] - box[1])
 
 
 def _shape_box(candidate: ShapeCandidate) -> tuple[float, float, float, float]:

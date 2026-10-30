@@ -71,6 +71,7 @@ _MAX_ARC_SPAN_DEGREES = 320.0
 _MAX_ARC_TO_BOX_RADIUS_RATIO = 3.0
 _FRAME_RULE_AXIS_SLOPE = 0.09
 _THINNING_SLACK_ITERATIONS = 3
+_CIRCLE_CONTAINMENT = 1.0
 _PAPER_LEVEL = 255
 _WOBBLE_STEP = 3.0
 _WOBBLE_HALF_BAND = 6.0
@@ -1481,9 +1482,12 @@ def _shape_contains(parent: ShapeCandidate, child: ShapeCandidate) -> bool:
     if parent_extent < child_extent * 1.8:
         return False
     if isinstance(parent, (CircleCandidate, ArcCandidate)):
+        # A drilled hole near the rim of a hand-drawn round plate reaches
+        # close to the fitted circle; the size test above already keeps a
+        # concentric ring of the same stroke from passing for a hole.
         return (
             parent.center.distance_to(child_center) + child_extent / 2.0
-            <= parent.radius * 0.95
+            <= parent.radius * _CIRCLE_CONTAINMENT
         )
     contour = np.asarray(
         [(point.x, point.y) for point in parent.points],

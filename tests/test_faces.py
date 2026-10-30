@@ -279,6 +279,25 @@ def test_a_tiny_rough_face_inside_a_part_reads_as_a_hole() -> None:
     assert isinstance(parsed[1], CircleCandidate)
 
 
+def test_a_hand_drawn_drill_hole_a_few_pixels_wide_reads_as_a_circle() -> None:
+    # Given the face of a drilled hole traced from a scan, a pixel staircase
+    # that strays about a fifth of its radius from any circle
+    traced = _face(
+        [
+            (4, 0), (3, 1), (2, 2), (2, 3), (2, 4), (1, 5), (1, 6), (0, 7),
+            (0, 8), (0, 9), (1, 10), (2, 11), (3, 11), (4, 11), (5, 10), (6, 9),
+            (7, 8), (7, 7), (8, 6), (8, 5), (8, 4), (7, 3), (6, 2), (5, 1),
+        ],
+    )  # fmt: skip
+
+    # When it is read on a sheet a thousand pixels wide
+    parsed = face_shape(traced, FaceConfig(), 1086)
+
+    # Then it is a hole, not a three-cornered polygon
+    assert parsed is not None
+    assert isinstance(parsed[1], CircleCandidate)
+
+
 def test_a_tiny_square_cutout_keeps_its_corners() -> None:
     # Given a square face only ten pixels across
     square = _face([(0, 0), (10, 0), (10, 10), (0, 10)])

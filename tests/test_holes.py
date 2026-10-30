@@ -92,3 +92,24 @@ def test_arc_inside_outer_profile_is_marked_as_hole() -> None:
     # Then only the contained arc receives hole semantics
     assert classified[0].role is GeometryRole.STRUCTURE
     assert classified[1].role is GeometryRole.HOLE
+
+
+def test_a_hole_drilled_near_the_rim_of_a_round_plate_is_a_hole() -> None:
+    # Given a round plate and a hole drawn just inside its rim
+    plate = CircleCandidate(
+        entity_id=EntityId("plate"),
+        center=Point(391.0, 967.0),
+        radius=239.0,
+        confidence=0.9,
+    )
+    hole = CircleCandidate(
+        entity_id=EntityId("hole"),
+        center=Point(568.0, 1099.0),
+        radius=11.0,
+        confidence=0.8,
+    )
+
+    classified = classify_shape_holes((plate, hole))
+
+    # Then nearness to the rim does not make it a separate part
+    assert classified[1].role is GeometryRole.HOLE
