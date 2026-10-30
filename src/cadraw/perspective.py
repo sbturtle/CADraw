@@ -478,7 +478,5 @@ def transform_point(
         "NDArray[np.float32]",
         cv2.perspectiveTransform(source, matrix),
     )
-    return Point(
-        cast("float", transformed[0, 0, 0]),
-        cast("float", transformed[0, 0, 1]),
-    )
+    x, y = transformed.reshape(-1).tolist()
+    return Point(x, y)

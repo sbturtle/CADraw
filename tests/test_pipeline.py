@@ -598,3 +598,33 @@ def test_workbench_config_reads_labels_and_the_optional_vision_model(
     assert plain.ocr_enabled
     assert plain.ocr_cross_check_model is None
     assert checked.ocr_cross_check_model == "qwen3-vl:2b-instruct"
+
+
+def test_a_circle_on_a_skewed_page_keeps_its_photographed_radius(
+    tmp_path: Path,
+) -> None:
+    # Given a page photographed steeply, with a 30 px circle near its far edge
+    image = np.full((560, 760), 30, dtype=np.uint8)
+    quad = np.array([(250, 40), (510, 40), (700, 520), (60, 520)], dtype=np.int32)
+    _ = cv2.fillConvexPoly(image, quad, 240)
+    _ = cv2.polylines(image, [quad], isClosed=True, color=0, thickness=6)
+    _ = cv2.circle(image, (380, 140), 30, 0, 3)
+    _ = cv2.rectangle(image, (230, 300), (530, 460), 0, 4)
+    image_path = tmp_path / "steep-page.png"
+    Image.fromarray(image).save(image_path)
+    config = replace(
+        PipelineConfig.from_detection_defaults(),
+        perspective_correction=True,
+    )
+
+    # When the page is flattened, analyzed, and mapped back to the photograph
+    analysis = analyze_image(image_path, config)
+
+    # Then the circle has the size it has in the photograph, not the flat page
+    assert analysis.perspective_transform is not None
+    circles = [
+        entity for entity in analysis.entities if isinstance(entity, CircleEntity)
+    ]
+    assert len(circles) == 1
+    assert circles[0].center.distance_to(Point(380.0, 140.0)) <= 4.0
+    assert abs(circles[0].radius - 30.0) <= 3.0
