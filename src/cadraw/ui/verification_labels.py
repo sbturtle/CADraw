@@ -80,6 +80,8 @@ def status_text(dimension: Dimension) -> str:
     """Return a textual review state for the table."""
     if dimension.source == "axis_inference":
         return "자동 확정"
+    if not dimension.target_entity_ids and dimension.parsed_value is not None:
+        return "대상 없음 · 참고용"
     return _STATUS_LABELS[dimension.status]
 
 
