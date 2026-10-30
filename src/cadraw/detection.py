@@ -1733,7 +1733,12 @@ def _shape_evidence(
     )
     # Cells tiling the paper at an angle are dropped only after the table
     # proof, which counts proved paper cells for the preprocessing choice.
-    unlatticed, _ = without_ruled_lattices(table_evidence.candidates, width, height)
+    unlatticed, _ = without_ruled_lattices(
+        table_evidence.candidates,
+        width,
+        height,
+        config.arbitration.grid,
+    )
     classified = settle_shape_roles(unlatticed, isolated_mark_extent)
     limited = classified[: config.maximum_shape_candidates]
     return ShapeDetectionEvidence(

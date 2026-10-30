@@ -1,4 +1,4 @@
-from cadraw.grid_filter import without_ruled_lattices
+from cadraw.grid_filter import GridFilterConfig, without_ruled_lattices
 from cadraw.models import EntityId, Point, PolylineCandidate, ShapeCandidate
 
 _SHEET = 1000
@@ -61,3 +61,28 @@ def test_small_cells_standing_apart_are_kept() -> None:
     )
 
     assert without_ruled_lattices(slots, _SHEET, _SHEET) == (slots, 0)
+
+
+def test_slots_drawn_a_small_gap_apart_are_not_a_lattice() -> None:
+    # Given four square slots in a two by two block, 8 px apart on the sheet
+    slots = tuple(
+        _cell(f"slot_{row}_{column}", 100.0 + column * 58.0, 100.0 + row * 58.0, 50.0)
+        for row in range(2)
+        for column in range(2)
+    )
+
+    # Then each keeps its own outline: separate strokes never share a side
+    assert without_ruled_lattices(slots, _SHEET, _SHEET) == (slots, 0)
+
+
+def test_the_lattice_step_is_off_with_the_grid_filter() -> None:
+    # Given graph-paper cells and a grid filter switched off
+    cells = _lattice(3, 2, 40.0)
+
+    # Then nothing is removed
+    assert without_ruled_lattices(
+        cells,
+        _SHEET,
+        _SHEET,
+        GridFilterConfig(enabled=False),
+    ) == (cells, 0)

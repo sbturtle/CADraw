@@ -17,7 +17,7 @@ _SHAPE_SIZE_TOLERANCE_RATIO = 0.30
 _QUADRILATERAL_POINTS = 4
 _LATTICE_MINIMUM_CELLS = 4
 _LATTICE_CELL_EXTENT_RATIO = 0.06
-_LATTICE_EDGE_TOLERANCE_RATIO = 0.012
+_LATTICE_EDGE_TOLERANCE_RATIO = 0.004
 
 type GrayImage = NDArray[np.uint8]
 
@@ -502,6 +502,7 @@ def without_ruled_lattices(
     candidates: tuple[ShapeCandidate, ...],
     width: int,
     height: int,
+    config: GridFilterConfig | None = None,
 ) -> tuple[tuple[ShapeCandidate, ...], int]:
     """Drop small four-sided cells that tile the paper side by side.
 
@@ -511,7 +512,15 @@ def without_ruled_lattices(
     four or more cells each only a few percent of the sheet across: the
     smallest drawn features, a slot or a tab, stand alone. Returns the kept
     candidates and how many cells were dropped.
+
+    Neighbouring cells are both bounded by the one rule between them, so
+    their shared side coincides within a few pixels; two separate slots
+    drawn close together keep their own strokes and a gap a pen wide or
+    more apart. It is part of the grid filter and is off with it.
     """
+    settings = config if config is not None else GridFilterConfig()
+    if not settings.enabled:
+        return candidates, 0
     side = min(width, height)
     tolerance = _LATTICE_EDGE_TOLERANCE_RATIO * side
     largest = _LATTICE_CELL_EXTENT_RATIO * side
