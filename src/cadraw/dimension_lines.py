@@ -16,7 +16,9 @@ a hole's centre line has no ticks.
 
 The ends of the line are what it measures, so a circle whose two poles
 along the line fall on those ends, or a single edge that spans them, is the
-target, as is a closed outline whose overall width or height they span.
+target, as is a closed outline whose overall width or height they span. A
+dimension is drawn beside what it measures, so the target must lie within
+one line length of it.
 Anything else leaves the value unresolved for the reviewer; it is never
 handed to the nearest line instead.
 """
@@ -52,6 +54,7 @@ _TEXT_ACROSS_HEIGHTS = 1.5
 _TARGET_SLACK_WIDTHS = 3.0
 _TARGET_SLACK_RATIO = 0.1
 _PARALLEL_DEGREES = 8.0
+_TARGET_REACH_LENGTHS = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +215,31 @@ def _parallel(direction: tuple[float, float], other: tuple[float, float]) -> boo
     return cosine >= math.cos(math.radians(_PARALLEL_DEGREES))
 
 
+def _across(point: Point, line: LineEntity, direction: tuple[float, float]) -> float:
+    """Return how far a point lies off a line's supporting axis."""
+    return abs(
+        (point.x - line.start.x) * direction[1]
+        - (point.y - line.start.y) * direction[0],
+    )
+
+
+def _gap(
+    line: LineEntity,
+    direction: tuple[float, float],
+    entity: GeometryEntity,
+) -> float:
+    """Return how far across from a dimension line a shape's nearest side is."""
+    if isinstance(entity, CircleEntity):
+        return max(0.0, _across(entity.center, line, direction) - entity.radius)
+    if isinstance(entity, LineEntity):
+        return min(
+            _across(point, line, direction) for point in (entity.start, entity.end)
+        )
+    if isinstance(entity, PolylineEntity) and entity.points:
+        return min(_across(point, line, direction) for point in entity.points)
+    return math.inf
+
+
 def _axis_kind(direction: tuple[float, float]) -> DimensionKind | None:
     """Return the outline extent a horizontal or vertical line measures."""
     limit = math.cos(math.radians(_PARALLEL_DEGREES))
@@ -238,6 +266,8 @@ def _measured(
     extent_kind = _axis_kind(direction)
     matches: list[tuple[GeometryEntity, DimensionKind]] = []
     for entity in geometry:
+        if _gap(line, direction, entity) > _TARGET_REACH_LENGTHS * line.length:
+            continue
         if isinstance(entity, CircleEntity):
             centre = _project(entity.center, line.start, direction)
             if _spans(line, centre - entity.radius, centre + entity.radius, slack):

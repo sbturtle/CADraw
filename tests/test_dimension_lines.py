@@ -148,13 +148,13 @@ def test_a_chain_of_values_along_one_line_leaves_the_target_open() -> None:
 
 
 def test_a_line_matching_two_circles_leaves_the_target_open() -> None:
-    # Given two equal circles, both spanning the ticked line's ends
+    # Given equal circles either side of a ticked line spanning both
     ink = _ink()
     _ = cv2.circle(ink, (300, 200), 80, 255, _PEN)
     dimension = _ticked_line(ink, 450, 120, 280)
     twin = CircleEntity(
         entity_id=EntityId("twin"),
-        center=Point(120.0, 200.0),
+        center=Point(560.0, 200.0),
         radius=80.0,
         confidence=0.9,
     )
@@ -205,3 +205,35 @@ def test_a_ticked_line_spanning_a_plate_measures_its_width() -> None:
     assert len(found) == 1
     assert found[0].target_id == EntityId("plate")
     assert found[0].kind is DimensionKind.WIDTH
+
+
+def test_a_far_outline_of_the_same_width_is_not_the_target() -> None:
+    # Given a ticked line, and far below it a plate of exactly its width
+    ink = _ink()
+    _stroke(ink, (100, 40), (400, 40))
+    _stroke(ink, (100, 31), (100, 49))
+    _stroke(ink, (400, 31), (400, 49))
+    dimension = _line("dimension", Point(100.0, 40.0), Point(400.0, 40.0))
+    far_plate = PolylineEntity(
+        entity_id=EntityId("far_plate"),
+        points=(
+            Point(100.0, 360.0),
+            Point(400.0, 360.0),
+            Point(400.0, 900.0),
+            Point(100.0, 900.0),
+        ),
+        closed=True,
+        confidence=0.9,
+    )
+
+    found = find_dimension_lines(
+        (dimension,),
+        (_value("300", (230.0, 52.0, 40.0, 24.0)),),
+        (dimension, far_plate),
+        ink,
+        float(_PEN),
+    )
+
+    # Then nothing ties the plate to the line, so the value stays open
+    assert len(found) == 1
+    assert found[0].target_id is None
