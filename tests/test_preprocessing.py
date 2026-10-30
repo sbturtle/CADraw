@@ -9,6 +9,7 @@ from cadraw.preprocessing import (
     PreprocessingVariant,
     ScoreContext,
     backdrop_mask,
+    illumination_flattened,
     preprocess_variants,
     score_candidates,
     write_debug_outputs,
@@ -156,3 +157,20 @@ def test_a_scan_shows_no_backdrop() -> None:
     image[200:600, 100:104] = 30
 
     assert backdrop_mask(image) is None
+
+
+def test_a_repeated_flattening_matches_and_cannot_be_spoiled_by_a_caller() -> None:
+    # Given a shaded page flattened once and then scribbled on by its caller
+    image = np.full((120, 160), 230, dtype=np.uint8)
+    image[:, 80:] -= 40
+    image[60:63, 20:140] = 40
+    first = illumination_flattened(image)
+    expected = first.copy()
+    first[:] = 0
+
+    # When the same frame is flattened again
+    second = illumination_flattened(image)
+
+    # Then the result is the original one, not the caller's scribble
+    assert np.array_equal(second, expected)
+    assert not np.shares_memory(second, first)
