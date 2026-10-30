@@ -1484,11 +1484,14 @@ def _shape_contains(parent: ShapeCandidate, child: ShapeCandidate) -> bool:
     if isinstance(parent, (CircleCandidate, ArcCandidate)):
         # A drilled hole near the rim of a hand-drawn round plate reaches
         # close to the fitted circle; the size test above already keeps a
-        # concentric ring of the same stroke from passing for a hole.
-        return (
-            parent.center.distance_to(child_center) + child_extent / 2.0
-            <= parent.radius * _CIRCLE_CONTAINMENT
-        )
+        # concentric ring of the same stroke from passing for a hole. A
+        # polygon child must have every corner inside.
+        reach = parent.radius * _CIRCLE_CONTAINMENT
+        if isinstance(child, PolylineCandidate):
+            return all(
+                parent.center.distance_to(point) <= reach for point in child.points
+            )
+        return parent.center.distance_to(child_center) + child_extent / 2.0 <= reach
     contour = np.asarray(
         [(point.x, point.y) for point in parent.points],
         dtype=np.float32,

@@ -1231,6 +1231,9 @@ def _lettering_free_shapes(
         shapes.candidates,
         context.analysis_image,
         shapes.table_cell_bounds,
+        ()
+        if context.ocr_result is None
+        else tuple(candidate.bounds for candidate in context.ocr_result.candidates),
     )
     return (
         replace(
@@ -1261,12 +1264,13 @@ def _printed_rows(
     candidates: tuple[ShapeCandidate, ...],
     analysis_image: GrayImage,
     proved_cells: tuple[tuple[float, float, float, float], ...],
+    labels: tuple[tuple[float, float, float, float], ...],
 ) -> tuple[PolylineCandidate, ...]:
     """Return the closed polygons that are printed form rows across the page.
 
-    A polygon holding a hole of real size is a plate with its features and is
-    never a printed row. The loops of the row's own printed lettering, far
-    smaller than the row is deep, do not count.
+    A polygon holding a hole is a plate with its features and is never a
+    printed row. Only a loop proved to be lettering does not count: one far
+    smaller than the row is deep and centred in a box of text OCR found.
     """
     width = cast("tuple[int, int]", analysis_image.shape[:2])[1]
     flattened = illumination_flattened(analysis_image)
@@ -1279,8 +1283,7 @@ def _printed_rows(
         and not any(
             other.role is GeometryRole.HOLE
             and _bounds_inside(_shape_box(other), _bounds_of(candidate))
-            and _box_extent(_shape_box(other))
-            >= _ROW_FEATURE_DEPTH_RATIO * _box_depth(_bounds_of(candidate))
+            and not _lettering_loop(other, candidate, labels)
             for other in candidates
         )
         and is_printed_row(
@@ -1289,6 +1292,27 @@ def _printed_rows(
             lambda start, end: stroke_wobble(flattened, start, end),
             proved_cells,
         )
+    )
+
+
+def _lettering_loop(
+    hole: ShapeCandidate,
+    row: PolylineCandidate,
+    labels: tuple[tuple[float, float, float, float], ...],
+) -> bool:
+    """Return whether a hole in a printed row is a loop of its lettering.
+
+    It must be far smaller than the row is deep and centred inside a box of
+    text that OCR found; `labels` are boxes as left, top, width, height.
+    """
+    box = _shape_box(hole)
+    if _box_extent(box) >= _ROW_FEATURE_DEPTH_RATIO * _box_depth(_bounds_of(row)):
+        return False
+    centre_x = (box[0] + box[2]) / 2.0
+    centre_y = (box[1] + box[3]) / 2.0
+    return any(
+        left <= centre_x <= left + width and top <= centre_y <= top + height
+        for left, top, width, height in labels
     )
 
 
