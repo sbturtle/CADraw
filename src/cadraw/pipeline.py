@@ -1602,7 +1602,14 @@ def analyze_image(
         normalization.endpoint_snap_distance,
         shapes=restored_shapes,
     )
-    entities = _on_paper((*restored_lines, *restored_shapes), source_image, warnings)
+    entities = (
+        (*restored_lines, *restored_shapes)
+        # A warped analysis frame is the page already found; there is no desk
+        # in it, and arcs restored through the warp are not exact enough to
+        # judge by a point on their stroke.
+        if inverse_matrix is not None
+        else _on_paper((*restored_lines, *restored_shapes), source_image, warnings)
+    )
     if ocr_result is None or not ocr_result.dimensions:
         warnings.append(
             AnalysisWarning(
