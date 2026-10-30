@@ -293,3 +293,46 @@ def test_two_dimension_lines_close_together_each_keep_their_value() -> None:
         (lower.entity_id, 1),
     }
     assert all(record.target_id == EntityId("rim") for record in found)
+
+
+def test_branches_leaving_opposite_sides_are_not_ticks() -> None:
+    # Given an edge with one short branch up at one end and down at the other
+    ink = _ink()
+    _stroke(ink, (100, 200), (260, 200))
+    _stroke(ink, (100, 200), (100, 180))
+    _stroke(ink, (260, 200), (260, 220))
+    edge = _line("edge", Point(100.0, 200.0), Point(260.0, 200.0))
+
+    found = find_dimension_lines(
+        (edge,),
+        (_value("160", (160.0, 170.0, 40.0, 24.0)),),
+        (edge,),
+        ink,
+        float(_PEN),
+    )
+
+    # Then it stays geometry: a tick crosses its line on both sides
+    assert found == ()
+
+
+def test_a_leaning_line_snapped_upright_still_finds_its_ticks() -> None:
+    # Given a freehand dimension line leaning 12 px over its length, closed
+    # by short ticks, which normalization snapped upright between its ends
+    ink = _ink()
+    _stroke(ink, (444, 120), (456, 280))
+    _stroke(ink, (438, 120), (450, 120))
+    _stroke(ink, (450, 280), (462, 280))
+    _ = cv2.circle(ink, (300, 200), 80, 255, _PEN)
+    dimension = _line("dimension", Point(450.0, 120.0), Point(450.0, 280.0))
+
+    found = find_dimension_lines(
+        (dimension,),
+        (_value("40mm", (462.0, 185.0, 40.0, 30.0)),),
+        (dimension, _rim()),
+        ink,
+        float(_PEN),
+    )
+
+    # Then the ticks are read on the stroke itself, and the value sizes the rim
+    assert len(found) == 1
+    assert found[0].target_id == EntityId("rim")

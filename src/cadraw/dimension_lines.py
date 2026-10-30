@@ -54,6 +54,9 @@ _TEXT_ACROSS_HEIGHTS = 1.5
 _TARGET_SLACK_WIDTHS = 3.0
 _TARGET_SLACK_RATIO = 0.1
 _PARALLEL_DEGREES = 8.0
+_BOTH_SIDES = frozenset({1, -1})
+_STROKE_PROBE_WIDTHS = 5.0
+_STROKE_SEARCH_WIDTHS = 6.0
 _TARGET_REACH_LENGTHS = 1.0
 
 
@@ -171,24 +174,64 @@ def _tick_sides(
     return None
 
 
-def _ticked(mask: InkMask, line: LineEntity, width: float) -> bool:
-    """Return whether a tick closes each end of a line.
+def _on_stroke(
+    mask: InkMask,
+    end: Point,
+    inward: tuple[float, float],
+    normal: tuple[float, float],
+    width: float,
+) -> Point:
+    """Return a line's end moved across onto the stroke it was traced from.
 
-    A tick crosses the line, so it shows on both sides. A freehand line can
-    meet its tick off centre, and then one end may show it on one side only;
-    the other end then shows it on the other side or both. Short strokes
-    leaving both ends on the same side are the corners of an open outline,
-    such as a channel's flanges, and not ticks.
+    Normalization snaps a nearly upright or level line to the axis, so on a
+    freehand stroke leaning a few degrees its ends lie a few pixels beside
+    the ink. A little inside the end the stroke is found across the line,
+    and the end is moved by that offset; with no stroke found it stays.
+    """
+    height, width_pixels = cast("tuple[int, int]", mask.shape[:2])
+    inside = Point(
+        end.x + inward[0] * _STROKE_PROBE_WIDTHS * width,
+        end.y + inward[1] * _STROKE_PROBE_WIDTHS * width,
+    )
+    reach = math.ceil(_STROKE_SEARCH_WIDTHS * width)
+    inked = [
+        offset
+        for offset in range(-reach, reach + 1)
+        if 0 <= (x := round(inside.x + normal[0] * offset)) < width_pixels
+        and 0 <= (y := round(inside.y + normal[1] * offset)) < height
+        and int(cast("int", mask[y, x])) > 0
+    ]
+    if not inked:
+        return end
+    nearest = min(inked, key=abs)
+    run = [nearest]
+    for step in (1, -1):
+        offset = nearest + step
+        while offset in inked:
+            run.append(offset)
+            offset += step
+    shift = (min(run) + max(run)) / 2.0
+    return Point(end.x + normal[0] * shift, end.y + normal[1] * shift)
+
+
+def _ticked(mask: InkMask, line: LineEntity, width: float) -> bool:
+    """Return whether a tick crosses the line on both sides at each end.
+
+    Short strokes leaving an end on one side only are the corners of an
+    open outline, such as a channel's flanges, and not ticks.
     """
     direction = _direction(line)
     if direction is None:
         return False
     normal = (-direction[1], direction[0])
-    start = _tick_sides(mask, line.start, direction, normal, width)
-    end = _tick_sides(mask, line.end, (-direction[0], -direction[1]), normal, width)
-    if not start or not end:
-        return False
-    return not (len(start) == 1 and start == end)
+    for end, inward in (
+        (line.start, direction),
+        (line.end, (-direction[0], -direction[1])),
+    ):
+        point = _on_stroke(mask, end, inward, normal, width)
+        if _tick_sides(mask, point, inward, normal, width) != _BOTH_SIDES:
+            return False
+    return True
 
 
 def _direction(line: LineEntity) -> tuple[float, float] | None:
