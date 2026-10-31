@@ -31,6 +31,7 @@ _RULED_CELL_MAXIMUM_RATIO = 0.08
 _RULED_CELL_SIZE_SPREAD = 2.0
 _RULED_CELL_WALL_RATIO = 0.002
 _RULED_CELL_NEIGHBOURS = 2
+_RULED_CELL_JUMP = 2.0
 _NO_CELL = float(1 << 24)
 _BACKDROP_SCALE = 0.25
 _BACKDROP_SMOOTHING = 15
@@ -656,14 +657,19 @@ def excess_ruled_cells(masks: Sequence[GrayImage]) -> tuple[int, ...]:
     """Return each variant's ruled cells beyond the fewest any variant kept.
 
     The pen strokes of a drawing survive every variant, so a part whose
-    slots sit so close that their outlines merge into one lattice shows the
-    same lattice in all of them and nothing is counted. Faint printed ruling
-    is kept by some variants and dropped by others, and only those keeping
-    it are charged with it.
+    slots sit so close that their outlines merge into one lattice shows much
+    the same lattice in all of them. Even where one variant loses some of
+    those slots to a faint stroke, the counts stay within a factor of two.
+    Faint printed ruling multiplies a variant's count instead, from none or a
+    few in a variant that dropped it to hundreds in one that kept it. Only a
+    variant holding more than twice the fewest is charged, and only with the
+    difference.
     """
     counts = tuple(ruled_cell_count(mask) for mask in masks)
     floor = min(counts, default=0)
-    return tuple(count - floor for count in counts)
+    return tuple(
+        count - floor if count > _RULED_CELL_JUMP * floor else 0 for count in counts
+    )
 
 
 def _walled_neighbours(

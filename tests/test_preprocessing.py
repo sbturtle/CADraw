@@ -177,6 +177,19 @@ def test_a_lattice_every_variant_keeps_is_drawn_and_not_charged() -> None:
     )
 
 
+def test_a_lattice_a_variant_partly_lost_is_not_charged() -> None:
+    # Given a drawn lattice of cells, one variant losing a third of them to
+    # a faint stroke
+    lattice = _photographed_ruling(_cross())
+    partial = lattice.copy()
+    partial[:, :130] = 0
+    kept, fewer = ruled_cell_count(lattice), ruled_cell_count(partial)
+    assert fewer < kept <= 2 * fewer
+
+    # Then the variant that kept them all is not charged for it
+    assert excess_ruled_cells((lattice, partial)) == (0, 0)
+
+
 def test_a_drawing_full_of_holes_is_not_ruling() -> None:
     # Given a plate with six bolt holes and a slot, all enclosed paper
     mask = _cross()
