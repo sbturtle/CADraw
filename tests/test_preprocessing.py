@@ -1,7 +1,9 @@
 from pathlib import Path
 from typing import cast
 
+import cv2
 import numpy as np
+from numpy.typing import NDArray
 
 from cadraw.models import EntityId, LineCandidate, Point
 from cadraw.preprocessing import (
@@ -9,8 +11,10 @@ from cadraw.preprocessing import (
     PreprocessingVariant,
     ScoreContext,
     backdrop_mask,
+    excess_ruled_cells,
     illumination_flattened,
     preprocess_variants,
+    ruled_cell_count,
     score_candidates,
     write_debug_outputs,
 )
@@ -84,11 +88,29 @@ def test_global_variant_refuses_faint_ruling_that_adaptive_amplifies() -> None:
     assert masks[PreprocessingVariant.GRAYSCALE_ADAPTIVE][100, 100] == 255
 
 
-def _scored(paper_shape_count: int) -> float:
-    """Score one fixed candidate set against a given proved-paper count."""
+def _cross() -> NDArray[np.uint8]:
+    """Return the mask of two crossing strokes."""
     mask = np.zeros((400, 400), dtype=np.uint8)
     mask[198:202, 40:360] = 255
     mask[40:360, 198:202] = 255
+    return mask
+
+
+def _photographed_ruling(mask: NDArray[np.uint8]) -> NDArray[np.uint8]:
+    """Add a sheet of ruling seen at an angle, its cells shrinking upward."""
+    ruled = mask.copy()
+    for index in range(-12, 30):
+        x = 10.0 + index * 16.0
+        _ = cv2.line(ruled, (round(x), 399), (round(200 + (x - 200) * 0.8), 0), 255, 1)
+    for index in range(30):
+        y = 399.0 - index * (18.0 - index * 0.3)
+        _ = cv2.line(ruled, (0, round(y)), (399, round(y - 20)), 255, 1)
+    return ruled
+
+
+def _scored(paper_shape_count: int) -> float:
+    """Score one fixed candidate set against a given proved-paper count."""
+    mask = _cross()
     candidates = (
         LineCandidate(
             entity_id=EntityId("a"),
@@ -125,6 +147,98 @@ def test_a_ruled_sheet_worth_of_proved_paper_is_penalised() -> None:
     # Given a variant that turned a whole ruled sheet into closed shapes
     # Then it scores well below one that did not
     assert _scored(900) < _scored(0) - 0.2
+
+
+def test_ruling_photographed_at_an_angle_is_charged_without_a_proof() -> None:
+    # Given one variant that kept a sheet's ruling, photographed at an angle
+    # so no shape proof recognised its cells, and one that kept the drawing
+    ruled = _photographed_ruling(_cross())
+
+    # When the variants' masks are compared
+    excess = excess_ruled_cells((ruled, _cross()))
+
+    # Then the ruling variant is charged with its cells, enough to score
+    # well below the other
+    assert excess[0] > 200
+    assert excess[1] == 0
+    assert _scored(excess[0]) < _scored(0) - 0.2
+
+
+def test_a_lattice_every_variant_keeps_is_drawn_and_not_charged() -> None:
+    # Given a part whose slots sit so close that their outlines merge into
+    # one lattice, which every variant keeps alike
+    lattice = _photographed_ruling(_cross())
+
+    # Then no variant is charged for it
+    assert excess_ruled_cells((lattice, lattice.copy(), lattice.copy())) == (
+        0,
+        0,
+        0,
+    )
+
+
+def test_a_lattice_a_variant_partly_lost_is_not_charged() -> None:
+    # Given a drawn lattice of cells, one variant losing a third of them to
+    # a faint stroke
+    lattice = _photographed_ruling(_cross())
+    partial = lattice.copy()
+    partial[:, :130] = 0
+    kept, fewer = ruled_cell_count(lattice), ruled_cell_count(partial)
+    assert fewer < kept <= 2 * fewer
+
+    # Then the variant that kept them all is not charged for it
+    assert excess_ruled_cells((lattice, partial)) == (0, 0)
+
+
+def test_a_drawing_full_of_holes_is_not_ruling() -> None:
+    # Given a plate with six bolt holes and a slot, all enclosed paper
+    mask = _cross()
+    for index in range(6):
+        _ = cv2.circle(mask, (60 + index * 55, 100), 12, 255, 2)
+    _ = cv2.rectangle(mask, (80, 280), (160, 310), 255, 2)
+
+    # Then none of its holes faces two others across a single rule
+    assert ruled_cell_count(mask) == 0
+
+
+def test_a_plate_perforated_with_many_equal_slots_is_not_ruling() -> None:
+    # Given a 1200 by 900 plate drawn with 132 equal 20 by 50 slots, each
+    # traced with its own outline, a few millimetres of paper between them
+    mask = np.zeros((1200, 900), dtype=np.uint8)
+    for row in range(11):
+        for column in range(12):
+            left, top = 60 + column * 66, 80 + row * 96
+            _ = cv2.rectangle(mask, (left, top), (left + 24, top + 54), 255, 2)
+
+    # Then none of the slots faces another across a single rule
+    assert ruled_cell_count(mask) == 0
+
+
+def _packed_slots(*, closed: bool) -> NDArray[np.uint8]:
+    """Return a 2000 by 2400 sheet of 20 by 50 slots with 2 px outlines.
+
+    Neighbouring outlines are a single pixel of paper apart, or with
+    `closed` that pixel is inked over, as a morphological closing does.
+    """
+    mask = np.zeros((2400, 2000), dtype=np.uint8)
+    lefts = [100 + column * 25 for column in range(40)]
+    tops = [100 + row * 55 for row in range(20)]
+    if closed:
+        mask[100 : tops[-1] + 54, 100 : lefts[-1] + 24] = 255
+    for top in tops:
+        for left in lefts:
+            mask[top : top + 54, left : left + 24] = 255
+            mask[top + 2 : top + 52, left + 2 : left + 22] = 0
+    return mask
+
+
+def test_slots_packed_until_their_outlines_touch_are_not_ruling() -> None:
+    # Given a sheet of 800 slots whose 2 px outlines are a pixel apart, and
+    # the same sheet once that pixel has been closed over
+    # Then no slot faces another across a single rule: two outlines make a
+    # wall of at least four pixels
+    assert ruled_cell_count(_packed_slots(closed=False)) == 0
+    assert ruled_cell_count(_packed_slots(closed=True)) == 0
 
 
 def test_the_paper_penalty_saturates_instead_of_running_away() -> None:
