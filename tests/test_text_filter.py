@@ -183,6 +183,27 @@ def test_only_as_many_loops_as_the_digit_has_are_removed() -> None:
     assert removal.shapes == (circles[0],)
 
 
+def test_a_loop_closed_across_its_own_stroke_goes_as_one_loop() -> None:
+    # Given a `9` in `149` whose loop crossed itself into two touching circles,
+    # one of them just past the end of the box OCR drew
+    halves = tuple(
+        CircleCandidate(EntityId(f"half_{index}"), Point(x, 120.0), 5.0, 0.9)
+        for index, x in enumerate((174.0, 184.0))
+    )
+
+    # When shapes are checked against the label
+    removal = without_text_strokes(
+        (),
+        halves,
+        (_label("149"),),
+        _mask_with(),
+        TextStrokeConfig(),
+    )
+
+    # Then both halves go as the nine's one loop
+    assert removal.shapes == ()
+
+
 def test_a_hole_read_after_a_number_keeps_its_place() -> None:
     # Given `100` and a hole drawn right after it, read together as `100O`
     zeros = tuple(

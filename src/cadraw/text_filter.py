@@ -48,6 +48,9 @@ _SAMPLE_SPACING = 3.0
 # Closed loops a handwritten glyph encloses. A letter `O` is left out: a
 # drilled hole drawn after a label is read as one.
 _GLYPH_LOOPS = {"0": 1, "6": 1, "8": 2, "9": 1, "Ø": 1, "ø": 1, "φ": 1, "Φ": 1}
+# A pen that crosses its own stroke while closing a loop, as a quick `9` often
+# does, leaves two small loops whose rims meet. Circles that close are one loop.
+_LOOP_CONTACT_RATIO = 1.15
 _ARC_SAMPLE_DEGREES = 10.0
 
 
@@ -197,14 +200,15 @@ def _glyph_loop_ids(
     drilled hole is usually labelled by an arrow and a size written right
     after it, so OCR reads hole and label as one string such as `0149`. A
     hole read as the letter `O`, as in `100O`, sits in a share no digit
-    explains and stays.
+    explains and stays. A placed circle whose rim meets a taken loop goes with
+    it, because a loop closed by crossing the stroke is found as two circles.
     """
     circles = tuple(shape for shape in shapes if isinstance(shape, CircleCandidate))
     removed: set[EntityId] = set()
     for label in labels:
         count = len(label.text)
         placed = tuple(
-            (position, circle.entity_id)
+            (position, circle)
             for circle in circles
             if (position := _position_along(circle, label)) is not None
             and position > config.leading_glyph_fraction
@@ -215,12 +219,28 @@ def _glyph_loop_ids(
                 continue
             low, high = index / count, (index + 1) / count
             in_share = sorted(
-                (abs(position - (low + high) / 2.0), entity_id)
-                for position, entity_id in placed
-                if low <= position <= high and entity_id not in removed
+                (
+                    (abs(position - (low + high) / 2.0), circle)
+                    for position, circle in placed
+                    if low <= position <= high and circle.entity_id not in removed
+                ),
+                key=lambda item: item[0],
             )
-            removed.update(entity_id for _, entity_id in in_share[:loops])
+            taken = tuple(circle for _, circle in in_share[:loops])
+            removed.update(
+                circle.entity_id
+                for _, circle in placed
+                if any(_loops_meet(circle, loop) for loop in taken)
+            )
     return removed
+
+
+def _loops_meet(first: CircleCandidate, second: CircleCandidate) -> bool:
+    """Return whether two circles are the same loop or touch rim to rim."""
+    return math.hypot(
+        first.center.x - second.center.x,
+        first.center.y - second.center.y,
+    ) <= _LOOP_CONTACT_RATIO * (first.radius + second.radius)
 
 
 def _inside(region: Region, point: Point) -> bool:
