@@ -150,6 +150,26 @@ def test_the_desk_beside_a_photographed_sheet_is_backdrop() -> None:
     assert not flags[402][450]
 
 
+def test_a_deep_shadow_fading_into_the_paper_is_not_backdrop() -> None:
+    # Given a sheet on a dark desk, its lower right corner under a shadow
+    # darker than half the paper's level that fades in over 80 px
+    rows = np.arange(800, dtype=np.float64)[:, np.newaxis]
+    columns = np.arange(600, dtype=np.float64)[np.newaxis, :]
+    depth = np.clip(np.minimum((rows - 400) / 80.0, (columns - 200) / 80.0), 0, 1)
+    image = np.asarray(220.0 - 140.0 * depth, dtype=np.uint8)
+    image[:, :150] = 40
+    image[600:604, 300:550] = 20
+
+    mask = backdrop_mask(image)
+
+    # Then the desk, whose edge is a step, is backdrop; the shadow is paper
+    assert mask is not None
+    flags = cast("list[list[bool]]", mask.tolist())
+    assert flags[200][50]
+    assert not flags[650][400]
+    assert not flags[602][450]
+
+
 def test_a_scan_shows_no_backdrop() -> None:
     # Given a full sheet of paper with a drawn rectangle
     image = np.full((800, 600), 245, dtype=np.uint8)
