@@ -214,6 +214,33 @@ def test_a_plate_perforated_with_many_equal_slots_is_not_ruling() -> None:
     assert ruled_cell_count(mask) == 0
 
 
+def _packed_slots(*, closed: bool) -> NDArray[np.uint8]:
+    """Return a 2000 by 2400 sheet of 20 by 50 slots with 2 px outlines.
+
+    Neighbouring outlines are a single pixel of paper apart, or with
+    `closed` that pixel is inked over, as a morphological closing does.
+    """
+    mask = np.zeros((2400, 2000), dtype=np.uint8)
+    lefts = [100 + column * 25 for column in range(40)]
+    tops = [100 + row * 55 for row in range(20)]
+    if closed:
+        mask[100 : tops[-1] + 54, 100 : lefts[-1] + 24] = 255
+    for top in tops:
+        for left in lefts:
+            mask[top : top + 54, left : left + 24] = 255
+            mask[top + 2 : top + 52, left + 2 : left + 22] = 0
+    return mask
+
+
+def test_slots_packed_until_their_outlines_touch_are_not_ruling() -> None:
+    # Given a sheet of 800 slots whose 2 px outlines are a pixel apart, and
+    # the same sheet once that pixel has been closed over
+    # Then no slot faces another across a single rule: two outlines make a
+    # wall of at least four pixels
+    assert ruled_cell_count(_packed_slots(closed=False)) == 0
+    assert ruled_cell_count(_packed_slots(closed=True)) == 0
+
+
 def test_the_paper_penalty_saturates_instead_of_running_away() -> None:
     # Given two variants that both manufactured hundreds of cells
     # Then the penalty stops growing, so other evidence still decides

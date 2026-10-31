@@ -29,7 +29,7 @@ _PAPER_SHAPE_SATURATION = 120.0
 _RULED_CELL_MINIMUM_RATIO = 0.01
 _RULED_CELL_MAXIMUM_RATIO = 0.08
 _RULED_CELL_SIZE_SPREAD = 2.0
-_RULED_CELL_WALL_RATIO = 0.002
+_RULED_CELL_WALL_REACH = 2
 _RULED_CELL_NEIGHBOURS = 2
 _RULED_CELL_JUMP = 2.0
 _NO_CELL = float(1 << 24)
@@ -608,8 +608,10 @@ def ruled_cell_count(mask: GrayImage) -> int:
     closed cells, one to eight percent of the frame's short side across and
     within a factor of two of their median area, whatever the angle the grid
     was photographed at. Each cell is walled off from its neighbours by a
-    single thin rule, so only a cell with at least two others across a wall
-    no thicker than 0.4% of the short side is counted. A drawing's holes and
+    single printed rule, a few pixels at most, so only a cell with at least
+    two others across a wall no thicker than three pixels is counted. Two
+    drawn outlines side by side are each a pen stroke, so even with no paper
+    left between them their wall is thicker than that. A drawing's holes and
     slots, even many of one size, each have their own outline and paper
     around it. Regions touching the frame are open paper.
     """
@@ -646,11 +648,7 @@ def ruled_cell_count(mask: GrayImage) -> int:
     )
     columns = slice(int(np.min(left[similar])), int(np.max(right[similar])))
     rows = slice(int(np.min(top[similar])), int(np.max(bottom[similar])))
-    return _walled_neighbours(
-        cast("NDArray[np.int32]", found)[rows, columns],
-        similar,
-        short_side,
-    )
+    return _walled_neighbours(cast("NDArray[np.int32]", found)[rows, columns], similar)
 
 
 def excess_ruled_cells(masks: Sequence[GrayImage]) -> tuple[int, ...]:
@@ -675,7 +673,6 @@ def excess_ruled_cells(masks: Sequence[GrayImage]) -> tuple[int, ...]:
 def _walled_neighbours(
     labels: NDArray[np.int32],
     selected: NDArray[np.bool_],
-    short_side: float,
 ) -> int:
     """Count selected regions with enough others just across a thin wall.
 
@@ -689,8 +686,8 @@ def _walled_neighbours(
         1, int(np.count_nonzero(selected)) + 1, dtype=np.float32
     )
     cells = numbering[labels]
-    reach = max(2, round(_RULED_CELL_WALL_RATIO * short_side))
-    window = np.ones((2 * reach + 1, 2 * reach + 1), dtype=np.uint8)
+    side = 2 * _RULED_CELL_WALL_REACH + 1
+    window = np.ones((side, side), dtype=np.uint8)
     highest = np.asarray(cv2.dilate(cells, window), dtype=np.float32)
     lowest = np.asarray(
         cv2.erode(np.where(cells > 0, cells, _NO_CELL).astype(np.float32), window),
