@@ -175,6 +175,19 @@ def test_a_drawing_full_of_holes_is_not_ruling() -> None:
     assert _scored(0, mask) == _scored(0, _cross())
 
 
+def test_a_plate_perforated_with_many_equal_slots_is_not_ruling() -> None:
+    # Given a 1200 by 900 plate drawn with 132 equal 20 by 50 slots, each
+    # traced with its own outline, a few millimetres of paper between them
+    mask = np.zeros((1200, 900), dtype=np.uint8)
+    for row in range(11):
+        for column in range(12):
+            left, top = 60 + column * 66, 80 + row * 96
+            _ = cv2.rectangle(mask, (left, top), (left + 24, top + 54), 255, 2)
+
+    # Then none of the slots faces another across a single rule
+    assert ruled_cell_count(mask) == 0
+
+
 def test_the_paper_penalty_saturates_instead_of_running_away() -> None:
     # Given two variants that both manufactured hundreds of cells
     # Then the penalty stops growing, so other evidence still decides
