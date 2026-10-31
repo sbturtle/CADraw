@@ -33,6 +33,7 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+from cadraw.grid_field import ink_above_ruling
 from cadraw.models import (
     CircleCandidate,
     EntityId,
@@ -87,6 +88,7 @@ class FaceConfig:
     clean_paper_sigmas: float = 6.0
     clean_paper_percentile: float = 3.0
     clean_paper_margin: float = 4.0
+    ruled_ink_contrast: float = 8.0
     feature_close_size: int = 3
     part_close_ratio: float = 0.006
     minimum_face_area: float = 15.0
@@ -185,10 +187,9 @@ def _weak_cut(
 ) -> float:
     """Return the lighter cut that admits the faint run of a drawn stroke.
 
-    On ruled paper the cut stays halfway towards paper, because the ruling is
-    as dark as faint pencil and hysteresis would grow into every rail a line
-    crosses. On clean, evenly lit paper the cut follows the paper itself: a
-    few noise widths below its typical level, which keeps a faint arc whole.
+    The cut stays halfway towards paper unless `sensitive`. On clean, evenly
+    lit paper it then follows the paper itself: a few noise widths below its
+    typical level, which keeps a faint arc whole.
     """
     conservative = strong_cut + (_INK - strong_cut) * config.weak_ink_fraction
     paper = np.asarray(flattened[flattened > strong_cut], dtype=np.float64)
@@ -197,7 +198,7 @@ def _weak_cut(
     median = float(np.median(paper))
     deviations: NDArray[np.float64] = np.abs(np.subtract(paper, median))
     sigma = float(np.median(deviations)) * _MAD_TO_SIGMA
-    if sigma > config.clean_paper_sigma or ruled_paper(flattened):
+    if sigma > config.clean_paper_sigma:
         return conservative
     paper_cut = min(
         median - config.clean_paper_sigmas * sigma,
@@ -231,16 +232,32 @@ def flattened_ink(
     *,
     sensitive: bool = False,
 ) -> GrayImage:
-    """Binarize strokes on an already illumination-flattened page."""
+    """Binarize strokes on an already illumination-flattened page.
+
+    On ruled paper no cut on darkness can be sensitive, because the ruling is
+    as dark as faint pencil and hysteresis would grow into every rail a line
+    crosses. There the cut stays halfway towards paper, and `sensitive` adds
+    what stands out of the ruling once each rail's own darkness is taken
+    away (`grid_field`), still only where it continues confident ink.
+    """
     strong_cut, _ = cv2.threshold(
         flattened,
         0,
         _INK,
         cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,
     )
-    weak_cut = _weak_cut(flattened, strong_cut, config, sensitive=sensitive)
+    ruled = sensitive and ruled_paper(flattened)
+    weak_cut = _weak_cut(
+        flattened,
+        strong_cut,
+        config,
+        sensitive=sensitive and not ruled,
+    )
     strong: NDArray[np.bool_] = np.less_equal(flattened, strong_cut)
-    weak = np.asarray(np.less_equal(flattened, weak_cut), dtype=np.uint8)
+    faint: NDArray[np.bool_] = np.less_equal(flattened, weak_cut)
+    if ruled:
+        faint |= ink_above_ruling(flattened, config.ruled_ink_contrast, faint)
+    weak = np.asarray(faint, dtype=np.uint8)
     count, labels = cv2.connectedComponents(weak, connectivity=8)
     label_image = np.asarray(labels, dtype=np.int32)
     keep = np.zeros(int(count), dtype=np.bool_)
