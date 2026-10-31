@@ -160,7 +160,10 @@ ADR-0020).
 보존하고(onnxruntime이 없으면 Tesseract), 기존 `parse_dimension_text`를 거친
 값만 `NEEDS_REVIEW` 치수로 추가합니다. 소수점 아래 세 자리 이상(가격·날짜·천
 단위 구분)과 기호 없는 한 자리 숫자는 제안하지 않습니다. OCR은 분석 프레임이
-정해진 직후, 선 정규화 전에 실행됩니다. `text_filter.without_text_strokes`가
+정해진 직후 별도 스레드에서 시작해 전처리 variant 평가·선 검출과 동시에 돌고,
+선 정규화 전에 합류합니다. onnxruntime과 OpenCV가 모두 GIL을 놓으므로 사진 한
+장 분석이 약 18% 빨라집니다. 원근 보정을 찾았다가 거부해 프레임이 바뀌면,
+먼저 시작한 판독은 버리고 원본 프레임을 다시 읽습니다. `text_filter.without_text_strokes`가
 숫자 두 개 이상으로 읽힌 상자 안에 후보와 그 밑의 잉크 성분이 모두 들어 있는
 선·다각형·호 후보를 제거하고 `TEXT_STROKES_REMOVED`를 남깁니다. 원은 구멍일
 수 있으므로, 상자 안에 통째로 들어가고 읽는 방향 앞쪽 30% 밖에 있는 작은

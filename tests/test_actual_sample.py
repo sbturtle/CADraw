@@ -1,12 +1,22 @@
+from dataclasses import replace
 from math import isfinite
 from pathlib import Path
+from typing import cast
 
+import numpy as np
 import pytest
 from scripts.run_poc import PocOptions, run
 
-from cadraw.detection import DetectionConfig
+from cadraw.detection import DetectionConfig, load_grayscale_image
 from cadraw.export import validate_dxf
-from cadraw.models import CircleEntity, LineEntity, Orientation, Point
+from cadraw.models import (
+    CircleEntity,
+    LineEntity,
+    Orientation,
+    Point,
+    TextCandidate,
+    WarningCode,
+)
 from cadraw.normalization import NormalizationConfig
 from cadraw.pipeline import PipelineConfig, analyze_image
 
@@ -288,3 +298,44 @@ def test_an_end_view_keeps_every_concentric_circle_once(
                 all(on_rim(point, circle) for point in (line.start, midpoint, line.end))
                 for circle in circles
             )
+
+
+class _FrameNamingOcrBackend:
+    """Read "77" from a frame of the source's size and "88" from any other."""
+
+    def __init__(self, source_shape: tuple[int, ...]) -> None:
+        self.source_shape: tuple[int, ...] = source_shape
+        self.frames: list[tuple[int, ...]] = []
+
+    def recognize(self, image: np.ndarray) -> tuple[TextCandidate, ...]:
+        shape = cast("tuple[int, ...]", image.shape)
+        self.frames.append(shape)
+        return (
+            TextCandidate(
+                text="77" if shape == self.source_shape else "88",
+                bounds=(10.0, 10.0, 30.0, 16.0),
+                confidence=0.9,
+            ),
+        )
+
+
+def test_labels_come_from_the_frame_kept_after_a_rejected_warp() -> None:
+    # Given a photo whose page warp is found and then rejected, so labels
+    # begin to be read from the warped frame while geometry is detected
+    path = _PEN2STEP / "real_17_mv.jpg"
+    source_shape = cast("tuple[int, ...]", load_grayscale_image(path).shape)
+    reader = _FrameNamingOcrBackend(source_shape)
+
+    analysis = analyze_image(
+        path,
+        replace(PipelineConfig.from_detection_defaults(), ocr_enabled=True),
+        reader,
+    )
+
+    # Then the labels kept are the ones read from the source frame
+    assert any(
+        warning.code is WarningCode.PERSPECTIVE_REJECTED
+        for warning in analysis.warnings
+    )
+    assert reader.frames[-1] == source_shape
+    assert [candidate.text for candidate in analysis.text_candidates] == ["77"]

@@ -2,6 +2,7 @@
 
 import math
 import os
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from io import BytesIO
 from pathlib import Path
@@ -1357,20 +1358,80 @@ def _second_reader_for(
     return None if model is None else OllamaTextReader(model=model)
 
 
-def _read_text(
-    analysis_image: GrayImage,
+# Labels are read on their own thread while geometry is detected. Recognition
+# runs in onnxruntime and detection in OpenCV, which both release the GIL, so
+# the two overlap; reading is the slower half of an analysis on a photo.
+_READER_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cadraw-ocr")
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingReading:
+    """Labels being read from one analysis frame, if OCR is on."""
+
+    frame: GrayImage
+    config: PipelineConfig
+    ocr_backend: OcrBackend | None
+    second_reader: TextReader | None
+    result: "Future[OcrResult] | None"
+
+
+def _recognized(
+    frame: GrayImage,
     config: PipelineConfig,
     ocr_backend: OcrBackend | None,
     second_reader: TextReader | None,
-    warnings: list[AnalysisWarning],
 ) -> OcrResult:
-    """Read labels in the analysis frame and report what could not run."""
-    reader = _second_reader_for(config, second_reader)
-    result = recognize_dimensions(
-        analysis_image,
+    """Read the labels of one frame."""
+    return recognize_dimensions(
+        frame,
         ocr_backend if ocr_backend is not None else discover_ocr_backend(),
-        second_reader=reader,
+        second_reader=_second_reader_for(config, second_reader),
     )
+
+
+def _start_reading(
+    frame: GrayImage,
+    config: PipelineConfig,
+    ocr_backend: OcrBackend | None,
+    second_reader: TextReader | None,
+) -> _PendingReading:
+    """Begin reading a frame's labels on the reader thread."""
+    return _PendingReading(
+        frame=frame,
+        config=config,
+        ocr_backend=ocr_backend,
+        second_reader=second_reader,
+        result=(
+            _READER_POOL.submit(_recognized, frame, config, ocr_backend, second_reader)
+            if config.ocr_enabled
+            else None
+        ),
+    )
+
+
+def _read_text(
+    pending: _PendingReading,
+    analysis_image: GrayImage,
+    warnings: list[AnalysisWarning],
+) -> OcrResult | None:
+    """Wait for the labels in the analysis frame and report what could not run.
+
+    A perspective correction that was found and then rejected changes the
+    frame after reading began; the labels are then read from the frame the
+    geometry came from instead.
+    """
+    if pending.result is None:
+        return None
+    if pending.frame is analysis_image:
+        result = pending.result.result()
+    else:
+        _ = pending.result.cancel()
+        result = _recognized(
+            analysis_image,
+            pending.config,
+            pending.ocr_backend,
+            pending.second_reader,
+        )
     if not result.available:
         warnings.append(
             AnalysisWarning(
@@ -1703,6 +1764,12 @@ def _uncertain_reading_warnings(
     )
 
 
+def _size_of(image: GrayImage) -> tuple[int, int]:
+    """Return an image's width and height."""
+    height, width = cast("tuple[int, int]", image.shape[:2])
+    return width, height
+
+
 def analyze_image(
     image_path: Path,
     config: PipelineConfig,
@@ -1712,7 +1779,6 @@ def analyze_image(
 ) -> DrawingAnalysis:
     """Analyze one image without inventing physical dimensions."""
     source_image = load_grayscale_image(image_path)
-    image_shape = cast("tuple[int, int]", source_image.shape[:2])
     warnings: list[AnalysisWarning] = []
     cleanup = clean_page(source_image, config.page_cleanup)
     if cleanup.applied:
@@ -1735,6 +1801,7 @@ def analyze_image(
         inverse_matrix,
         perspective_transform,
     ) = _prepare_analysis_frame(source_image, config, warnings)
+    pending_reading = _start_reading(analysis_image, config, ocr_backend, second_reader)
     detection_config = _effective_detection_config(config)
     detection_stream = _select_detection_stream(
         analysis_image,
@@ -1801,11 +1868,7 @@ def analyze_image(
         if detection_config.faces.enabled
         else _ink_mask_for(detection_stream)
     )
-    ocr_result = (
-        _read_text(analysis_image, config, ocr_backend, second_reader, warnings)
-        if config.ocr_enabled
-        else None
-    )
+    ocr_result = _read_text(pending_reading, analysis_image, warnings)
     candidates, _, line_lettering = _without_lettering(
         candidates,
         ShapeDetectionEvidence(()),
@@ -1983,7 +2046,7 @@ def analyze_image(
     )
     return DrawingAnalysis(
         unit="mm",
-        image_size=(image_shape[1], image_shape[0]),
+        image_size=_size_of(source_image),
         entities=entities,
         dimensions=suggested_dimensions,
         connections=build_connections(
