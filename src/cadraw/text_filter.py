@@ -204,9 +204,8 @@ def _glyph_loop_ids(
     hole read as the letter `O`, as in `100O`, sits in a share no digit
     explains and stays. A circle in the same share whose rim meets a taken
     loop on the same piece of ink goes with it, because a loop closed by
-    crossing the stroke is found as two circles; after the last glyph that
-    half may lie past the box. A hole drawn apart from the digit is its own
-    piece of ink and stays.
+    crossing the stroke is found as two circles. A half past the end of the
+    box stays: a hole drawn touching the last digit would look the same.
     """
     circles = tuple(shape for shape in shapes if isinstance(shape, CircleCandidate))
     removed: set[EntityId] = set()
@@ -232,15 +231,14 @@ def _glyph_loop_ids(
                 key=lambda item: item[0],
             )
             taken = tuple(circle for _, circle in in_share[:loops])
-            # Only this glyph's share, or past the end of the label after the
-            # last glyph, can hold the other half; a circle in a neighbour's
-            # share is that glyph's to explain, and an `O` explains none.
-            last = index == count - 1
+            # Only this glyph's share can hold the other half; a circle in a
+            # neighbour's share is that glyph's to explain, and an `O`
+            # explains none.
             removed.update(loop.entity_id for loop in taken)
             removed.update(
                 circle.entity_id
                 for position, circle in placed
-                if (low <= position <= high or (last and position > high))
+                if low <= position <= high
                 and any(_other_half(circle, loop, ink) for loop in taken)
             )
     return removed
