@@ -320,9 +320,9 @@ class _FrameNamingOcrBackend:
 
 
 def test_labels_come_from_the_frame_kept_after_a_rejected_warp() -> None:
-    # Given a photo whose page warp is found and then rejected, so labels
+    # Given the sample whose page warp is found and then rejected, so labels
     # begin to be read from the warped frame while geometry is detected
-    path = _PEN2STEP / "real_17_mv.jpg"
+    path = _PURE_BACKGROUND_SAMPLE
     source_shape = cast("tuple[int, ...]", load_grayscale_image(path).shape)
     reader = _FrameNamingOcrBackend(source_shape)
 
