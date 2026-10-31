@@ -204,6 +204,24 @@ def test_a_loop_closed_across_its_own_stroke_goes_as_one_loop() -> None:
     assert removal.shapes == ()
 
 
+def test_a_hole_touching_a_digit_loop_in_the_next_share_is_kept() -> None:
+    # Given `100O` whose last zero's loop touches the hole read as `O`
+    zero = CircleCandidate(EntityId("zero"), Point(155.0, 120.0), 5.0, 0.9)
+    hole = CircleCandidate(EntityId("hole"), Point(166.0, 120.0), 5.0, 0.9)
+
+    # When shapes are checked against the label
+    removal = without_text_strokes(
+        (),
+        (zero, hole),
+        (_label("100O"),),
+        _mask_with(),
+        TextStrokeConfig(),
+    )
+
+    # Then the zero's loop goes and the hole in the `O` share stays
+    assert removal.shapes == (hole,)
+
+
 def test_a_hole_read_after_a_number_keeps_its_place() -> None:
     # Given `100` and a hole drawn right after it, read together as `100O`
     zeros = tuple(

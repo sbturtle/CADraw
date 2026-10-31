@@ -200,8 +200,9 @@ def _glyph_loop_ids(
     drilled hole is usually labelled by an arrow and a size written right
     after it, so OCR reads hole and label as one string such as `0149`. A
     hole read as the letter `O`, as in `100O`, sits in a share no digit
-    explains and stays. A placed circle whose rim meets a taken loop goes with
-    it, because a loop closed by crossing the stroke is found as two circles.
+    explains and stays. A circle in the same share whose rim meets a taken
+    loop goes with it, because a loop closed by crossing the stroke is found
+    as two circles; after the last glyph that half may lie past the box.
     """
     circles = tuple(shape for shape in shapes if isinstance(shape, CircleCandidate))
     removed: set[EntityId] = set()
@@ -227,10 +228,15 @@ def _glyph_loop_ids(
                 key=lambda item: item[0],
             )
             taken = tuple(circle for _, circle in in_share[:loops])
+            # Only this glyph's share, or past the end of the label after the
+            # last glyph, can hold the other half; a circle in a neighbour's
+            # share is that glyph's to explain, and an `O` explains none.
+            last = index == count - 1
             removed.update(
                 circle.entity_id
-                for _, circle in placed
-                if any(_loops_meet(circle, loop) for loop in taken)
+                for position, circle in placed
+                if (low <= position <= high or (last and position > high))
+                and any(_loops_meet(circle, loop) for loop in taken)
             )
     return removed
 
