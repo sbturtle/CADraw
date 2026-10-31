@@ -1418,7 +1418,8 @@ def _read_text(
 
     A perspective correction that was found and then rejected changes the
     frame after reading began; the labels are then read from the frame the
-    geometry came from instead.
+    geometry came from instead. That reading is queued behind the first on
+    the same single reader thread, so the two never share the engine.
     """
     if pending.result is None:
         return None
@@ -1426,12 +1427,13 @@ def _read_text(
         result = pending.result.result()
     else:
         _ = pending.result.cancel()
-        result = _recognized(
+        result = _READER_POOL.submit(
+            _recognized,
             analysis_image,
             pending.config,
             pending.ocr_backend,
             pending.second_reader,
-        )
+        ).result()
     if not result.available:
         warnings.append(
             AnalysisWarning(

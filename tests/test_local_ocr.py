@@ -1,7 +1,11 @@
 import importlib.util
+import time
+from concurrent.futures import ThreadPoolExecutor
 from importlib.machinery import ModuleSpec
 from pathlib import Path
+from threading import Lock
 from types import SimpleNamespace
+from typing import override
 
 import numpy as np
 import pytest
@@ -73,6 +77,47 @@ def test_backend_keeps_detector_quads_and_drops_weak_readings(
     assert candidate.quad[0] == Point(20.0, 10.0)
     assert candidate.bounds == (19.0, 10.0, 41.0, 20.0)
     assert candidate.source == "rapidocr"
+
+
+class _OverlapCountingEngine(_FakeEngine):
+    """Records how many readings were inside the engine at once."""
+
+    def __init__(self) -> None:
+        super().__init__(("150", "30"), (0.9, 0.9))
+        self._guard: Lock = Lock()
+        self._inside: int = 0
+        self.most_at_once: int = 0
+
+    @override
+    def recognize_txt(self, img: list[np.ndarray]) -> object:
+        with self._guard:
+            self._inside += 1
+            self.most_at_once = max(self.most_at_once, self._inside)
+        time.sleep(0.02)
+        with self._guard:
+            self._inside -= 1
+        return super().recognize_txt(img)
+
+
+def test_readings_from_several_threads_take_the_engine_in_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given one shared engine and reading cache, and eight different frames
+    engine = _OverlapCountingEngine()
+
+    def fake_engine(_directory: Path | None) -> _OverlapCountingEngine:
+        return engine
+
+    monkeypatch.setattr(local_ocr, "_engine", fake_engine)
+    frames = [np.full((80, 160), 200 + index, np.uint8) for index in range(8)]
+
+    # When four threads read them at once
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        readings = list(pool.map(RapidOcrBackend().recognize, frames))
+
+    # Then every frame is read, one at a time
+    assert all(len(reading) == 2 for reading in readings)
+    assert engine.most_at_once == 1
 
 
 def test_engine_failures_surface_as_unavailable_ocr(
