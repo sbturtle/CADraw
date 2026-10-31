@@ -1,7 +1,9 @@
 from pathlib import Path
 from typing import cast
 
+import cv2
 import numpy as np
+from numpy.typing import NDArray
 
 from cadraw.models import EntityId, LineCandidate, Point
 from cadraw.preprocessing import (
@@ -11,6 +13,7 @@ from cadraw.preprocessing import (
     backdrop_mask,
     illumination_flattened,
     preprocess_variants,
+    ruled_cell_count,
     score_candidates,
     write_debug_outputs,
 )
@@ -84,11 +87,32 @@ def test_global_variant_refuses_faint_ruling_that_adaptive_amplifies() -> None:
     assert masks[PreprocessingVariant.GRAYSCALE_ADAPTIVE][100, 100] == 255
 
 
-def _scored(paper_shape_count: int) -> float:
-    """Score one fixed candidate set against a given proved-paper count."""
+def _cross() -> NDArray[np.uint8]:
+    """Return the mask of two crossing strokes."""
     mask = np.zeros((400, 400), dtype=np.uint8)
     mask[198:202, 40:360] = 255
     mask[40:360, 198:202] = 255
+    return mask
+
+
+def _photographed_ruling(mask: NDArray[np.uint8]) -> NDArray[np.uint8]:
+    """Add a sheet of ruling seen at an angle, its cells shrinking upward."""
+    ruled = mask.copy()
+    for index in range(-12, 30):
+        x = 10.0 + index * 16.0
+        _ = cv2.line(ruled, (round(x), 399), (round(200 + (x - 200) * 0.8), 0), 255, 1)
+    for index in range(30):
+        y = 399.0 - index * (18.0 - index * 0.3)
+        _ = cv2.line(ruled, (0, round(y)), (399, round(y - 20)), 255, 1)
+    return ruled
+
+
+def _scored(
+    paper_shape_count: int,
+    mask: NDArray[np.uint8] | None = None,
+) -> float:
+    """Score one fixed candidate set against a given proved-paper count."""
+    mask = _cross() if mask is None else mask
     candidates = (
         LineCandidate(
             entity_id=EntityId("a"),
@@ -125,6 +149,30 @@ def test_a_ruled_sheet_worth_of_proved_paper_is_penalised() -> None:
     # Given a variant that turned a whole ruled sheet into closed shapes
     # Then it scores well below one that did not
     assert _scored(900) < _scored(0) - 0.2
+
+
+def test_ruling_photographed_at_an_angle_is_penalised_without_a_proof() -> None:
+    # Given a variant that kept a sheet's ruling, photographed at an angle so
+    # no shape proof recognised its cells
+    ruled = _photographed_ruling(_cross())
+
+    # Then its cells are counted from the mask, and it scores well below the
+    # variant that kept only the drawing
+    assert ruled_cell_count(ruled) > 200
+    assert ruled_cell_count(_cross()) == 0
+    assert _scored(0, ruled) < _scored(0) - 0.2
+
+
+def test_a_drawing_full_of_holes_is_not_ruling() -> None:
+    # Given a plate with six bolt holes and a slot, all enclosed paper
+    mask = _cross()
+    for index in range(6):
+        _ = cv2.circle(mask, (60 + index * 55, 100), 12, 255, 2)
+    _ = cv2.rectangle(mask, (80, 280), (160, 310), 255, 2)
+
+    # Then it holds far fewer cells than the penalty tolerates
+    assert ruled_cell_count(mask) <= 7
+    assert _scored(0, mask) == _scored(0, _cross())
 
 
 def test_the_paper_penalty_saturates_instead_of_running_away() -> None:

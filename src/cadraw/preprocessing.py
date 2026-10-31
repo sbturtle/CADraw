@@ -25,6 +25,9 @@ _DUPLICATE_LENGTH_RATIO = 0.70
 _MIN_COMPONENT_AREA = 9
 _PAPER_SHAPE_TOLERANCE = 12.0
 _PAPER_SHAPE_SATURATION = 120.0
+_RULED_CELL_MINIMUM_RATIO = 0.01
+_RULED_CELL_MAXIMUM_RATIO = 0.08
+_RULED_CELL_SIZE_SPREAD = 2.0
 _BACKDROP_SCALE = 0.25
 _BACKDROP_SMOOTHING = 15
 _BACKDROP_DARKNESS = 0.5
@@ -106,6 +109,10 @@ class ScoreContext:
     A work-order form's own header and footer contribute a handful of cells on
     every variant, so a tolerance keeps that from deciding anything; the term
     only bites once a variant has manufactured a ruled sheet's worth of them.
+
+    The shape proofs need rails square to the frame. On a sheet photographed
+    at an angle they prove nothing, so scoring also counts the ruled cells
+    straight from the mask (`ruled_cell_count`) and takes the larger count.
     """
 
     minimum_line_length: float
@@ -588,6 +595,50 @@ def _duplicate_ratio(
     return len(duplicate_indices) / len(candidates)
 
 
+def ruled_cell_count(mask: GrayImage) -> int:
+    """Return how many paper cells of one size a binary mask encloses.
+
+    A variant that keeps ruling turns the sheet into a net of hundreds of
+    closed cells, one to eight percent of the frame's short side across and
+    within a factor of two of their median area, whatever the angle the grid
+    was photographed at. A drawing encloses a few such regions: a hole, a
+    slot, a loop of lettering. Regions touching the frame are open paper.
+    """
+    height, width = cast("tuple[int, int]", mask.shape[:2])
+    short_side = float(min(height, width))
+    count, _, stats, _ = cv2.connectedComponentsWithStats(
+        np.asarray(np.equal(mask, 0), dtype=np.uint8),
+        connectivity=4,
+    )
+    statistics: NDArray[np.int64] = np.asarray(stats, dtype=np.int64)[1:count]
+    left: NDArray[np.int64] = statistics[:, 0]
+    top: NDArray[np.int64] = statistics[:, 1]
+    right: NDArray[np.int64] = left + statistics[:, 2]
+    bottom: NDArray[np.int64] = top + statistics[:, 3]
+    area: NDArray[np.int64] = statistics[:, 4]
+    inside = np.logical_and(
+        np.logical_and(np.greater(left, 0), np.greater(top, 0)),
+        np.logical_and(np.less(right, width), np.less(bottom, height)),
+    )
+    cell_sized = np.logical_and(
+        np.greater_equal(area, (_RULED_CELL_MINIMUM_RATIO * short_side) ** 2),
+        np.less_equal(area, (_RULED_CELL_MAXIMUM_RATIO * short_side) ** 2),
+    )
+    enclosed = np.logical_and(inside, cell_sized)
+    sizes: NDArray[np.int64] = area[enclosed]
+    if int(sizes.size) == 0:
+        return 0
+    median_size = float(np.median(sizes))
+    return int(
+        np.count_nonzero(
+            np.logical_and(
+                np.greater_equal(sizes, median_size / _RULED_CELL_SIZE_SPREAD),
+                np.less_equal(sizes, median_size * _RULED_CELL_SIZE_SPREAD),
+            ),
+        ),
+    )
+
+
 def score_candidates(
     variant: PreprocessingVariant,
     candidates: tuple[LineCandidate, ...],
@@ -597,7 +648,7 @@ def score_candidates(
     """Score candidate quality using geometry and connected-component signals."""
     minimum_line_length = context.minimum_line_length
     endpoint_tolerance = context.endpoint_tolerance
-    paper_shape_count = context.paper_shape_count
+    paper_shape_count = max(context.paper_shape_count, ruled_cell_count(mask))
     lengths = tuple(
         candidate.start.distance_to(candidate.end) for candidate in candidates
     )
