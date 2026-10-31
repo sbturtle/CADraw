@@ -1,6 +1,7 @@
 """Deterministic, non-destructive preprocessing for photographed drawings."""
 
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import blake2b
@@ -114,8 +115,9 @@ class ScoreContext:
     only bites once a variant has manufactured a ruled sheet's worth of them.
 
     The shape proofs need rails square to the frame. On a sheet photographed
-    at an angle they prove nothing, so scoring also counts the ruled cells
-    straight from the mask (`ruled_cell_count`) and takes the larger count.
+    at an angle they prove nothing, so the caller also counts the ruled cells
+    straight from each variant's mask (`excess_ruled_cells`) and passes the
+    larger count here.
     """
 
     minimum_line_length: float
@@ -650,6 +652,20 @@ def ruled_cell_count(mask: GrayImage) -> int:
     )
 
 
+def excess_ruled_cells(masks: Sequence[GrayImage]) -> tuple[int, ...]:
+    """Return each variant's ruled cells beyond the fewest any variant kept.
+
+    The pen strokes of a drawing survive every variant, so a part whose
+    slots sit so close that their outlines merge into one lattice shows the
+    same lattice in all of them and nothing is counted. Faint printed ruling
+    is kept by some variants and dropped by others, and only those keeping
+    it are charged with it.
+    """
+    counts = tuple(ruled_cell_count(mask) for mask in masks)
+    floor = min(counts, default=0)
+    return tuple(count - floor for count in counts)
+
+
 def _walled_neighbours(
     labels: NDArray[np.int32],
     selected: NDArray[np.bool_],
@@ -697,7 +713,7 @@ def score_candidates(
     """Score candidate quality using geometry and connected-component signals."""
     minimum_line_length = context.minimum_line_length
     endpoint_tolerance = context.endpoint_tolerance
-    paper_shape_count = max(context.paper_shape_count, ruled_cell_count(mask))
+    paper_shape_count = context.paper_shape_count
     lengths = tuple(
         candidate.start.distance_to(candidate.end) for candidate in candidates
     )

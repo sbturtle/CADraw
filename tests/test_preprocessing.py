@@ -11,6 +11,7 @@ from cadraw.preprocessing import (
     PreprocessingVariant,
     ScoreContext,
     backdrop_mask,
+    excess_ruled_cells,
     illumination_flattened,
     preprocess_variants,
     ruled_cell_count,
@@ -107,12 +108,9 @@ def _photographed_ruling(mask: NDArray[np.uint8]) -> NDArray[np.uint8]:
     return ruled
 
 
-def _scored(
-    paper_shape_count: int,
-    mask: NDArray[np.uint8] | None = None,
-) -> float:
+def _scored(paper_shape_count: int) -> float:
     """Score one fixed candidate set against a given proved-paper count."""
-    mask = _cross() if mask is None else mask
+    mask = _cross()
     candidates = (
         LineCandidate(
             entity_id=EntityId("a"),
@@ -151,16 +149,32 @@ def test_a_ruled_sheet_worth_of_proved_paper_is_penalised() -> None:
     assert _scored(900) < _scored(0) - 0.2
 
 
-def test_ruling_photographed_at_an_angle_is_penalised_without_a_proof() -> None:
-    # Given a variant that kept a sheet's ruling, photographed at an angle so
-    # no shape proof recognised its cells
+def test_ruling_photographed_at_an_angle_is_charged_without_a_proof() -> None:
+    # Given one variant that kept a sheet's ruling, photographed at an angle
+    # so no shape proof recognised its cells, and one that kept the drawing
     ruled = _photographed_ruling(_cross())
 
-    # Then its cells are counted from the mask, and it scores well below the
-    # variant that kept only the drawing
-    assert ruled_cell_count(ruled) > 200
-    assert ruled_cell_count(_cross()) == 0
-    assert _scored(0, ruled) < _scored(0) - 0.2
+    # When the variants' masks are compared
+    excess = excess_ruled_cells((ruled, _cross()))
+
+    # Then the ruling variant is charged with its cells, enough to score
+    # well below the other
+    assert excess[0] > 200
+    assert excess[1] == 0
+    assert _scored(excess[0]) < _scored(0) - 0.2
+
+
+def test_a_lattice_every_variant_keeps_is_drawn_and_not_charged() -> None:
+    # Given a part whose slots sit so close that their outlines merge into
+    # one lattice, which every variant keeps alike
+    lattice = _photographed_ruling(_cross())
+
+    # Then no variant is charged for it
+    assert excess_ruled_cells((lattice, lattice.copy(), lattice.copy())) == (
+        0,
+        0,
+        0,
+    )
 
 
 def test_a_drawing_full_of_holes_is_not_ruling() -> None:
@@ -170,9 +184,8 @@ def test_a_drawing_full_of_holes_is_not_ruling() -> None:
         _ = cv2.circle(mask, (60 + index * 55, 100), 12, 255, 2)
     _ = cv2.rectangle(mask, (80, 280), (160, 310), 255, 2)
 
-    # Then it holds far fewer cells than the penalty tolerates
-    assert ruled_cell_count(mask) <= 7
-    assert _scored(0, mask) == _scored(0, _cross())
+    # Then none of its holes faces two others across a single rule
+    assert ruled_cell_count(mask) == 0
 
 
 def test_a_plate_perforated_with_many_equal_slots_is_not_ruling() -> None:

@@ -104,6 +104,7 @@ from cadraw.preprocessing import (
     PreprocessingVariant,
     ScoreContext,
     backdrop_mask,
+    excess_ruled_cells,
     illumination_flattened,
     preprocess_variants,
     score_candidates,
@@ -688,11 +689,13 @@ def _evaluate_variants(
     them, so the line-only path costs exactly what it did before. Where they
     are wanted, how much paper structure a variant manufactured is the one
     signal that separates a variant which recovered the drawing from one that
-    recovered the stationery.
+    recovered the stationery. Ruled cells are also counted from every
+    variant's mask, as the shape proofs need rails square to the frame.
     """
     results = preprocess_variants(image, preprocessing_config)
+    ruled_cells = excess_ruled_cells(tuple(result.mask for result in results))
     evaluations = []
-    for result in results:
+    for result, ruled in zip(results, ruled_cells, strict=True):
         candidates = detect_line_candidates(
             result.detection_image,
             detection_config,
@@ -708,8 +711,9 @@ def _evaluate_variants(
             ScoreContext(
                 minimum_line_length=detection_config.minimum_line_length,
                 endpoint_tolerance=normalization_config.endpoint_snap_distance,
-                paper_shape_count=(
-                    shapes.grid_candidate_count + shapes.table_candidate_count
+                paper_shape_count=max(
+                    shapes.grid_candidate_count + shapes.table_candidate_count,
+                    ruled,
                 ),
             ),
         )
