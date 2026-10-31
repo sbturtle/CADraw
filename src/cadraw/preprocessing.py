@@ -29,6 +29,8 @@ _BACKDROP_SCALE = 0.25
 _BACKDROP_SMOOTHING = 15
 _BACKDROP_DARKNESS = 0.5
 _MINIMUM_BACKDROP_SHARE = 0.02
+_BACKDROP_EDGE_SHARPNESS = 0.3
+_BACKDROP_EDGE_PERCENTILE = 75.0
 _BACKGROUND_CACHE_SIZE = 4
 _BACKGROUND_CACHE: OrderedDict[tuple[bytes, tuple[int, ...], int], GrayImage] = (
     OrderedDict()
@@ -217,8 +219,11 @@ def backdrop_mask(image: GrayImage) -> NDArray[np.bool_] | None:
     Paper, even in shadow, stays more than half as bright as the paper's
     typical level, while a desk, a bag, or a mug beside it is darker than
     that. The page is first smoothed far beyond a pen stroke, so ink never
-    counts as backdrop. A scan, or a photo filled by paper, shows too little
-    backdrop to report any.
+    counts as backdrop. A deep shadow can still fall below that level, but
+    it fades into the lit paper over a long penumbra, while the sheet's edge
+    against the desk is a step: a dark region is backdrop only where its
+    border is sharp (see `_sharp_edged`). A scan, or a photo filled by paper,
+    shows too little backdrop to report any.
     """
     height, width = cast("tuple[int, int]", image.shape[:2])
     small = np.asarray(
@@ -237,14 +242,67 @@ def backdrop_mask(image: GrayImage) -> NDArray[np.bool_] | None:
     if paper.size == 0:
         return None
     paper_level = float(np.median(np.asarray(paper, dtype=np.float64)))
-    backdrop = np.asarray(
-        np.less_equal(smoothed, _BACKDROP_DARKNESS * paper_level),
-        dtype=np.uint8,
+    backdrop = _sharp_edged(
+        smoothed,
+        np.asarray(
+            np.less_equal(smoothed, _BACKDROP_DARKNESS * paper_level),
+            dtype=np.uint8,
+        ),
+        paper_level,
     )
     if int(np.count_nonzero(backdrop)) < _MINIMUM_BACKDROP_SHARE * backdrop.size:
         return None
     full = cv2.resize(backdrop, (width, height), interpolation=cv2.INTER_NEAREST)
     return np.greater(np.asarray(full, dtype=np.uint8), 0)
+
+
+def _sharp_edged(
+    smoothed: GrayImage,
+    dark: GrayImage,
+    paper_level: float,
+) -> GrayImage:
+    """Keep the dark regions whose border with the paper is a step.
+
+    Across each region's border, the brightness change within two pixels,
+    which the resampling may have split a step over, is compared with the
+    region's whole drop below the paper level. Where the sheet ends at a
+    desk most of the drop happens there; across a
+    shadow's penumbra it is spread over many pixels. The image border is no
+    edge with the paper, so it is left out.
+    """
+    count, found = cv2.connectedComponents(dark, connectivity=8)
+    if count <= 1:
+        return dark
+    labels = np.asarray(found, dtype=np.int64)
+    step = np.asarray(
+        cv2.morphologyEx(smoothed, cv2.MORPH_GRADIENT, np.ones((5, 5), dtype=np.uint8)),
+        dtype=np.float64,
+    )
+    owner = np.asarray(
+        cv2.dilate(labels.astype(np.float32), np.ones((3, 3), dtype=np.uint8)),
+        dtype=np.int64,
+    )
+    border = np.logical_and(owner > 0, np.equal(dark, 0))
+    border[[0, -1], :] = False
+    border[:, [0, -1]] = False
+    border_owner: NDArray[np.int64] = owner[border]
+    flat_labels: NDArray[np.int64] = labels.ravel()
+    totals = np.bincount(
+        flat_labels,
+        weights=np.asarray(smoothed, dtype=np.float64).ravel(),
+        minlength=count,
+    )
+    areas = np.bincount(flat_labels, minlength=count)
+    level: NDArray[np.float64] = totals / np.maximum(areas, 1)
+    drop = np.maximum(paper_level - level[border_owner], 1.0)
+    sharpness: NDArray[np.float64] = step[border] / drop
+    keep = np.zeros(count, dtype=np.bool_)
+    for label in range(1, count):
+        own = sharpness[border_owner == label]
+        keep[label] = own.size > 0 and bool(
+            np.percentile(own, _BACKDROP_EDGE_PERCENTILE) >= _BACKDROP_EDGE_SHARPNESS
+        )
+    return np.asarray(keep[labels], dtype=np.uint8)
 
 
 def _shadow_removed(

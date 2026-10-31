@@ -115,7 +115,7 @@ ADR-0020).
 
 사진에서 종이 옆 책상이나 물건이 보이면, 종이 밝기의 절반 이하인 배경 위에
 중심(선은 중점, 원호는 호의 가운데 점)이 놓인 형상을 지우고 `BACKDROP_GEOMETRY_REMOVED`로 보고합니다
-(`preprocessing.backdrop_mask`, ADR-0022). 그림자 진 종이는 그보다 밝아 남습니다.
+(`preprocessing.backdrop_mask`, ADR-0022). 그림자 진 종이는 그보다 밝거나, 더 어두워도 경계가 반그림자로 번져 남습니다.
 
 도형 크기 하한은 절대값과 비례값 중 큰 쪽입니다
 (`max(minimum_shape_span, min(width, height) * 0.02)`). 절대값만으로는
