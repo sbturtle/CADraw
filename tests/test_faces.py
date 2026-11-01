@@ -102,19 +102,25 @@ def test_faint_ink_survives_only_where_it_continues_a_dark_stroke() -> None:
     assert _ink_count(sensitive, slice(58, 63), slice(100, 260)) >= 160
 
 
-def test_ruled_paper_keeps_the_conservative_cut() -> None:
-    # Given the same faint continuation drawn over graph paper
+def test_ruled_paper_keeps_faint_ink_that_stands_out_of_the_ruling() -> None:
+    # Given a faint continuation drawn at a slant over graph paper, and a
+    # faint mark alone
     image = _ruled(_page())
     _ = cv2.rectangle(image, (60, 60), (300, 300), _INK_VALUE, 3)
-    _ = cv2.line(image, (300, 185), (520, 185), 180, 2)
+    _ = cv2.line(image, (300, 185), (520, 207), 180, 2)
+    _ = cv2.line(image, (340, 345), (540, 365), 180, 2)
 
-    # When strokes are binarized for faint outlines
-    ink = drawing_ink(image, FaceConfig(), sensitive=True)
+    # When strokes are binarized, conservatively and for faint outlines
+    conservative = drawing_ink(image, FaceConfig())
+    sensitive = drawing_ink(image, FaceConfig(), sensitive=True)
 
-    # Then the rulings, as dark as the faint stroke, do not become ink
+    # Then the rulings, as dark as the faint stroke, do not become ink, while
+    # the continuation does; the lone mark stays paper
     assert ruled_paper(illumination_flattened(image)) is True
-    assert _ink_count(ink, slice(340, 360), slice(0, 600)) == 0
-    assert _ink_count(ink, slice(183, 188), slice(400, 500)) == 0
+    assert _ink_count(conservative, slice(190, 205), slice(400, 500)) == 0
+    assert _ink_count(sensitive, slice(190, 205), slice(400, 500)) >= 100
+    assert _ink_count(sensitive, slice(240, 330), slice(320, 600)) == 0
+    assert _ink_count(sensitive, slice(340, 370), slice(330, 550)) == 0
 
 
 def test_a_plain_sheet_is_not_ruled() -> None:
