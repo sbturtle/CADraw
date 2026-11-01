@@ -86,3 +86,15 @@ def test_a_darker_stretch_of_one_rail_is_not_ink() -> None:
 
     # Then the stretch, lying on the rail all along, stays ruling
     assert int(np.count_nonzero(standing[:, 250:261])) == 0
+
+
+def test_a_frame_too_short_to_read_its_rails_adds_no_ink() -> None:
+    # Given a strip of graph paper shorter than one tile, with a faint stroke
+    image = _ruled_page(height=320, width=640)
+    _ = cv2.line(image, (120, 150), (520, 180), 190, 2)
+
+    # When the ink standing out of the ruling is read
+    standing = _standing(image)
+
+    # Then nothing is offered, rather than rails taken for ink
+    assert int(np.count_nonzero(standing)) == 0

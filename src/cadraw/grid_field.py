@@ -149,8 +149,8 @@ def _tile_starts(length: int) -> list[int]:
 def _ruling(flattened: GrayImage) -> tuple[FloatImage, FloatImage]:
     """Return each pixel's darkness above the paper and the ruling's share.
 
-    `flattened` is the frame divided by its paper background. A frame
-    smaller than one tile is given no ruling.
+    `flattened` is the frame divided by its paper background, at least one
+    tile on its short side.
     """
     darkness = 255.0 - np.asarray(flattened, dtype=np.float32)
     local = np.asarray(
@@ -159,8 +159,6 @@ def _ruling(flattened: GrayImage) -> tuple[FloatImage, FloatImage]:
     )
     ink = np.maximum(darkness - local, 0.0)
     height, width = cast("tuple[int, int]", ink.shape[:2])
-    if min(height, width) < _TILE:
-        return ink, np.zeros_like(ink)
     window = np.asarray(
         np.outer(np.hanning(_TILE), np.hanning(_TILE)) + _WINDOW_FLOOR,
         dtype=np.float32,
@@ -197,7 +195,13 @@ def ink_above_ruling(
     than a stroke's piece crossing one, and standing out by less than twice
     `contrast`, is left out: pencil running beside a rail at a slant leaves
     it within a few cells, and pencil traced over it is darker than that.
+
+    A frame shorter than one tile cannot have its rails read, so nothing in
+    it is said to stand out.
     """
+    height, width = cast("tuple[int, int]", flattened.shape[:2])
+    if min(height, width) < _TILE:
+        return np.zeros((height, width), dtype=np.bool_)
     ink, ruling = _ruling(flattened)
     residual = ink - ruling
     standing = np.asarray(
@@ -230,7 +234,6 @@ def ink_above_ruling(
         boxes[:, cv2.CC_STAT_WIDTH],
         boxes[:, cv2.CC_STAT_HEIGHT],
     )
-    height, width = cast("tuple[int, int]", flattened.shape[:2])
     remnant = (
         (share > _ON_RAIL_SHARE)
         & (extent >= _REMNANT_LENGTH_RATIO * min(height, width))
