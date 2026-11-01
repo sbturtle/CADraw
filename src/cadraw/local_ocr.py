@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from functools import cache
 from hashlib import blake2b
 from pathlib import Path
+from threading import Lock
 from typing import TYPE_CHECKING, Final, Protocol, cast
 from weakref import WeakKeyDictionary
 
@@ -78,6 +79,10 @@ _READINGS: WeakKeyDictionary[
         tuple[bytes, tuple[int, ...], "RapidOcrBackend"], tuple[TextCandidate, ...]
     ],
 ] = WeakKeyDictionary()
+# One engine and one reading cache serve every caller. The analysis reads on
+# its own thread, and a reviewer can start another analysis meanwhile, so a
+# reading holds this lock from the cache lookup to the cache update.
+_READING_LOCK = Lock()
 
 
 @cache
@@ -171,22 +176,23 @@ class RapidOcrBackend:
         The engine is deterministic, so the last few readings are kept per
         engine by the frame's digest and this reader's settings.
         """
-        engine = _engine(self.model_directory)
-        readings = _READINGS.setdefault(engine, OrderedDict())
         key = (
             blake2b(np.ascontiguousarray(image).tobytes(), digest_size=16).digest(),
             cast("tuple[int, ...]", image.shape),
             self,
         )
-        cached = readings.get(key)
-        if cached is not None:
-            readings.move_to_end(key)
-            return cached
-        result = self._recognize(engine, image)
-        readings[key] = result
-        if len(readings) > _CACHED_READINGS:
-            _ = readings.popitem(last=False)
-        return result
+        with _READING_LOCK:
+            engine = _engine(self.model_directory)
+            readings = _READINGS.setdefault(engine, OrderedDict())
+            cached = readings.get(key)
+            if cached is not None:
+                readings.move_to_end(key)
+                return cached
+            result = self._recognize(engine, image)
+            readings[key] = result
+            if len(readings) > _CACHED_READINGS:
+                _ = readings.popitem(last=False)
+            return result
 
     def _recognize(
         self,

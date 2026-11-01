@@ -2,6 +2,7 @@
 
 import math
 import os
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from io import BytesIO
 from pathlib import Path
@@ -104,6 +105,7 @@ from cadraw.preprocessing import (
     PreprocessingVariant,
     ScoreContext,
     backdrop_mask,
+    excess_ruled_cells,
     illumination_flattened,
     preprocess_variants,
     score_candidates,
@@ -244,6 +246,11 @@ _LEADING_GLYPH_SHARE = 0.3
 _POLYGON_EDGE_TOLERANCE_RATIO = 0.012
 _MIN_GRID_LIKE_SHAPES = 8
 _MIN_SHAPES_PER_LINE = 4
+_FULL_TURN_DEGREES = 360.0
+_RIM_SAMPLES = 36
+_COLLINEAR_DETERMINANT = 1e-6
+_ARC_FIT_PIXELS = 2.0
+_ARC_FIT_RATIO = 0.02
 _DIMENSION_LINE_SOURCE = "dimension_line"
 
 
@@ -367,7 +374,7 @@ def _restore_source_coordinates(
 ) -> tuple[GeometryEntity, ...]:
     """Map analyzed geometry back to source-image coordinates."""
     return tuple(
-        _restore_source_geometry(entity, offset, inverse_matrix) for entity in entities
+        restore_source_geometry(entity, offset, inverse_matrix) for entity in entities
     )
 
 
@@ -383,7 +390,141 @@ def _restore_point(
     return transform_point(translated, inverse_matrix)
 
 
-def _restore_source_geometry(
+def _rim_points(
+    center: Point,
+    radius: float,
+    start_angle: float,
+    sweep: float,
+) -> tuple[Point, ...]:
+    """Return evenly spaced points along a circle or arc in image coordinates."""
+    count = _RIM_SAMPLES
+    return tuple(
+        Point(
+            center.x
+            + radius * math.cos(math.radians(start_angle + sweep * step / count)),
+            center.y
+            + radius * math.sin(math.radians(start_angle + sweep * step / count)),
+        )
+        for step in range(count + 1)
+    )
+
+
+def _restored_radius(
+    rim: tuple[Point, ...],
+    restored_centre: Point,
+    offset: Point,
+    inverse_matrix: tuple[float, ...] | None,
+) -> float:
+    """Return the mean distance of a restored rim from its restored centre.
+
+    A perspective warp scales the page unevenly, so a circle's radius in the
+    flattened frame is not its radius in the photograph; the rim is mapped
+    back point by point instead.
+    """
+    return sum(
+        _restore_point(point, offset, inverse_matrix).distance_to(restored_centre)
+        for point in rim
+    ) / len(rim)
+
+
+def _circle_through(
+    first: Point,
+    second: Point,
+    third: Point,
+) -> tuple[Point, float] | None:
+    """Return the circle through three points, or `None` when they align."""
+    determinant = 2.0 * (
+        first.x * (second.y - third.y)
+        + second.x * (third.y - first.y)
+        + third.x * (first.y - second.y)
+    )
+    if abs(determinant) < _COLLINEAR_DETERMINANT:
+        return None
+    first_square = first.x * first.x + first.y * first.y
+    second_square = second.x * second.x + second.y * second.y
+    third_square = third.x * third.x + third.y * third.y
+    centre = Point(
+        (
+            first_square * (second.y - third.y)
+            + second_square * (third.y - first.y)
+            + third_square * (first.y - second.y)
+        )
+        / determinant,
+        (
+            first_square * (third.x - second.x)
+            + second_square * (first.x - third.x)
+            + third_square * (second.x - first.x)
+        )
+        / determinant,
+    )
+    return centre, centre.distance_to(first)
+
+
+def _fits_arc(circle: tuple[Point, float], mapped: tuple[Point, ...]) -> bool:
+    """Return whether a circle runs along a mapped arc, the same way round.
+
+    Every mapped point must lie near the circle, within a share of the
+    arc's own extent, and the arc's middle must fall inside the sweep from
+    its first point to its last; a steep warp can bend an arc so far that
+    the circle through three of its points is much larger and sweeps the
+    other way round.
+    """
+    centre, radius = circle
+    xs = [point.x for point in mapped]
+    ys = [point.y for point in mapped]
+    extent = math.hypot(max(xs) - min(xs), max(ys) - min(ys))
+    tolerance = max(_ARC_FIT_PIXELS, _ARC_FIT_RATIO * extent)
+    if any(abs(point.distance_to(centre) - radius) > tolerance for point in mapped):
+        return False
+
+    def angle(point: Point) -> float:
+        return math.degrees(math.atan2(point.y - centre.y, point.x - centre.x))
+
+    start = angle(mapped[0])
+    sweep = (angle(mapped[-1]) - start) % _FULL_TURN_DEGREES
+    middle = (angle(mapped[len(mapped) // 2]) - start) % _FULL_TURN_DEGREES
+    return 0.0 < middle < sweep
+
+
+def _restored_arc(
+    arc: ArcEntity,
+    offset: Point,
+    inverse_matrix: tuple[float, ...] | None,
+) -> ArcEntity:
+    """Map an arc back to the photograph through its two ends and middle.
+
+    The warp scales each direction differently, so in general no circle
+    fits the whole mapped arc. The one through its mapped ends and middle
+    keeps the ends exactly where the lines joining them meet the arc, and
+    is used while every mapped point stays near it. When none does, the
+    photograph shows the arc as part of an ellipse that no circle follows;
+    the arc then keeps its flat-page radius and angles around its mapped
+    centre, as before, so it stays an arc a radius can be confirmed on.
+    """
+    centre = _restore_point(arc.center, offset, inverse_matrix)
+    if inverse_matrix is None:
+        return replace(arc, center=centre)
+    sweep = (arc.end_angle_degrees - arc.start_angle_degrees) % _FULL_TURN_DEGREES
+    sweep = sweep or _FULL_TURN_DEGREES
+    rim = _rim_points(arc.center, arc.radius, arc.start_angle_degrees, sweep)
+    mapped = tuple(_restore_point(point, offset, inverse_matrix) for point in rim)
+    first, middle, last = mapped[0], mapped[len(mapped) // 2], mapped[-1]
+    circle = _circle_through(first, middle, last)
+    if circle is None or not _fits_arc(circle, mapped):
+        return replace(arc, center=centre)
+    centre, radius = circle
+    start = math.degrees(math.atan2(first.y - centre.y, first.x - centre.x))
+    end = math.degrees(math.atan2(last.y - centre.y, last.x - centre.x))
+    return replace(
+        arc,
+        center=centre,
+        radius=radius,
+        start_angle_degrees=start,
+        end_angle_degrees=start + ((end - start) % _FULL_TURN_DEGREES or sweep),
+    )
+
+
+def restore_source_geometry(
     entity: GeometryEntity,
     offset: Point,
     inverse_matrix: tuple[float, ...] | None,
@@ -410,16 +551,22 @@ def _restore_source_geometry(
                     _restore_point(point, offset, inverse_matrix) for point in points
                 ),
             )
-        case CircleEntity(center=center):
+        case CircleEntity(center=center, radius=radius):
+            restored_centre = _restore_point(center, offset, inverse_matrix)
+            if inverse_matrix is None:
+                return replace(entity, center=restored_centre)
             return replace(
                 entity,
-                center=_restore_point(center, offset, inverse_matrix),
+                center=restored_centre,
+                radius=_restored_radius(
+                    _rim_points(center, radius, 0.0, _FULL_TURN_DEGREES),
+                    restored_centre,
+                    offset,
+                    inverse_matrix,
+                ),
             )
-        case ArcEntity(center=center):
-            return replace(
-                entity,
-                center=_restore_point(center, offset, inverse_matrix),
-            )
+        case ArcEntity():
+            return _restored_arc(entity, offset, inverse_matrix)
 
 
 def _shape_candidate_to_entity(candidate: ShapeCandidate) -> GeometryEntity:
@@ -543,11 +690,13 @@ def _evaluate_variants(
     them, so the line-only path costs exactly what it did before. Where they
     are wanted, how much paper structure a variant manufactured is the one
     signal that separates a variant which recovered the drawing from one that
-    recovered the stationery.
+    recovered the stationery. Ruled cells are also counted from every
+    variant's mask, as the shape proofs need rails square to the frame.
     """
     results = preprocess_variants(image, preprocessing_config)
+    ruled_cells = excess_ruled_cells(tuple(result.mask for result in results))
     evaluations = []
-    for result in results:
+    for result, ruled in zip(results, ruled_cells, strict=True):
         candidates = detect_line_candidates(
             result.detection_image,
             detection_config,
@@ -563,8 +712,9 @@ def _evaluate_variants(
             ScoreContext(
                 minimum_line_length=detection_config.minimum_line_length,
                 endpoint_tolerance=normalization_config.endpoint_snap_distance,
-                paper_shape_count=(
-                    shapes.grid_candidate_count + shapes.table_candidate_count
+                paper_shape_count=max(
+                    shapes.grid_candidate_count + shapes.table_candidate_count,
+                    ruled,
                 ),
             ),
         )
@@ -1212,20 +1362,82 @@ def _second_reader_for(
     return None if model is None else OllamaTextReader(model=model)
 
 
-def _read_text(
-    analysis_image: GrayImage,
+# Labels are read on their own thread while geometry is detected. Recognition
+# runs in onnxruntime and detection in OpenCV, which both release the GIL, so
+# the two overlap; reading is the slower half of an analysis on a photo.
+_READER_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cadraw-ocr")
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingReading:
+    """Labels being read from one analysis frame, if OCR is on."""
+
+    frame: GrayImage
+    config: PipelineConfig
+    ocr_backend: OcrBackend | None
+    second_reader: TextReader | None
+    result: "Future[OcrResult] | None"
+
+
+def _recognized(
+    frame: GrayImage,
     config: PipelineConfig,
     ocr_backend: OcrBackend | None,
     second_reader: TextReader | None,
-    warnings: list[AnalysisWarning],
 ) -> OcrResult:
-    """Read labels in the analysis frame and report what could not run."""
-    reader = _second_reader_for(config, second_reader)
-    result = recognize_dimensions(
-        analysis_image,
+    """Read the labels of one frame."""
+    return recognize_dimensions(
+        frame,
         ocr_backend if ocr_backend is not None else discover_ocr_backend(),
-        second_reader=reader,
+        second_reader=_second_reader_for(config, second_reader),
     )
+
+
+def _start_reading(
+    frame: GrayImage,
+    config: PipelineConfig,
+    ocr_backend: OcrBackend | None,
+    second_reader: TextReader | None,
+) -> _PendingReading:
+    """Begin reading a frame's labels on the reader thread."""
+    return _PendingReading(
+        frame=frame,
+        config=config,
+        ocr_backend=ocr_backend,
+        second_reader=second_reader,
+        result=(
+            _READER_POOL.submit(_recognized, frame, config, ocr_backend, second_reader)
+            if config.ocr_enabled
+            else None
+        ),
+    )
+
+
+def _read_text(
+    pending: _PendingReading,
+    analysis_image: GrayImage,
+    warnings: list[AnalysisWarning],
+) -> OcrResult | None:
+    """Wait for the labels in the analysis frame and report what could not run.
+
+    A perspective correction that was found and then rejected changes the
+    frame after reading began; the labels are then read from the frame the
+    geometry came from instead. That reading is queued behind the first on
+    the same single reader thread, so the two never share the engine.
+    """
+    if pending.result is None:
+        return None
+    if pending.frame is analysis_image:
+        result = pending.result.result()
+    else:
+        _ = pending.result.cancel()
+        result = _READER_POOL.submit(
+            _recognized,
+            analysis_image,
+            pending.config,
+            pending.ocr_backend,
+            pending.second_reader,
+        ).result()
     if not result.available:
         warnings.append(
             AnalysisWarning(
@@ -1558,6 +1770,12 @@ def _uncertain_reading_warnings(
     )
 
 
+def _size_of(image: GrayImage) -> tuple[int, int]:
+    """Return an image's width and height."""
+    height, width = cast("tuple[int, int]", image.shape[:2])
+    return width, height
+
+
 def analyze_image(
     image_path: Path,
     config: PipelineConfig,
@@ -1567,7 +1785,6 @@ def analyze_image(
 ) -> DrawingAnalysis:
     """Analyze one image without inventing physical dimensions."""
     source_image = load_grayscale_image(image_path)
-    image_shape = cast("tuple[int, int]", source_image.shape[:2])
     warnings: list[AnalysisWarning] = []
     cleanup = clean_page(source_image, config.page_cleanup)
     if cleanup.applied:
@@ -1590,6 +1807,7 @@ def analyze_image(
         inverse_matrix,
         perspective_transform,
     ) = _prepare_analysis_frame(source_image, config, warnings)
+    pending_reading = _start_reading(analysis_image, config, ocr_backend, second_reader)
     detection_config = _effective_detection_config(config)
     detection_stream = _select_detection_stream(
         analysis_image,
@@ -1656,11 +1874,7 @@ def analyze_image(
         if detection_config.faces.enabled
         else _ink_mask_for(detection_stream)
     )
-    ocr_result = (
-        _read_text(analysis_image, config, ocr_backend, second_reader, warnings)
-        if config.ocr_enabled
-        else None
-    )
+    ocr_result = _read_text(pending_reading, analysis_image, warnings)
     candidates, _, line_lettering = _without_lettering(
         candidates,
         ShapeDetectionEvidence(()),
@@ -1838,7 +2052,7 @@ def analyze_image(
     )
     return DrawingAnalysis(
         unit="mm",
-        image_size=(image_shape[1], image_shape[0]),
+        image_size=_size_of(source_image),
         entities=entities,
         dimensions=suggested_dimensions,
         connections=build_connections(

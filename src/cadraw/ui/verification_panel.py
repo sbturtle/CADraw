@@ -30,6 +30,9 @@ _STATUS_COLUMN: Final = 3
 _MIN_MERGE_SELECTION: Final = 2
 _MIN_DELETE_SELECTION: Final = 1
 _AUTO_ANGLE_SOURCE: Final = "axis_inference"
+_UNLINKED_VALUE_TIP: Final = (
+    "읽힌 값이지만 잴 형상을 정하지 못해 참고용입니다. 해당 형상의 행에 입력하세요."
+)
 _DEFAULT_APPLY_TEXT: Final = "치수 적용"
 _ANGLE_APPLY_TEXT: Final = "각도 승인 후 다시 그리기"
 _GUIDANCE_TEXT = """선택된 선의 실제 길이를 직접 입력하세요.
@@ -135,6 +138,11 @@ class VerificationPanel(QGroupBox):
             if dimension.source == _AUTO_ANGLE_SOURCE:
                 value.setFlags(value.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 value.setToolTip("축 정렬로 자동 확정된 각도입니다.")
+            elif not dimension.target_entity_ids:
+                # A value read with nothing to measure has no geometry to
+                # size, so confirming it here would change nothing.
+                value.setFlags(value.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                value.setToolTip(_UNLINKED_VALUE_TIP)
             unit = QTableWidgetItem(dimension.unit)
             status = QTableWidgetItem(status_text(dimension))
             for metadata_item in (label, unit, status):

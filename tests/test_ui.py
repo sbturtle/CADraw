@@ -1,3 +1,4 @@
+from dataclasses import replace
 from math import atan2, degrees
 from pathlib import Path
 from typing import final
@@ -24,7 +25,10 @@ from cadraw.export import validate_dxf
 from cadraw.models import (
     CadResolutionStatus,
     CircleEntity,
+    Dimension,
+    DimensionId,
     DimensionKind,
+    DimensionStatus,
     DrawingAnalysis,
     EntityId,
     LineEntity,
@@ -1134,3 +1138,39 @@ def test_a_phone_photo_is_shown_upright_like_the_analysis_reads_it(
         analysis_frame.shape[0],
     )
     assert (pixmap.width(), pixmap.height()) == (40, 60)
+
+
+def test_a_value_read_without_a_target_is_shown_for_reference_only(
+    tmp_path: Path,
+) -> None:
+    # Given an analysis whose read value found nothing on the sheet to measure
+    _ = _application()
+    image_path = tmp_path / "sketch.png"
+    Image.fromarray(np.full((240, 320), 255, dtype=np.uint8)).save(image_path)
+    unlinked = Dimension(
+        dimension_id=DimensionId("ocr_001"),
+        raw_text="40mm",
+        kind=DimensionKind.LENGTH,
+        parsed_value=40.0,
+        unit="mm",
+        target_entity_ids=(),
+        confidence=0.98,
+        status=DimensionStatus.NEEDS_REVIEW,
+    )
+    analysis = replace(_two_line_analysis(), dimensions=(unlinked,))
+    window = MainWindow(analyzer=_StaticAnalyzer(analysis))
+    assert window.load_path(image_path) is True
+    table = window.findChild(QTableWidget, "dimension_table")
+    assert table is not None
+
+    # When the review rows are shown
+    last = table.rowCount() - 1
+    value = table.item(last, 1)
+    status = table.item(last, 3)
+
+    # Then the read value is listed but cannot be typed over to no effect
+    assert value is not None
+    assert status is not None
+    assert value.text() == "40mm"
+    assert not bool(value.flags() & Qt.ItemFlag.ItemIsEditable)
+    assert status.text() == "대상 없음 · 검토 필요"

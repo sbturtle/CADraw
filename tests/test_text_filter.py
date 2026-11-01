@@ -38,6 +38,16 @@ def _mask_with(*strokes: tuple[tuple[int, int], tuple[int, int]]) -> np.ndarray:
     return mask
 
 
+def _rings_at(*centres: float, joined: bool) -> np.ndarray:
+    """Draw small rings on the label's row, crossed into one stroke or apart."""
+    mask = _mask_with()
+    for x in centres:
+        _ = cv2.circle(mask, (round(x), 120), 4, 255, 1)
+    if joined:
+        _ = cv2.line(mask, (round(centres[0]), 120), (round(centres[-1]), 120), 255, 1)
+    return mask
+
+
 def _line(identifier: str, start: Point, end: Point) -> LineCandidate:
     return LineCandidate(EntityId(identifier), start, end, 0.8)
 
@@ -181,6 +191,81 @@ def test_only_as_many_loops_as_the_digit_has_are_removed() -> None:
 
     # Then the one loop a zero has goes, the one nearest its share's middle
     assert removal.shapes == (circles[0],)
+
+
+def test_a_loop_closed_across_its_own_stroke_goes_as_one_loop() -> None:
+    # Given a `9` in `149` whose loop crossed itself into two touching circles
+    halves = tuple(
+        CircleCandidate(EntityId(f"half_{index}"), Point(x, 120.0), 5.0, 0.9)
+        for index, x in enumerate((165.0, 175.0))
+    )
+
+    # When shapes are checked against the label
+    removal = without_text_strokes(
+        (),
+        halves,
+        (_label("149"),),
+        _rings_at(165.0, 175.0, joined=True),
+        TextStrokeConfig(),
+    )
+
+    # Then both halves go as the nine's one loop
+    assert removal.shapes == ()
+
+
+def test_a_hole_drawn_just_after_the_last_digit_is_kept() -> None:
+    # Given `100` with a hole drawn apart from it just past the box, its ring
+    # read close enough to touch the last zero's loop
+    zero = CircleCandidate(EntityId("zero"), Point(174.0, 120.0), 5.0, 0.9)
+    hole = CircleCandidate(EntityId("hole"), Point(184.0, 120.0), 5.0, 0.9)
+
+    # When shapes are checked against the label
+    removal = without_text_strokes(
+        (),
+        (zero, hole),
+        (_label("100"),),
+        _rings_at(174.0, 184.0, joined=False),
+        TextStrokeConfig(),
+    )
+
+    # Then the zero's loop goes and the hole, a stroke of its own, stays
+    assert removal.shapes == (hole,)
+
+
+def test_a_hole_touching_the_last_digit_past_the_box_is_kept() -> None:
+    # Given `100` with a hole drawn past the box whose ring runs into the zero
+    zero = CircleCandidate(EntityId("zero"), Point(174.0, 120.0), 5.0, 0.9)
+    hole = CircleCandidate(EntityId("hole"), Point(184.0, 120.0), 5.0, 0.9)
+
+    # When shapes are checked against the label
+    removal = without_text_strokes(
+        (),
+        (zero, hole),
+        (_label("100"),),
+        _rings_at(174.0, 184.0, joined=True),
+        TextStrokeConfig(),
+    )
+
+    # Then touching ink alone does not make the hole part of the zero
+    assert removal.shapes == (hole,)
+
+
+def test_a_hole_touching_a_digit_loop_in_the_next_share_is_kept() -> None:
+    # Given `100O` whose last zero's loop touches the hole read as `O`
+    zero = CircleCandidate(EntityId("zero"), Point(155.0, 120.0), 5.0, 0.9)
+    hole = CircleCandidate(EntityId("hole"), Point(166.0, 120.0), 5.0, 0.9)
+
+    # When shapes are checked against the label
+    removal = without_text_strokes(
+        (),
+        (zero, hole),
+        (_label("100O"),),
+        _mask_with(),
+        TextStrokeConfig(),
+    )
+
+    # Then the zero's loop goes and the hole in the `O` share stays
+    assert removal.shapes == (hole,)
 
 
 def test_a_hole_read_after_a_number_keeps_its_place() -> None:

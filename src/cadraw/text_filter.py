@@ -21,6 +21,7 @@ inside a proved label is a digit's loop unless it leads the reading order.
 
 import math
 import unicodedata
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import cast
@@ -48,6 +49,9 @@ _SAMPLE_SPACING = 3.0
 # Closed loops a handwritten glyph encloses. A letter `O` is left out: a
 # drilled hole drawn after a label is read as one.
 _GLYPH_LOOPS = {"0": 1, "6": 1, "8": 2, "9": 1, "Ø": 1, "ø": 1, "φ": 1, "Φ": 1}
+# A pen that crosses its own stroke while closing a loop, as a quick `9` often
+# does, leaves two small loops whose rims meet. Circles that close are one loop.
+_LOOP_CONTACT_RATIO = 1.15
 _ARC_SAMPLE_DEGREES = 10.0
 
 
@@ -186,6 +190,7 @@ def _glyph_loop_ids(
     shapes: tuple[ShapeCandidate, ...],
     labels: tuple[_ReadLabel, ...],
     config: TextStrokeConfig,
+    ink: "_InkComponents",
 ) -> set[EntityId]:
     """Return the small circles that are the loops of a label's own digits.
 
@@ -197,14 +202,17 @@ def _glyph_loop_ids(
     drilled hole is usually labelled by an arrow and a size written right
     after it, so OCR reads hole and label as one string such as `0149`. A
     hole read as the letter `O`, as in `100O`, sits in a share no digit
-    explains and stays.
+    explains and stays. A circle in the same share whose rim meets a taken
+    loop on the same piece of ink goes with it, because a loop closed by
+    crossing the stroke is found as two circles. A half past the end of the
+    box stays: a hole drawn touching the last digit would look the same.
     """
     circles = tuple(shape for shape in shapes if isinstance(shape, CircleCandidate))
     removed: set[EntityId] = set()
     for label in labels:
         count = len(label.text)
         placed = tuple(
-            (position, circle.entity_id)
+            (position, circle)
             for circle in circles
             if (position := _position_along(circle, label)) is not None
             and position > config.leading_glyph_fraction
@@ -215,12 +223,52 @@ def _glyph_loop_ids(
                 continue
             low, high = index / count, (index + 1) / count
             in_share = sorted(
-                (abs(position - (low + high) / 2.0), entity_id)
-                for position, entity_id in placed
-                if low <= position <= high and entity_id not in removed
+                (
+                    (abs(position - (low + high) / 2.0), circle)
+                    for position, circle in placed
+                    if low <= position <= high and circle.entity_id not in removed
+                ),
+                key=lambda item: item[0],
             )
-            removed.update(entity_id for _, entity_id in in_share[:loops])
+            taken = tuple(circle for _, circle in in_share[:loops])
+            # Only this glyph's share can hold the other half; a circle in a
+            # neighbour's share is that glyph's to explain, and an `O`
+            # explains none.
+            removed.update(loop.entity_id for loop in taken)
+            removed.update(
+                circle.entity_id
+                for position, circle in placed
+                if low <= position <= high
+                and any(_other_half(circle, loop, ink) for loop in taken)
+            )
     return removed
+
+
+def _rim_samples(circle: CircleCandidate) -> tuple[Point, ...]:
+    """Return points spaced around a circle's rim."""
+    return tuple(
+        Point(
+            circle.center.x + circle.radius * math.cos(math.radians(angle)),
+            circle.center.y + circle.radius * math.sin(math.radians(angle)),
+        )
+        for angle in np.arange(0.0, 360.0, _ARC_SAMPLE_DEGREES).tolist()
+    )
+
+
+def _other_half(
+    circle: CircleCandidate,
+    loop: CircleCandidate,
+    ink: "_InkComponents",
+) -> bool:
+    """Return whether a circle touches a digit's loop on the same stroke."""
+    touching = math.hypot(
+        circle.center.x - loop.center.x,
+        circle.center.y - loop.center.y,
+    ) <= _LOOP_CONTACT_RATIO * (circle.radius + loop.radius)
+    if not touching:
+        return False
+    stroke = ink.main_label(_rim_samples(loop))
+    return stroke is not None and ink.main_label(_rim_samples(circle)) == stroke
 
 
 def _inside(region: Region, point: Point) -> bool:
@@ -289,21 +337,35 @@ class _InkComponents:
         self._band: int = band
         self._inside_cache: dict[tuple[int, int], bool] = {}
 
+    def _labels_near(self, sample: Point) -> tuple[int, ...]:
+        """Return the non-background labels within the band of one point."""
+        height, width = cast("tuple[int, int]", self._labels.shape[:2])
+        band = self._band
+        x = round(sample.x)
+        y = round(sample.y)
+        window = self._labels[
+            max(0, y - band) : min(height, y + band + 1),
+            max(0, x - band) : min(width, x + band + 1),
+        ]
+        labels = cast("list[int]", np.unique(window).tolist())
+        return tuple(label for label in labels if label > 0)
+
     def labels_under(self, samples: Iterable[Point]) -> frozenset[int]:
         """Return the non-background labels found near the sampled points."""
-        height, width = cast("tuple[int, int]", self._labels.shape[:2])
-        found: set[int] = set()
-        band = self._band
-        for sample in samples:
-            x = round(sample.x)
-            y = round(sample.y)
-            window = self._labels[
-                max(0, y - band) : min(height, y + band + 1),
-                max(0, x - band) : min(width, x + band + 1),
-            ]
-            labels = cast("list[int]", np.unique(window).tolist())
-            found.update(label for label in labels if label > 0)
-        return frozenset(found)
+        return frozenset(
+            label for sample in samples for label in self._labels_near(sample)
+        )
+
+    def main_label(self, samples: Iterable[Point]) -> int | None:
+        """Return the label found near the most sampled points, if any.
+
+        A neighbouring stroke that comes within the band of a few samples
+        does not outvote the ink the samples actually trace.
+        """
+        counts = Counter(
+            label for sample in samples for label in self._labels_near(sample)
+        )
+        return counts.most_common(1)[0][0] if counts else None
 
     def lies_inside(self, label: int, region_index: int, region: Region) -> bool:
         """Return whether every pixel of one ink component is in the region."""
@@ -379,7 +441,12 @@ def without_text_strokes(
             removed.append(line.entity_id)
         else:
             kept_lines.append(line)
-    loops = _glyph_loop_ids(shapes, _read_labels(text_candidates, config), config)
+    loops = _glyph_loop_ids(
+        shapes,
+        _read_labels(text_candidates, config),
+        config,
+        ink,
+    )
     kept_shapes: list[ShapeCandidate] = []
     for shape in shapes:
         lettering = (

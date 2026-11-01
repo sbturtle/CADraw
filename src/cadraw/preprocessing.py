@@ -1,6 +1,7 @@
 """Deterministic, non-destructive preprocessing for photographed drawings."""
 
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import blake2b
@@ -25,10 +26,19 @@ _DUPLICATE_LENGTH_RATIO = 0.70
 _MIN_COMPONENT_AREA = 9
 _PAPER_SHAPE_TOLERANCE = 12.0
 _PAPER_SHAPE_SATURATION = 120.0
+_RULED_CELL_MINIMUM_RATIO = 0.01
+_RULED_CELL_MAXIMUM_RATIO = 0.08
+_RULED_CELL_SIZE_SPREAD = 2.0
+_RULED_CELL_WALL_REACH = 2
+_RULED_CELL_NEIGHBOURS = 2
+_RULED_CELL_JUMP = 2.0
+_NO_CELL = float(1 << 24)
 _BACKDROP_SCALE = 0.25
 _BACKDROP_SMOOTHING = 15
 _BACKDROP_DARKNESS = 0.5
 _MINIMUM_BACKDROP_SHARE = 0.02
+_BACKDROP_EDGE_SHARPNESS = 0.3
+_BACKDROP_EDGE_PERCENTILE = 75.0
 _BACKGROUND_CACHE_SIZE = 4
 _BACKGROUND_CACHE: OrderedDict[tuple[bytes, tuple[int, ...], int], GrayImage] = (
     OrderedDict()
@@ -104,6 +114,11 @@ class ScoreContext:
     A work-order form's own header and footer contribute a handful of cells on
     every variant, so a tolerance keeps that from deciding anything; the term
     only bites once a variant has manufactured a ruled sheet's worth of them.
+
+    The shape proofs need rails square to the frame. On a sheet photographed
+    at an angle they prove nothing, so the caller also counts the ruled cells
+    straight from each variant's mask (`excess_ruled_cells`) and passes the
+    larger count here.
     """
 
     minimum_line_length: float
@@ -217,8 +232,11 @@ def backdrop_mask(image: GrayImage) -> NDArray[np.bool_] | None:
     Paper, even in shadow, stays more than half as bright as the paper's
     typical level, while a desk, a bag, or a mug beside it is darker than
     that. The page is first smoothed far beyond a pen stroke, so ink never
-    counts as backdrop. A scan, or a photo filled by paper, shows too little
-    backdrop to report any.
+    counts as backdrop. A deep shadow can still fall below that level, but
+    it fades into the lit paper over a long penumbra, while the sheet's edge
+    against the desk is a step: a dark region is backdrop only where its
+    border is sharp (see `_sharp_edged`). A scan, or a photo filled by paper,
+    shows too little backdrop to report any.
     """
     height, width = cast("tuple[int, int]", image.shape[:2])
     small = np.asarray(
@@ -237,14 +255,67 @@ def backdrop_mask(image: GrayImage) -> NDArray[np.bool_] | None:
     if paper.size == 0:
         return None
     paper_level = float(np.median(np.asarray(paper, dtype=np.float64)))
-    backdrop = np.asarray(
-        np.less_equal(smoothed, _BACKDROP_DARKNESS * paper_level),
-        dtype=np.uint8,
+    backdrop = _sharp_edged(
+        smoothed,
+        np.asarray(
+            np.less_equal(smoothed, _BACKDROP_DARKNESS * paper_level),
+            dtype=np.uint8,
+        ),
+        paper_level,
     )
     if int(np.count_nonzero(backdrop)) < _MINIMUM_BACKDROP_SHARE * backdrop.size:
         return None
     full = cv2.resize(backdrop, (width, height), interpolation=cv2.INTER_NEAREST)
     return np.greater(np.asarray(full, dtype=np.uint8), 0)
+
+
+def _sharp_edged(
+    smoothed: GrayImage,
+    dark: GrayImage,
+    paper_level: float,
+) -> GrayImage:
+    """Keep the dark regions whose border with the paper is a step.
+
+    Across each region's border, the brightness change within two pixels,
+    which the resampling may have split a step over, is compared with the
+    region's whole drop below the paper level. Where the sheet ends at a
+    desk most of the drop happens there; across a
+    shadow's penumbra it is spread over many pixels. The image border is no
+    edge with the paper, so it is left out.
+    """
+    count, found = cv2.connectedComponents(dark, connectivity=8)
+    if count <= 1:
+        return dark
+    labels = np.asarray(found, dtype=np.int64)
+    step = np.asarray(
+        cv2.morphologyEx(smoothed, cv2.MORPH_GRADIENT, np.ones((5, 5), dtype=np.uint8)),
+        dtype=np.float64,
+    )
+    owner = np.asarray(
+        cv2.dilate(labels.astype(np.float32), np.ones((3, 3), dtype=np.uint8)),
+        dtype=np.int64,
+    )
+    border = np.logical_and(owner > 0, np.equal(dark, 0))
+    border[[0, -1], :] = False
+    border[:, [0, -1]] = False
+    border_owner: NDArray[np.int64] = owner[border]
+    flat_labels: NDArray[np.int64] = labels.ravel()
+    totals = np.bincount(
+        flat_labels,
+        weights=np.asarray(smoothed, dtype=np.float64).ravel(),
+        minlength=count,
+    )
+    areas = np.bincount(flat_labels, minlength=count)
+    level: NDArray[np.float64] = totals / np.maximum(areas, 1)
+    drop = np.maximum(paper_level - level[border_owner], 1.0)
+    sharpness: NDArray[np.float64] = step[border] / drop
+    keep = np.zeros(count, dtype=np.bool_)
+    for label in range(1, count):
+        own = sharpness[border_owner == label]
+        keep[label] = own.size > 0 and bool(
+            np.percentile(own, _BACKDROP_EDGE_PERCENTILE) >= _BACKDROP_EDGE_SHARPNESS
+        )
+    return np.asarray(keep[labels], dtype=np.uint8)
 
 
 def _shadow_removed(
@@ -528,6 +599,112 @@ def _duplicate_ratio(
             ):
                 duplicate_indices.update((first_index, second_index))
     return len(duplicate_indices) / len(candidates)
+
+
+def ruled_cell_count(mask: GrayImage) -> int:
+    """Return how many paper cells of one size a binary mask encloses.
+
+    A variant that keeps ruling turns the sheet into a net of hundreds of
+    closed cells, one to eight percent of the frame's short side across and
+    within a factor of two of their median area, whatever the angle the grid
+    was photographed at. Each cell is walled off from its neighbours by a
+    single printed rule, a few pixels at most, so only a cell with at least
+    two others across a wall no thicker than three pixels is counted. Two
+    drawn outlines side by side are each a pen stroke, so even with no paper
+    left between them their wall is thicker than that. A drawing's holes and
+    slots, even many of one size, each have their own outline and paper
+    around it. Regions touching the frame are open paper.
+    """
+    height, width = cast("tuple[int, int]", mask.shape[:2])
+    short_side = float(min(height, width))
+    count, found, stats, _ = cv2.connectedComponentsWithStats(
+        np.asarray(np.equal(mask, 0), dtype=np.uint8),
+        connectivity=4,
+    )
+    statistics: NDArray[np.int64] = np.asarray(stats, dtype=np.int64)[1:count]
+    left: NDArray[np.int64] = statistics[:, 0]
+    top: NDArray[np.int64] = statistics[:, 1]
+    right: NDArray[np.int64] = left + statistics[:, 2]
+    bottom: NDArray[np.int64] = top + statistics[:, 3]
+    area: NDArray[np.int64] = statistics[:, 4]
+    inside = np.logical_and(
+        np.logical_and(np.greater(left, 0), np.greater(top, 0)),
+        np.logical_and(np.less(right, width), np.less(bottom, height)),
+    )
+    cell_sized = np.logical_and(
+        np.greater_equal(area, (_RULED_CELL_MINIMUM_RATIO * short_side) ** 2),
+        np.less_equal(area, (_RULED_CELL_MAXIMUM_RATIO * short_side) ** 2),
+    )
+    enclosed = np.logical_and(inside, cell_sized)
+    if not bool(np.any(enclosed)):
+        return 0
+    median_size = float(np.median(area[enclosed]))
+    similar = np.logical_and(
+        enclosed,
+        np.logical_and(
+            np.greater_equal(area, median_size / _RULED_CELL_SIZE_SPREAD),
+            np.less_equal(area, median_size * _RULED_CELL_SIZE_SPREAD),
+        ),
+    )
+    columns = slice(int(np.min(left[similar])), int(np.max(right[similar])))
+    rows = slice(int(np.min(top[similar])), int(np.max(bottom[similar])))
+    return _walled_neighbours(cast("NDArray[np.int32]", found)[rows, columns], similar)
+
+
+def excess_ruled_cells(masks: Sequence[GrayImage]) -> tuple[int, ...]:
+    """Return each variant's ruled cells beyond the fewest any variant kept.
+
+    The pen strokes of a drawing survive every variant, so a part whose
+    slots sit so close that their outlines merge into one lattice shows much
+    the same lattice in all of them. Even where one variant loses some of
+    those slots to a faint stroke, the counts stay within a factor of two.
+    Faint printed ruling multiplies a variant's count instead, from none or a
+    few in a variant that dropped it to hundreds in one that kept it. Only a
+    variant holding more than twice the fewest is charged, and only with the
+    difference.
+    """
+    counts = tuple(ruled_cell_count(mask) for mask in masks)
+    floor = min(counts, default=0)
+    return tuple(
+        count - floor if count > _RULED_CELL_JUMP * floor else 0 for count in counts
+    )
+
+
+def _walled_neighbours(
+    labels: NDArray[np.int32],
+    selected: NDArray[np.bool_],
+) -> int:
+    """Count selected regions with enough others just across a thin wall.
+
+    Every pixel looks at the regions within the wall's reach around it; where
+    it sees two different ones, those two face each other across ink no
+    thicker than twice that reach. The labels are cropped to the selected
+    regions' extent, which only the selected regions can reach into.
+    """
+    numbering = np.zeros(selected.size + 1, dtype=np.float32)
+    numbering[1:][selected] = np.arange(
+        1, int(np.count_nonzero(selected)) + 1, dtype=np.float32
+    )
+    cells = numbering[labels]
+    side = 2 * _RULED_CELL_WALL_REACH + 1
+    window = np.ones((side, side), dtype=np.uint8)
+    highest = np.asarray(cv2.dilate(cells, window), dtype=np.float32)
+    lowest = np.asarray(
+        cv2.erode(np.where(cells > 0, cells, _NO_CELL).astype(np.float32), window),
+        dtype=np.float32,
+    )
+    facing = np.logical_and(
+        np.logical_and(highest > 0, lowest < _NO_CELL),
+        np.not_equal(highest, lowest),
+    )
+    total = int(np.count_nonzero(selected)) + 1
+    pairs = np.unique(
+        lowest[facing].astype(np.int64) * total + highest[facing].astype(np.int64)
+    )
+    neighbours = np.bincount(
+        np.concatenate((pairs // total, pairs % total)), minlength=total
+    )[1:]
+    return int(np.count_nonzero(neighbours >= _RULED_CELL_NEIGHBOURS))
 
 
 def score_candidates(
